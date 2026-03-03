@@ -1,0 +1,4 @@
+# Ignore vendor in local build context to reduce rebuild time when using bind mounts.
+vendor/
+.git/
+.gitignore

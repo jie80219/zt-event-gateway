@@ -1,0 +1,66 @@
+name: zt-event-gateway
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: zt-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  php-gateway:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: zt-php-gateway
+    environment:
+      APP_SERVICE_NAME: php-gateway
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: "5672"
+      AMQP_USER: guest
+      AMQP_PASSWORD: guest
+      AMQP_EXCHANGE: domain.events
+      ORDER_CREATED_ROUTING_KEY: orders.created.v1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    expose:
+      - "8081"
+
+  php-worker:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: zt-php-worker
+    command: ["php", "bin/worker.php"]
+    environment:
+      APP_SERVICE_NAME: php-worker
+      AMQP_HOST: rabbitmq
+      AMQP_PORT: "5672"
+      AMQP_USER: guest
+      AMQP_PASSWORD: guest
+      AMQP_EXCHANGE: domain.events
+      ORDER_CREATED_ROUTING_KEY: orders.created.v1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  gateway:
+    image: envoyproxy/envoy:v1.31.8
+    container_name: zt-envoy-gateway
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info"]
+    volumes:
+      - ./docker/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "8080:8080"
+      - "9901:9901"
+    depends_on:
+      - php-gateway

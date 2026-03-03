@@ -1,0 +1,20 @@
+{
+  "name": "zt/event-gateway",
+  "description": "PHP event-driven gateway starter with Envoy routing and SPIFFE/SPIRE-ready security",
+  "type": "project",
+  "license": "proprietary",
+  "require": {
+    "php": "^8.3",
+    "php-amqplib/php-amqplib": "^3.7",
+    "ramsey/uuid": "^4.7"
+  },
+  "autoload": {
+    "psr-4": {
+      "ZtEventGateway\\": "src/"
+    }
+  },
+  "scripts": {
+    "gateway": "php -S 0.0.0.0:8081 -t public",
+    "worker": "php bin/worker.php"
+  }
+}
