@@ -1,5 +1,5 @@
 <?php
-namespace SDPMlab\AnserEDA\EventStore;
+namespace SDPMlab\ZtEventGateway\EventStore;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
@@ -115,7 +115,7 @@ class EventStoreDB
                 "App\\\\Events\\\\OrderCreatedEvent": function(state, event) {
                     state[event.data.orderId] = { createdAt: event.metadata.timestamp };
                 },
-                "App\\\\Events\\\\OrderCompletedEvent": function(state, event) {
+                "App\\\\Events\\\\OrderSagaCompletedEvent": function(state, event) {
                     if (state[event.data.orderId]) {
                         let startTime = new Date(state[event.data.orderId].createdAt).getTime();
                         let endTime = new Date(event.metadata.timestamp).getTime();

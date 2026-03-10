@@ -5,7 +5,7 @@
   "license": "proprietary",
   "require": {
     "php": "^8.3",
-    "php-amqplib/php-amqplib": "^3.0",
+    "php-amqplib/php-amqplib": "^3.7.4",
     "ramsey/uuid": "^4.7",
     "swow/swow": "^1.2",
     "workerman/workerman": "^4.1",
@@ -14,8 +14,10 @@
     "monolog/monolog": "^3.4",
     "vlucas/phpdotenv": "^5.5",
     "mikey179/vfsstream": "^1.6",
-    "sdpmlab/anser-action": "^0.3.7",
-    "sdpmlab/anser": "^0.1.2"
+    "sdpmlab/anser-action": "^0.3.10",
+    "sdpmlab/anser": "^0.2.6",
+    "prooph/event-store": "^7.9",
+    "prooph/pdo-event-store": "^1.15"
   },
   "require-dev": {
     "friendsofphp/php-cs-fixer": "^3.17",
@@ -23,11 +25,21 @@
   },
   "autoload": {
     "psr-4": {
-      "ZtEventGateway\\": "src/"
+      "App\\": "",
+      "ZtEventGateway\\": "src/",
+      "SDPMlab\\ZtEventGateway\\": "src/",
+      "App\\Events\\": "Event-Driven/Events/",
+      "App\\Sagas\\": "src/Sagas/",
+      "Filters\\": "anser-gateway/Filters/",
+      "Services\\": "Services/"
     }
   },
   "scripts": {
     "gateway": "php -S 0.0.0.0:8081 -t public",
-    "worker": "php bin/worker.php"
+    "worker": "php bin/worker.php",
+    "app:init": "php init.php",
+    "mq:init": "php initialization.php",
+    "consumer": "php consumer.php OrderCreateRequestedEvent",
+    "publish": "php publisher.php"
   }
 }

@@ -1,6 +1,6 @@
 <?php
 
-namespace SDPMlab\AnserEDA\Attributes;
+namespace SDPMlab\ZtEventGateway\Attributes;
 
 #[\Attribute(\Attribute::TARGET_METHOD)]
 class EventHandler {

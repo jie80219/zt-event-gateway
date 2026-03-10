@@ -1,5 +1,4 @@
 name: zt-event-gateway
-
 services:
   rabbitmq:
     image: rabbitmq:3.13-management
@@ -8,32 +7,92 @@ services:
       - "5672:5672"
       - "15672:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: zt
+      RABBITMQ_DEFAULT_PASS: ztpass
+      RABBITMQ_DEFAULT_VHOST: /
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
       timeout: 3s
       retries: 20
 
-  php-gateway:
+  consul:
+    image: hashicorp/consul:1.20
+    container_name: zt-consul
+    command: ["agent", "-dev", "-ui", "-client=0.0.0.0"]
+    ports:
+      - "8500:8500"
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: zt-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  anser-gateway:
     build:
-      context: .
-      dockerfile: docker/php/Dockerfile
-    container_name: zt-php-gateway
+      context: ./anser-gateway
+      dockerfile: Dockerfile
+    container_name: zt-anser-gateway
+    working_dir: /app
+    command: ["sh", "-c", "composer install --no-interaction --prefer-dist && php anser serve start"]
     environment:
-      APP_SERVICE_NAME: php-gateway
-      AMQP_HOST: rabbitmq
-      AMQP_PORT: "5672"
-      AMQP_USER: guest
-      AMQP_PASSWORD: guest
-      AMQP_EXCHANGE: domain.events
-      ORDER_CREATED_ROUTING_KEY: orders.created.v1
+      gateway.workerUser: root
+      gateway.listeningPort: "8080"
+      RABBITMQ_HOST: "rabbitmq"
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: "zt"
+      RABBITMQ_PASS: "ztpass"
+      gatewayregister.address: "anser-gateway"
+      gatewayregister.healthRoute: "api/health"
+      servicediscovery.address: "consul:8500"
+      servicediscovery.defaultServiceGroup: "AnserGateway"
+      servicediscovery.LBStrategy: "dynamic"
+    volumes:
+      - ./anser-gateway:/app
+    ports:
+      - "8080:8080"
     depends_on:
       rabbitmq:
         condition: service_healthy
-    expose:
-      - "8081"
+      consul:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: zt-anser-app
+    command: ["sh", "-c", "tail -f /dev/null"]
+    environment:
+      APP_SERVICE_NAME: anser-app
+      AMQP_HOST: "rabbitmq"
+      AMQP_PORT: "5672"
+      AMQP_USER: "zt"
+      AMQP_PASSWORD: "ztpass"
+      RABBITMQ_HOST: "rabbitmq"
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: "zt"
+      RABBITMQ_PASS: "ztpass"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
   php-worker:
     build:
@@ -43,24 +102,60 @@ services:
     command: ["php", "bin/worker.php"]
     environment:
       APP_SERVICE_NAME: php-worker
-      AMQP_HOST: rabbitmq
+      AMQP_HOST: "rabbitmq"
       AMQP_PORT: "5672"
-      AMQP_USER: guest
-      AMQP_PASSWORD: guest
-      AMQP_EXCHANGE: domain.events
-      ORDER_CREATED_ROUTING_KEY: orders.created.v1
+      AMQP_USER: "zt"
+      AMQP_PASSWORD: "ztpass"
+      RABBITMQ_HOST: "rabbitmq"
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: "zt"
+      RABBITMQ_PASS: "ztpass"
     depends_on:
       rabbitmq:
         condition: service_healthy
 
-  gateway:
-    image: envoyproxy/envoy:v1.31.8
-    container_name: zt-envoy-gateway
-    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info"]
+  monitor:
+    build:
+      context: ./anser-gateway
+      dockerfile: Dockerfile
+    container_name: zt-lb-monitor
+    working_dir: /app
+    command: ["sh", "-c", "composer install --no-interaction --prefer-dist && php monitor/monitor_trigger.php"]
+    environment:
+      LOAD_BALANCE_AMQP_HOST: "rabbitmq"
+      LOAD_BALANCE_AMQP_PORT: "5672"
+      LOAD_BALANCE_AMQP_USER: "zt"
+      LOAD_BALANCE_AMQP_PASSWORD: "ztpass"
     volumes:
-      - ./docker/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
-    ports:
-      - "8080:8080"
-      - "9901:9901"
+      - ./anser-gateway:/app
     depends_on:
-      - php-gateway
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  recalc-worker:
+    build:
+      context: ./anser-gateway
+      dockerfile: Dockerfile
+    container_name: zt-lb-recalc-worker
+    working_dir: /app
+    command: ["sh", "-c", "composer install --no-interaction --prefer-dist && php worker/recalc_worker.php"]
+    environment:
+      LOAD_BALANCE_AMQP_HOST: "rabbitmq"
+      LOAD_BALANCE_AMQP_PORT: "5672"
+      LOAD_BALANCE_AMQP_USER: "zt"
+      LOAD_BALANCE_AMQP_PASSWORD: "ztpass"
+    volumes:
+      - ./anser-gateway:/app
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  rabbitmq_data:
+  redis_data:

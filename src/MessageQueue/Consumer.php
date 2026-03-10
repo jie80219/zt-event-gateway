@@ -1,55 +1,59 @@
 <?php
-namespace SDPMlab\AnserEDA\MessageQueue;
 
-use Hyperf\Logger\LoggerFactory;
-use Psr\Container\ContainerInterface;
+declare(strict_types=1);
 
-class Consumer
+namespace SDPMlab\ZtEventGateway\MessageQueue;
+
+use PhpAmqpLib\Channel\AMQPChannel;
+use PhpAmqpLib\Exception\AMQPTimeoutException;
+use PhpAmqpLib\Message\AMQPMessage;
+
+final class Consumer
 {
-    private $channel;
-    private $eventBus;
-    private $startTime;
-    private $firstMessageProcessed = false;
-    private $logFile;
-    private $queueName;
+    private AMQPChannel $channel;
 
-    public function __construct($channel, $eventBus)
+    public function __construct(AMQPChannel $channel)
     {
         $this->channel = $channel;
-        $this->eventBus = $eventBus;
     }
 
-    public function consume(string $queue)
+    public function subscribe(string $queue, callable $handler): void
     {
-        $this->queueName = $queue;
-        
-        $callback = function ($msg) {
+        $this->channel->basic_consume(
+            $queue,
+            '',
+            false,
+            false,
+            false,
+            false,
+            function (AMQPMessage $message) use ($handler, $queue): void {
+                try {
+                    $handler($message);
+                    $message->ack();
+                } catch (UnrecoverableMessageException $exception) {
+                    fwrite(
+                        STDERR,
+                        sprintf("[consumer] dropped queue=%s error=%s\n", $queue, $exception->getMessage()),
+                    );
+                    $message->reject(false);
+                } catch (\Throwable $exception) {
+                    fwrite(
+                        STDERR,
+                        sprintf("[consumer] requeue queue=%s error=%s\n", $queue, $exception->getMessage()),
+                    );
+                    $message->nack(false, true);
+                }
+            },
+        );
+    }
 
-            $eventData = json_decode($msg->body, true);
-            if (!$eventData || !isset($eventData['type'])) {
-                return;
-            }
-
-            $eventType = $eventData['type'];
-
-            if (class_exists($eventType)) {
-                $eventObject = new $eventType(...array_values($eventData['data'])); 
-                $this->eventBus->dispatch($eventObject);
-                
-            }
-
-            if ($msg->has('delivery_tag')) {
-                $this->channel->basic_ack($msg->get('delivery_tag'));
-            }
-        };
-
-        $this->channel->basic_consume($queue, '', false, false, false, false, $callback);
-
-        while (true) {
+    public function run(): void
+    {
+        while ($this->channel->is_consuming()) {
             try {
-                $this->channel->wait();
-            } catch (\PhpAmqpLib\Exception\AMQPTimeoutException $e) {
-                // 忽略超時異常
+                $this->channel->wait(null, false, 5);
+            } catch (AMQPTimeoutException) {
+                // Keep the consumer alive while waiting for the next message.
             }
         }
     }
