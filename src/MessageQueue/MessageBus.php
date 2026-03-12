@@ -1,6 +1,8 @@
 <?php
 
-namespace SDPMlab\AnserEDA\MessageQueue;
+declare(strict_types=1);
+
+namespace ZtEventGateway\MessageQueue;
 
 use PhpAmqpLib\Message\AMQPMessage;
 use PhpAmqpLib\Channel\AMQPChannel;

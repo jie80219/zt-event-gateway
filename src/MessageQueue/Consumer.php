@@ -1,5 +1,8 @@
 <?php
-namespace SDPMlab\AnserEDA\MessageQueue;
+
+declare(strict_types=1);
+
+namespace ZtEventGateway\MessageQueue;
 
 use Hyperf\Logger\LoggerFactory;
 use Psr\Container\ContainerInterface;

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: zt-event-gateway
+data:
+  AMQP_HOST: rabbitmq
+  AMQP_PORT: "5672"
+  AMQP_EXCHANGE: domain.events
+  ORDER_CREATED_ROUTING_KEY: orders.created.v1

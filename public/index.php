@@ -1,59 +1,105 @@
 <?php
 
-use CodeIgniter\Boot;
-use Config\Paths;
+declare(strict_types=1);
 
-/*
- *---------------------------------------------------------------
- * CHECK PHP VERSION
- *---------------------------------------------------------------
- */
+use PhpAmqpLib\Message\AMQPMessage;
+use Ramsey\Uuid\Uuid;
+use ZtEventGateway\Config\AppConfig;
+use ZtEventGateway\MessageQueue\RabbitMQConnection;
 
-$minPhpVersion = '8.1'; // If you update this, don't forget to update `spark`.
-if (version_compare(PHP_VERSION, $minPhpVersion, '<')) {
-    $message = sprintf(
-        'Your PHP version must be %s or higher to run CodeIgniter. Current version: %s',
-        $minPhpVersion,
-        PHP_VERSION,
-    );
+require dirname(__DIR__) . '/vendor/autoload.php';
 
-    header('HTTP/1.1 503 Service Unavailable.', true, 503);
-    echo $message;
+$config = AppConfig::fromEnv();
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+$uriPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+$path = is_string($uriPath) ? $uriPath : '/';
 
-    exit(1);
+if ($path === '/health' && $method === 'GET') {
+    respond(200, [
+        'status' => 'ok',
+        'service' => $config->serviceName(),
+        'timestamp' => gmdate(DATE_ATOM),
+    ]);
 }
 
-/*
- *---------------------------------------------------------------
- * SET THE CURRENT DIRECTORY
- *---------------------------------------------------------------
- */
+if ($path === '/orders' && $method === 'POST') {
+    $rawBody = file_get_contents('php://input');
 
-// Path to the front controller (this file)
-define('FCPATH', __DIR__ . DIRECTORY_SEPARATOR);
+    try {
+        $input = json_decode($rawBody ?: '{}', true, 512, JSON_THROW_ON_ERROR);
+    } catch (JsonException) {
+        respond(400, ['error' => 'Invalid JSON body.']);
+    }
 
-// Ensure the current directory is pointing to the front controller's directory
-if (getcwd() . DIRECTORY_SEPARATOR !== FCPATH) {
-    chdir(FCPATH);
+    if (!is_array($input)) {
+        respond(400, ['error' => 'Invalid request body.']);
+    }
+
+    $customerId = isset($input['customerId']) ? trim((string) $input['customerId']) : '';
+    $amount = isset($input['amount']) ? (float) $input['amount'] : null;
+    $currency = isset($input['currency']) ? strtoupper(trim((string) $input['currency'])) : '';
+
+    if ($customerId === '' || $amount === null || $amount <= 0 || $currency === '') {
+        respond(422, ['error' => 'customerId, amount (>0), currency are required.']);
+    }
+
+    $event = [
+        'eventId' => Uuid::uuid7()->toString(),
+        'eventType' => $config->routingKey(),
+        'occurredAt' => gmdate(DATE_ATOM),
+        'source' => $config->serviceName(),
+        'payload' => [
+            'orderId' => Uuid::uuid7()->toString(),
+            'customerId' => $customerId,
+            'amount' => $amount,
+            'currency' => $currency,
+        ],
+    ];
+
+    $connection = null;
+    try {
+        $connection = new RabbitMQConnection(
+            $config->amqpHost(),
+            $config->amqpPort(),
+            $config->amqpUser(),
+            $config->amqpPassword(),
+        );
+        $channel = $connection->getChannel();
+        $channel->exchange_declare($config->exchange(), 'topic', false, true, false);
+
+        $message = new AMQPMessage(
+            json_encode($event, JSON_THROW_ON_ERROR),
+            [
+                'content_type' => 'application/json',
+                'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
+            ],
+        );
+
+        $channel->basic_publish($message, $config->exchange(), $config->routingKey());
+    } catch (Throwable $exception) {
+        if ($connection instanceof RabbitMQConnection) {
+            $connection->closeConnection();
+        }
+        respond(500, ['error' => 'Failed to publish event.', 'detail' => $exception->getMessage()]);
+    }
+
+    if ($connection instanceof RabbitMQConnection) {
+        $connection->closeConnection();
+    }
+
+    respond(202, [
+        'status' => 'accepted',
+        'eventId' => $event['eventId'],
+        'orderId' => $event['payload']['orderId'],
+    ]);
 }
 
-/*
- *---------------------------------------------------------------
- * BOOTSTRAP THE APPLICATION
- *---------------------------------------------------------------
- * This process sets up the path constants, loads and registers
- * our autoloader, along with Composer's, loads our constants
- * and fires up an environment-specific bootstrapping.
- */
+respond(404, ['error' => 'Not found']);
 
-// LOAD OUR PATHS CONFIG FILE
-// This is the line that might need to be changed, depending on your folder structure.
-require FCPATH . '../app/Config/Paths.php';
-// ^^^ Change this line if you move your application folder
-
-$paths = new Paths();
-
-// LOAD THE FRAMEWORK BOOTSTRAP FILE
-require $paths->systemDirectory . '/Boot.php';
-
-exit(Boot::bootWeb($paths));
+function respond(int $statusCode, array $payload): never
+{
+    http_response_code($statusCode);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
