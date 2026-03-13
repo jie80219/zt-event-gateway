@@ -14,7 +14,7 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $uriPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 $path = is_string($uriPath) ? $uriPath : '/';
 
-if ($path === '/health' && $method === 'GET') {
+if (in_array($path, ['/health', '/api/health'], true) && $method === 'GET') {
     respond(200, [
         'status' => 'ok',
         'service' => $config->serviceName(),
@@ -22,7 +22,7 @@ if ($path === '/health' && $method === 'GET') {
     ]);
 }
 
-if ($path === '/orders' && $method === 'POST') {
+if (in_array($path, ['/orders', '/api/orders'], true) && $method === 'POST') {
     $rawBody = file_get_contents('php://input');
 
     try {
@@ -35,25 +35,22 @@ if ($path === '/orders' && $method === 'POST') {
         respond(400, ['error' => 'Invalid request body.']);
     }
 
-    $customerId = isset($input['customerId']) ? trim((string) $input['customerId']) : '';
-    $amount = isset($input['amount']) ? (float) $input['amount'] : null;
-    $currency = isset($input['currency']) ? strtoupper(trim((string) $input['currency'])) : '';
-
-    if ($customerId === '' || $amount === null || $amount <= 0 || $currency === '') {
-        respond(422, ['error' => 'customerId, amount (>0), currency are required.']);
-    }
+    [$customerId, $amount, $currency, $extraPayload] = normalizeOrderInput($input);
 
     $event = [
         'eventId' => Uuid::uuid7()->toString(),
         'eventType' => $config->routingKey(),
         'occurredAt' => gmdate(DATE_ATOM),
         'source' => $config->serviceName(),
-        'payload' => [
-            'orderId' => Uuid::uuid7()->toString(),
-            'customerId' => $customerId,
-            'amount' => $amount,
-            'currency' => $currency,
-        ],
+        'payload' => array_merge(
+            [
+                'orderId' => Uuid::uuid7()->toString(),
+                'customerId' => $customerId,
+                'amount' => $amount,
+                'currency' => $currency,
+            ],
+            $extraPayload,
+        ),
     ];
 
     $connection = null;
@@ -95,6 +92,68 @@ if ($path === '/orders' && $method === 'POST') {
 }
 
 respond(404, ['error' => 'Not found']);
+
+/**
+ * @return array{0:string,1:float,2:string,3:array<string,mixed>}
+ */
+function normalizeOrderInput(array $input): array
+{
+    $hasNewFormat = array_key_exists('user_id', $input) || array_key_exists('product_list', $input);
+    if ($hasNewFormat) {
+        $userId = isset($input['user_id']) ? (int) $input['user_id'] : 0;
+        $productList = $input['product_list'] ?? null;
+
+        if ($userId <= 0 || !is_array($productList) || $productList === []) {
+            respond(422, ['error' => 'user_id (>0) and non-empty product_list are required.']);
+        }
+
+        $normalizedProducts = [];
+        $totalAmount = 0.0;
+
+        foreach ($productList as $item) {
+            if (!is_array($item)) {
+                respond(422, ['error' => 'Each item in product_list must be an object.']);
+            }
+
+            $productKey = isset($item['p_key']) ? (int) $item['p_key'] : 0;
+            $itemAmount = isset($item['amount']) ? (int) $item['amount'] : 0;
+            if ($productKey <= 0 || $itemAmount <= 0) {
+                respond(422, ['error' => 'Each product requires p_key (>0) and amount (>0).']);
+            }
+
+            $normalizedProducts[] = [
+                'p_key' => $productKey,
+                'amount' => $itemAmount,
+            ];
+            $totalAmount += $itemAmount;
+        }
+
+        $currency = isset($input['currency']) ? strtoupper(trim((string) $input['currency'])) : 'TWD';
+        if ($currency === '') {
+            $currency = 'TWD';
+        }
+
+        return [
+            (string) $userId,
+            $totalAmount,
+            $currency,
+            [
+                'user_id' => $userId,
+                'product_list' => $normalizedProducts,
+            ],
+        ];
+    }
+
+    $customerId = isset($input['customerId']) ? trim((string) $input['customerId']) : '';
+    $amount = isset($input['amount']) ? (float) $input['amount'] : 0.0;
+    $currency = isset($input['currency']) ? strtoupper(trim((string) $input['currency'])) : '';
+
+    if ($customerId === '' || $amount <= 0 || $currency === '') {
+        respond(422, ['error' => 'customerId, amount (>0), currency are required.']);
+    }
+
+    return [$customerId, $amount, $currency, []];
+}
 
 function respond(int $statusCode, array $payload): never
 {

@@ -15,7 +15,7 @@ $connection = new RabbitMQConnection(
     $config->amqpUser(),
     $config->amqpPassword(),
 );
-$worker = new OrderCreatedWorker($connection, $config);
+$worker = new OrderCreatedWorker ($connection, $config);
 
 try {
     $worker->run();
