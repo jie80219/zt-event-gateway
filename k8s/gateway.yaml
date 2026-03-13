@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: zt-event-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+        - name: envoy
+          image: envoyproxy/envoy:v1.31.8
+          args: ["envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info"]
+          ports:
+            - containerPort: 8080
+            - containerPort: 9901
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: envoy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: zt-event-gateway
+spec:
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: admin
+      port: 9901
+      targetPort: 9901
+  type: ClusterIP

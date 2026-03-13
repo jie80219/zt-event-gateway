@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: php-worker
+  namespace: zt-event-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: php-worker
+  template:
+    metadata:
+      labels:
+        app: php-worker
+    spec:
+      containers:
+        - name: php-worker
+          image: zt-event-gateway-php:local
+          imagePullPolicy: IfNotPresent
+          command: ["php", "bin/worker.php"]
+          env:
+            - name: APP_SERVICE_NAME
+              value: php-worker
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secret

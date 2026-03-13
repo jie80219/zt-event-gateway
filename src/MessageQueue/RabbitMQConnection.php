@@ -1,6 +1,8 @@
 <?php
 
-namespace SDPMlab\AnserEDA\MessageQueue;
+declare(strict_types=1);
+
+namespace ZtEventGateway\MessageQueue;
 
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Channel\AMQPChannel;
@@ -45,7 +47,7 @@ class RabbitMQConnection
     /**
      * ✅ **關閉連線**
      */
-    public function closeConnection()
+    public function closeConnection(): void
     {
         $this->channel->close();
         $this->connection->close();
