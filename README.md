@@ -78,3 +78,7 @@ Recommended rollout:
 - `src/Worker/OrderCreatedWorker.php`: consumer worker handler
 - `docker/envoy/envoy.yaml`: unified gateway routing
 - `docker/envoy/envoy-spiffe.yaml`: SPIFFE/SPIRE-secure gateway routing
+
+## 5) Kubernetes migration (phase 1)
+
+Baseline manifests are in `k8s/base` and usage is documented in `k8s/README.md`.
