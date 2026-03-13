@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: production-service
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  selector:
+    app: production-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: production-service
+spec:
+  replicas: 3 # 水平擴展
+  selector:
+    matchLabels:
+      app: production-service
+  template:
+    metadata:
+      labels:
+        app: production-service
+      annotations:
+        # 啟用 Istio Envoy 注入以整合 SPIFFE mTLS
+        sidecar.istio.io/inject: "true" 
+    spec:
+      containers:
+        - name: php-app
+          # 建議使用包含 RoadRunner 的客製化 Image
+          image: your-registry/production-service:v1 
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DB_HOST
+              value: "production-db"
+          #  Readiness & Liveness 探針，配合 LB 健康檢查
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5

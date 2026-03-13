@@ -29,6 +29,30 @@ data:
                           domains: ["*"]
                           routes:
                             - match:
+                                prefix: "/api/v1/user"
+                              route:
+                                cluster: user_service
+                            - match:
+                                prefix: "/api/v1/wallet"
+                              route:
+                                cluster: user_service
+                            - match:
+                                prefix: "/api/v1/order"
+                              route:
+                                cluster: order_service
+                            - match:
+                                prefix: "/api/v1/products"
+                              route:
+                                cluster: production_service
+                            - match:
+                                prefix: "/api/v1/inventory"
+                              route:
+                                cluster: production_service
+                            - match:
+                                prefix: "/api/v1/payment"
+                              route:
+                                cluster: payment_service
+                            - match:
                                 prefix: "/api/"
                               route:
                                 cluster: php_gateway
@@ -77,6 +101,62 @@ data:
                         socket_address:
                           address: rabbitmq
                           port_value: 15672
+
+        - name: user_service
+          connect_timeout: 1s
+          type: LOGICAL_DNS
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: user_service
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: user-service
+                          port_value: 8080
+
+        - name: order_service
+          connect_timeout: 1s
+          type: LOGICAL_DNS
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: order_service
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: order-service
+                          port_value: 8080
+
+        - name: production_service
+          connect_timeout: 1s
+          type: LOGICAL_DNS
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: production_service
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: production-service
+                          port_value: 8080
+
+        - name: payment_service
+          connect_timeout: 1s
+          type: LOGICAL_DNS
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: payment_service
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: payment-service
+                          port_value: 8080
 
     admin:
       access_log_path: /tmp/admin_access.log
