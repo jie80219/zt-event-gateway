@@ -1,0 +1,54 @@
+version: "3"
+
+services:
+    app:
+        build: ./
+        ports:
+            - 8080:8080
+        working_dir: /app
+        networks:
+            - anser_project_network
+        depends_on:
+            - redis
+        environment: 
+            - PHP_MEMORY_LIMIT=2048M
+            - PHP_MAX_EXECUTION_TIME=600
+            - PHP_POST_MAX_SIZE=200M
+            - PHP_UPLOAD_MAX_FILESIZE=200M
+            - XDEBUG_MODE=coverage
+        volumes:
+            - './:/app'
+                
+    rabbitmq:
+        image: rabbitmq:3-management
+        ports:
+            - "5672:5672"       # AMQP 通訊用
+            - "15672:15672"     # 管理介面用（可從瀏覽器打開 http://10.1.1.94:15672）
+        environment:
+            - APP_SERVICE_NAME=anser-app
+            - RABBITMQ_HOST=rabbitmq
+            - RABBITMQ_PORT=5672
+            - RABBITMQ_USER=guest
+            - RABBITMQ_PASS=guest
+        networks:
+        - anser_project_network
+
+    redis:
+        image: redis:alpine
+        container_name: redis
+        ports:
+            - "6379:6379"
+        networks:
+            - anser_project_network
+
+    redisinsight:
+        image: redis/redisinsight:latest
+        container_name: redisinsight
+        ports:
+            - "8001:5540"     # 管理介面用（可從瀏覽器打開 http://10.1.1.94:8001）
+        networks:
+            - anser_project_network
+networks:
+  anser_project_network:
+    driver: bridge
+    external: true

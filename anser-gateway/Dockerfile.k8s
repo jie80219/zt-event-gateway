@@ -1,0 +1,34 @@
+FROM composer:2.8 AS vendor
+
+WORKDIR /app
+COPY composer.json composer.lock* ./
+RUN composer install --no-interaction --prefer-dist --no-progress --optimize-autoloader --no-dev
+
+FROM webdevops/php:8.2-alpine
+
+RUN apk add --no-cache autoconf openssl-dev build-base linux-headers libevent-dev openldap-dev imagemagick-dev git && \
+    docker-php-ext-install opcache && docker-php-ext-enable opcache && \
+    pecl install xdebug && docker-php-ext-enable xdebug && \
+    echo '' | pecl install event && \
+    docker-php-ext-enable --ini-name zz-event.ini event && \
+    docker-php-ext-enable redis || true
+
+# SWOW extension
+RUN git clone https://github.com/swow/swow.git /tmp/swow && \
+    cd /tmp/swow/ext && \
+    phpize && ./configure --enable-swow-ssl --enable-swow-curl && \
+    make && make install && \
+    docker-php-ext-enable swow && \
+    rm -rf /tmp/swow
+
+WORKDIR /app
+
+COPY . /app
+COPY --from=vendor /app/vendor /app/vendor
+COPY supervisord.conf /etc/supervisord.conf
+COPY supervisord.recalc.conf /etc/supervisor/conf.d/recalc.conf
+COPY supervisord.monitor.conf /etc/supervisor/conf.d/monitor.conf
+
+EXPOSE 8080
+
+CMD ["php", "anser", "serve", "start"]
