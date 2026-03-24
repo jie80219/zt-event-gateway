@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(protoc --version)",
+      "Read(//opt/**)",
+      "Read(//opt/anaconda3/**)",
+      "Bash(protoc --proto_path=spiffe/proto --proto_path=/opt/anaconda3/include --php_out=src/ --grpc_out=src/ --plugin=protoc-gen-grpc=/opt/anaconda3/bin/grpc_php_plugin spiffe/proto/workloadapi.proto)",
+      "Bash(/opt/anaconda3/bin/protoc \\\\\n  --proto_path=spiffe/proto \\\\\n  --proto_path=/opt/anaconda3/include \\\\\n  --php_out=src/ \\\\\n  --grpc_out=src/ \\\\\n  --plugin=protoc-gen-grpc=/opt/anaconda3/bin/grpc_php_plugin \\\\\n  spiffe/proto/workloadapi.proto 2>&1)",
+      "Bash(find /Users/jiezhiyang/zt-event-gateway -not -path */vendor/* -not -path */.git/* -type f)",
+      "Bash(chmod:*)",
+      "Bash(sed 's|/Users/jiezhiyang/zt-event-gateway/||')",
+      "Bash(find /Users/jiezhiyang/zt-event-gateway/spiffe/spire-*-e2e -type f)",
+      "Bash(ls /Users/jiezhiyang/zt-event-gateway/docker-compose*.yml)",
+      "Bash(bash packages/php-spiffe/split.sh)"
+    ]
+  }
+}

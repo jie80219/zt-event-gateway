@@ -17,12 +17,22 @@
     "sdpmlab/anser-action": "^0.3.10",
     "sdpmlab/anser": "^0.2.6",
     "prooph/event-store": "^7.9",
-    "prooph/pdo-event-store": "^1.15"
+    "prooph/pdo-event-store": "^1.15",
+    "sdpmlab/php-spiffe": "^1.0@dev"
   },
   "require-dev": {
     "friendsofphp/php-cs-fixer": "^3.17",
     "phpunit/phpunit": "^10.5"
   },
+  "repositories": [
+    {
+      "type": "path",
+      "url": "packages/php-spiffe",
+      "options": {
+        "symlink": true
+      }
+    }
+  ],
   "autoload": {
     "psr-4": {
       "App\\": "",
@@ -31,7 +41,9 @@
       "App\\Events\\": "Event-Driven/Events/",
       "App\\Sagas\\": "src/Sagas/",
       "Filters\\": "anser-gateway/Filters/",
-      "Services\\": "Services/"
+      "Services\\": "Services/",
+      "Spiffe\\": "src/Spiffe/",
+      "GPBMetadata\\": "src/GPBMetadata/"
     }
   },
   "scripts": {
@@ -40,6 +52,9 @@
     "app:init": "php init.php",
     "mq:init": "php initialization.php",
     "consumer": "php consumer.php OrderCreateRequestedEvent",
-    "publish": "php publisher.php"
+    "publish": "php publisher.php",
+    "spiffe:watch": "php bin/spiffe-watcher.php",
+    "spiffe:e2e": "bash spiffe/e2e/run-e2e.sh",
+    "spiffe:split": "bash packages/php-spiffe/split.sh"
   }
 }
