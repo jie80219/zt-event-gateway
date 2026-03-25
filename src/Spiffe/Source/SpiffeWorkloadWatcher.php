@@ -6,6 +6,8 @@ namespace Spiffe\Source;
 
 use Spiffe\Bundle\JwtBundle;
 use Spiffe\Bundle\X509Bundle;
+use Spiffe\Runtime\RuntimeDetector;
+use Spiffe\Runtime\RuntimeInterface;
 use Spiffe\SharedMemory\SpiffeTableStore;
 use Spiffe\X509Svid;
 
@@ -54,6 +56,7 @@ use Spiffe\X509Svid;
 final class SpiffeWorkloadWatcher
 {
     private SourceConfig $config;
+    private RuntimeInterface $runtime;
     private ?X509Source $x509Source = null;
     private ?JwtSource $jwtSource = null;
     private bool $running = false;
@@ -80,9 +83,10 @@ final class SpiffeWorkloadWatcher
     /** @var callable(string): void */
     private $logger;
 
-    public function __construct(?SourceConfig $config = null)
+    public function __construct(?SourceConfig $config = null, ?RuntimeInterface $runtime = null)
     {
         $this->config = $config ?? new SourceConfig();
+        $this->runtime = $runtime ?? RuntimeDetector::detect();
         $this->logger = static function (string $msg): void {
             fwrite(STDOUT, sprintf("[spiffe-watcher] %s %s\n", date('Y-m-d\TH:i:s'), $msg));
         };
@@ -196,27 +200,25 @@ final class SpiffeWorkloadWatcher
      */
     public function run(): void
     {
-        \Swoole\Coroutine\run(function () {
+        $this->runtime->runBlocking(function () {
             $this->start();
             $this->awaitReady();
 
             $this->log('Both sources ready — watching for updates');
 
-            // Install signal handlers for graceful shutdown
             $shutdownOnce = false;
             $signalHandler = function () use (&$shutdownOnce) {
                 if ($shutdownOnce) {
                     return;
                 }
                 $shutdownOnce = true;
-
                 $this->log('Received shutdown signal');
                 $this->shutdown();
             };
 
-            \Swoole\Coroutine::create(function () use ($signalHandler) {
-                // Use Swoole's process signal handling inside coroutine
-                $chan = new \Swoole\Coroutine\Channel(1);
+            // Signal handler coroutine
+            $this->runtime->spawn(function () use ($signalHandler) {
+                $chan = $this->runtime->createChannel(1);
 
                 pcntl_signal(SIGTERM, function () use ($chan) {
                     $chan->push(true);
@@ -225,20 +227,19 @@ final class SpiffeWorkloadWatcher
                     $chan->push(true);
                 });
 
-                // Tick loop for signal dispatch
                 while ($this->running) {
                     pcntl_signal_dispatch();
                     if (!$chan->isEmpty()) {
                         $signalHandler();
                         break;
                     }
-                    \Swoole\Coroutine::sleep(0.5);
+                    $this->runtime->sleep(0.5);
                 }
             });
 
-            // Block the main coroutine until shutdown
+            // Block until shutdown
             while ($this->running) {
-                \Swoole\Coroutine::sleep(1.0);
+                $this->runtime->sleep(1.0);
             }
 
             $this->log('Watcher stopped');
@@ -263,8 +264,8 @@ final class SpiffeWorkloadWatcher
 
         $this->running = true;
 
-        $this->x509Source = new X509Source($this->config);
-        $this->jwtSource = new JwtSource($this->config);
+        $this->x509Source = new X509Source($this->config, $this->runtime);
+        $this->jwtSource = new JwtSource($this->config, $this->runtime);
 
         // Wire up internal observers
         $this->wireObservers();
@@ -317,7 +318,7 @@ final class SpiffeWorkloadWatcher
                 throw new \RuntimeException('Watcher was shut down before sources became ready');
             }
 
-            \Swoole\Coroutine::sleep(0.1);
+            $this->runtime->sleep(0.1);
         }
 
         // Notify onReady observers

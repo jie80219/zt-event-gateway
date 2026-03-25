@@ -6,7 +6,10 @@ namespace Spiffe\Source;
 
 use Spiffe\Bundle\JwtBundle;
 use Spiffe\JwtSvid;
-use Spiffe\SwooleSpiffeWorkloadAPIClient;
+use Spiffe\Runtime\ChannelInterface;
+use Spiffe\Runtime\RuntimeDetector;
+use Spiffe\Runtime\RuntimeInterface;
+use Spiffe\SpiffeWorkloadAPIClient;
 use Spiffe\TrustDomain;
 use Spiffe\Validation\JwtSvidValidator;
 use Spiffe\Workload\JWTBundlesResponse;
@@ -47,22 +50,17 @@ final class JwtSource
 {
     private SourceState $state = SourceState::Idle;
     private SourceConfig $config;
+    private RuntimeInterface $runtime;
 
-    /** @var SwooleSpiffeWorkloadAPIClient|null Persistent client for the bundle stream */
-    private ?SwooleSpiffeWorkloadAPIClient $streamClient = null;
+    private ?SpiffeWorkloadAPIClient $streamClient = null;
+    private ?SpiffeWorkloadAPIClient $fetchClient = null;
 
-    /** @var SwooleSpiffeWorkloadAPIClient|null Separate client for on-demand SVID fetches */
-    private ?SwooleSpiffeWorkloadAPIClient $fetchClient = null;
-
-    // ── Cached bundles (atomically swapped) ──────────────────────────
     /** @var array<string, JwtBundle> Keyed by trust domain name */
     private array $bundles = [];
 
-    // ── Retry state ──────────────────────────────────────────────────
     private int $consecutiveErrors = 0;
     private ?\Throwable $lastError = null;
 
-    // ── Observer callbacks ───────────────────────────────────────────
     /** @var list<callable(array<string, JwtBundle>): void> */
     private array $onBundleUpdated = [];
 
@@ -72,16 +70,13 @@ final class JwtSource
     /** @var list<callable(\Throwable): void> */
     private array $onError = [];
 
-    // ── Coroutine synchronization ────────────────────────────────────
-    /** @var \Swoole\Coroutine\Channel|null */
-    private $readyChannel = null;
-
-    /** @var int|null Watcher coroutine ID */
+    private ?ChannelInterface $readyChannel = null;
     private ?int $watcherCid = null;
 
-    public function __construct(?SourceConfig $config = null)
+    public function __construct(?SourceConfig $config = null, ?RuntimeInterface $runtime = null)
     {
         $this->config = $config ?? new SourceConfig();
+        $this->runtime = $runtime ?? RuntimeDetector::detect();
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -100,9 +95,9 @@ final class JwtSource
         $this->assertTransition(SourceState::Initializing);
         $this->transition(SourceState::Initializing);
 
-        $this->readyChannel = new \Swoole\Coroutine\Channel(1);
+        $this->readyChannel = $this->runtime->createChannel(1);
 
-        $this->watcherCid = \Swoole\Coroutine::create(function () {
+        $this->watcherCid = $this->runtime->spawn(function () {
             $this->bundleWatchLoop();
         });
     }
@@ -118,7 +113,7 @@ final class JwtSource
 
         $this->transition(SourceState::Closed);
 
-        if ($this->readyChannel !== null && $this->readyChannel->stats()['consumer_num'] > 0) {
+        if ($this->readyChannel !== null && $this->readyChannel->consumerCount() > 0) {
             $this->readyChannel->push(false);
         }
 
@@ -359,7 +354,7 @@ final class JwtSource
     {
         while ($this->state !== SourceState::Closed) {
             try {
-                $this->streamClient = new SwooleSpiffeWorkloadAPIClient(
+                $this->streamClient = new SpiffeWorkloadAPIClient(
                     $this->config->socketPath,
                     $this->config->connectTimeout,
                     $this->config->streamTimeout > 0 ? $this->config->streamTimeout : 30.0,
@@ -397,14 +392,14 @@ final class JwtSource
             $this->consecutiveErrors++;
 
             if ($this->config->maxRetries > 0 && $this->consecutiveErrors > $this->config->maxRetries) {
-                if ($this->readyChannel !== null && $this->readyChannel->stats()['consumer_num'] > 0) {
+                if ($this->readyChannel !== null && $this->readyChannel->consumerCount() > 0) {
                     $this->readyChannel->push(false);
                 }
                 break;
             }
 
             $delay = $this->config->backoffDelay($this->consecutiveErrors);
-            \Swoole\Coroutine::sleep($delay);
+            $this->runtime->sleep($delay);
 
             if ($this->state === SourceState::Error) {
                 $this->transition(SourceState::Initializing);
@@ -484,7 +479,7 @@ final class JwtSource
             return;
         }
 
-        $this->fetchClient = new SwooleSpiffeWorkloadAPIClient(
+        $this->fetchClient = new SpiffeWorkloadAPIClient(
             $this->config->socketPath,
             $this->config->connectTimeout,
             $this->config->streamTimeout > 0 ? $this->config->streamTimeout : 30.0,
