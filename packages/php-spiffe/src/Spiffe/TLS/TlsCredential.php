@@ -7,7 +7,7 @@ namespace Spiffe\TLS;
 /**
  * Immutable snapshot of X.509 TLS material in PEM format, with managed
  * temporary file paths for consumers that require on-disk certificates
- * (Swoole Server, Workerman, curl, etc.).
+ * (Workerman, curl, Guzzle, etc.).
  *
  * ┌──────────────────────────────────────────────────────────────────┐
  * │                        TlsCredential                             │

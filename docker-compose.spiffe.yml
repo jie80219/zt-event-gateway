@@ -67,7 +67,7 @@ services:
     ports:
       - "8081:8081"
     healthcheck:
-      test: ["/opt/spire/bin/spire-server", "healthcheck"]
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -92,7 +92,7 @@ services:
       - spire-agent-sockets:/run/spire/sockets
       - spire-agent-data:/opt/spire/data/agent
     healthcheck:
-      test: ["/opt/spire/bin/spire-agent", "healthcheck"]
+      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck"]
       interval: 5s
       timeout: 3s
       retries: 30

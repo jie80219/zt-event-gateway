@@ -4,388 +4,217 @@ declare(strict_types=1);
 
 namespace Spiffe\SharedMemory;
 
-use Swoole\Table;
-
 /**
- * Reader-side adapter: reads SPIFFE credentials from Swoole Table shared
- * memory with seqlock consistency guarantees.
+ * Reader-side: reads SPIFFE credentials from the shared filesystem store
+ * with seqlock-style consistency via the version counter in meta.json.
  *
- * Designed for worker processes that do NOT run the watcher. This class
- * is lightweight — no gRPC client, no coroutine, no Source dependency.
- * Just shared memory reads.
- *
- * ┌──────────────────────────────────────────────────────────────────────┐
- * │                    Multi-Process Architecture                        │
- * │                                                                      │
- * │  ┌─────────────┐                    ┌─────────────┐                 │
- * │  │  Watcher     │                    │  Worker #1  │                 │
- * │  │  Process     │   Swoole Table     │  Process    │                 │
- * │  │              │   (shared memory)  │             │                 │
- * │  │ X509Source ──┼──▶ spiffe_x509  ──▶│ TableReader │                 │
- * │  │ JwtSource  ──┼──▶ spiffe_jwt   ──▶│             │                 │
- * │  │              │   spiffe_meta      │             │                 │
- * │  └─────────────┘                    └─────────────┘                 │
- * │                                      ┌─────────────┐                │
- * │                                      │  Worker #2  │                │
- * │                                      │  Process    │                │
- * │                                      │ TableReader │                │
- * │                                      └─────────────┘                │
- * │                                            ⋮                        │
- * └──────────────────────────────────────────────────────────────────────┘
+ * Designed for worker processes — lightweight, no gRPC or coroutine dependency.
  *
  * Seqlock read protocol:
- *
- *   1. Read version → if odd, spin-wait (writer is mid-update)
- *   2. Read all data fields
- *   3. Read version again → if changed, goto 1
+ *   1. Read meta.json version → if odd, retry (writer is mid-update)
+ *   2. Read data file(s)
+ *   3. Read meta.json version again → if changed, retry
  *   4. Return data
  */
 final class SpiffeTableReader
 {
-    /** Maximum spin-wait iterations before giving up. */
-    private const MAX_SPIN = 1000;
+    private const MAX_SPIN = 200;
+    private const SPIN_SLEEP_US = 500;
 
-    /** Microseconds to sleep between spin iterations. */
-    private const SPIN_SLEEP_US = 100;
+    private string $baseDir;
 
-    private Table $meta;
-    private Table $x509;
-    private Table $jwt;
-
-    public function __construct(Table $meta, Table $x509, Table $jwt)
+    public function __construct(string $baseDir = SpiffeTableSchema::DEFAULT_BASE_DIR)
     {
-        $this->meta = $meta;
-        $this->x509 = $x509;
-        $this->jwt = $jwt;
+        $this->baseDir = rtrim($baseDir, '/');
     }
 
-    /**
-     * @param array{meta: Table, x509: Table, jwt: Table} $tables
-     */
-    public static function fromTables(array $tables): self
-    {
-        return new self($tables['meta'], $tables['x509'], $tables['jwt']);
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    //  X.509 credential reads
-    // ══════════════════════════════════════════════════════════════════
+    // ── X.509 credential reads ───────────────────────────────────
 
     /**
-     * Read the primary (slot 0) X.509 SVID PEM material.
-     *
-     * Returns null if no credentials have been published yet.
-     *
-     * @return array{
-     *     spiffe_id: string,
-     *     trust_domain: string,
-     *     cert_pem: string,
-     *     key_pem: string,
-     *     bundle_pem: string,
-     *     hint: string,
-     *     updated_at: int,
-     * }|null
+     * @return array{spiffe_id:string, trust_domain:string, cert_pem:string, key_pem:string, bundle_pem:string, hint:string, updated_at:int}|null
      */
     public function readX509Primary(): ?array
     {
         return $this->readX509Slot(0);
     }
 
-    /**
-     * Read a specific X.509 SVID slot with seqlock consistency.
-     *
-     * @return array{
-     *     spiffe_id: string,
-     *     trust_domain: string,
-     *     cert_pem: string,
-     *     key_pem: string,
-     *     bundle_pem: string,
-     *     hint: string,
-     *     updated_at: int,
-     * }|null
-     */
     public function readX509Slot(int $slot): ?array
     {
-        $key = (string) $slot;
-
-        for ($spin = 0; $spin < self::MAX_SPIN; $spin++) {
-            $v1 = $this->meta->get('global', 'version');
-
-            // Odd version → writer is in the middle of an update
-            if ($v1 & 1) {
-                usleep(self::SPIN_SLEEP_US);
-                continue;
-            }
-
-            $row = $this->x509->get($key);
-            if ($row === false) {
-                return null;
-            }
-
-            $v2 = $this->meta->get('global', 'version');
-
-            // Version unchanged → consistent snapshot
-            if ($v1 === $v2) {
-                unset($row['version']);
-                return $row;
-            }
-
-            // Version changed → writer was active, retry
-            usleep(self::SPIN_SLEEP_US);
-        }
-
-        // Exceeded max spins — return best-effort or null
-        return null;
+        $path = "{$this->baseDir}/x509/{$slot}.json";
+        return $this->consistentRead(fn() => $this->readJsonFile($path));
     }
 
     /**
-     * Read all X.509 SVID slots with seqlock consistency.
-     *
-     * Returns a consistent snapshot of ALL slots within a single version window.
-     *
-     * @return list<array{
-     *     spiffe_id: string,
-     *     trust_domain: string,
-     *     cert_pem: string,
-     *     key_pem: string,
-     *     bundle_pem: string,
-     *     hint: string,
-     *     updated_at: int,
-     * }>
+     * @return list<array{spiffe_id:string, trust_domain:string, cert_pem:string, key_pem:string, bundle_pem:string, hint:string, updated_at:int}>
      */
     public function readAllX509(): array
     {
-        for ($spin = 0; $spin < self::MAX_SPIN; $spin++) {
-            $v1 = $this->meta->get('global', 'version');
-
-            if ($v1 & 1) {
-                usleep(self::SPIN_SLEEP_US);
-                continue;
-            }
-
-            $count = $this->meta->get('global', 'x509_count');
+        return $this->consistentRead(function () {
+            $meta = $this->readMetaRaw();
+            $count = $meta['x509_count'] ?? 0;
             $svids = [];
-
             for ($i = 0; $i < $count; $i++) {
-                $row = $this->x509->get((string) $i);
-                if ($row !== false) {
-                    unset($row['version']);
+                $row = $this->readJsonFile("{$this->baseDir}/x509/{$i}.json");
+                if ($row !== null) {
                     $svids[] = $row;
                 }
             }
-
-            $v2 = $this->meta->get('global', 'version');
-
-            if ($v1 === $v2) {
-                return $svids;
-            }
-
-            usleep(self::SPIN_SLEEP_US);
-        }
-
-        return [];
+            return $svids;
+        }) ?? [];
     }
 
-    /**
-     * Find an X.509 SVID by hint value.
-     *
-     * @return array{
-     *     spiffe_id: string,
-     *     trust_domain: string,
-     *     cert_pem: string,
-     *     key_pem: string,
-     *     bundle_pem: string,
-     *     hint: string,
-     *     updated_at: int,
-     * }|null
-     */
     public function readX509ByHint(string $hint): ?array
     {
-        $all = $this->readAllX509();
-
-        foreach ($all as $svid) {
+        foreach ($this->readAllX509() as $svid) {
             if ($svid['hint'] === $hint) {
                 return $svid;
             }
         }
-
         return null;
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    //  JWT bundle reads
-    // ══════════════════════════════════════════════════════════════════
+    // ── JWT bundle reads ─────────────────────────────────────────
 
     /**
-     * Read the JWT bundle (JWKS JSON) for a specific trust domain.
-     *
-     * @return array{
-     *     trust_domain: string,
-     *     jwks_json: string,
-     *     updated_at: int,
-     * }|null
+     * @return array{trust_domain:string, jwks_json:string, updated_at:int}|null
      */
     public function readJwtBundle(string $trustDomain): ?array
     {
-        for ($spin = 0; $spin < self::MAX_SPIN; $spin++) {
-            $v1 = $this->meta->get('global', 'version');
-
-            if ($v1 & 1) {
-                usleep(self::SPIN_SLEEP_US);
-                continue;
-            }
-
-            $row = $this->jwt->get($trustDomain);
-            if ($row === false) {
-                return null;
-            }
-
-            $v2 = $this->meta->get('global', 'version');
-
-            if ($v1 === $v2) {
-                unset($row['version']);
-                return $row;
-            }
-
-            usleep(self::SPIN_SLEEP_US);
-        }
-
-        return null;
+        $safeName = preg_replace('/[^a-z0-9._-]/', '_', strtolower($trustDomain));
+        $path = "{$this->baseDir}/jwt/{$safeName}.json";
+        return $this->consistentRead(fn() => $this->readJsonFile($path));
     }
 
     /**
-     * Read all JWT bundles with seqlock consistency.
-     *
-     * @return array<string, array{
-     *     trust_domain: string,
-     *     jwks_json: string,
-     *     updated_at: int,
-     * }>  Keyed by trust domain name
+     * @return array<string, array{trust_domain:string, jwks_json:string, updated_at:int}>
      */
     public function readAllJwtBundles(): array
     {
-        for ($spin = 0; $spin < self::MAX_SPIN; $spin++) {
-            $v1 = $this->meta->get('global', 'version');
-
-            if ($v1 & 1) {
-                usleep(self::SPIN_SLEEP_US);
-                continue;
-            }
-
+        return $this->consistentRead(function () {
             $bundles = [];
-            foreach ($this->jwt as $key => $row) {
-                unset($row['version']);
-                $bundles[$key] = $row;
+            foreach (glob("{$this->baseDir}/jwt/*.json") as $file) {
+                $row = $this->readJsonFile($file);
+                if ($row !== null && isset($row['trust_domain'])) {
+                    $bundles[$row['trust_domain']] = $row;
+                }
             }
-
-            $v2 = $this->meta->get('global', 'version');
-
-            if ($v1 === $v2) {
-                return $bundles;
-            }
-
-            usleep(self::SPIN_SLEEP_US);
-        }
-
-        return [];
+            return $bundles;
+        }) ?? [];
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    //  Metadata / health queries
-    // ══════════════════════════════════════════════════════════════════
+    // ── Metadata / health ────────────────────────────────────────
 
-    /**
-     * Get the current metadata snapshot.
-     *
-     * @return array{
-     *     version: int,
-     *     x509_state: string,
-     *     jwt_state: string,
-     *     x509_count: int,
-     *     jwt_count: int,
-     *     updated_at: int,
-     *     error: string,
-     * }
-     */
     public function readMeta(): array
     {
-        return $this->meta->get('global') ?: [
-            'version'    => 0,
-            'x509_state' => 'idle',
-            'jwt_state'  => 'idle',
-            'x509_count' => 0,
-            'jwt_count'  => 0,
-            'updated_at' => 0,
-            'error'      => '',
-        ];
+        return $this->readMetaRaw();
     }
 
-    /**
-     * Check if both X.509 and JWT sources are in Ready state.
-     */
     public function isReady(): bool
     {
-        $meta = $this->readMeta();
+        $meta = $this->readMetaRaw();
         return $meta['x509_state'] === 'ready' && $meta['jwt_state'] === 'ready';
     }
 
-    /**
-     * Check if any credentials have been published.
-     */
     public function hasCredentials(): bool
     {
-        $meta = $this->readMeta();
-        return $meta['x509_count'] > 0;
+        return ($this->readMetaRaw()['x509_count'] ?? 0) > 0;
     }
 
-    /**
-     * Get the global version counter (even = stable, odd = write in progress).
-     */
     public function version(): int
     {
-        return $this->meta->get('global', 'version') ?: 0;
+        return $this->readMetaRaw()['version'] ?? 0;
     }
 
-    /**
-     * Seconds since the last credential update. Returns -1 if never updated.
-     */
     public function secondsSinceLastUpdate(): int
     {
-        $updatedAt = $this->meta->get('global', 'updated_at') ?: 0;
-        if ($updatedAt === 0) {
-            return -1;
-        }
-        return time() - $updatedAt;
+        $updatedAt = $this->readMetaRaw()['updated_at'] ?? 0;
+        return $updatedAt > 0 ? time() - $updatedAt : -1;
     }
 
     /**
-     * Block until credentials are available, with timeout.
+     * Block until credentials are available.
      *
-     * Uses polling with exponential backoff. Suitable for worker process
-     * startup when the watcher may not have fetched credentials yet.
-     *
-     * @param float $timeout Seconds to wait (0 = indefinite)
-     * @throws \RuntimeException if timeout expires
+     * @param float $timeout Seconds (0 = indefinite)
+     * @throws \RuntimeException on timeout
      */
     public function awaitReady(float $timeout = 30.0): void
     {
         $deadline = $timeout > 0 ? microtime(true) + $timeout : PHP_FLOAT_MAX;
-        $sleep = 10_000; // start at 10ms
+        $sleep = 10_000; // 10ms
 
         while (!$this->hasCredentials()) {
             if (microtime(true) > $deadline) {
-                $meta = $this->readMeta();
+                $meta = $this->readMetaRaw();
                 throw new \RuntimeException(sprintf(
-                    'Timed out waiting for SPIFFE credentials in shared memory '
-                    . '(x509_state: %s, jwt_state: %s, error: %s)',
-                    $meta['x509_state'],
-                    $meta['jwt_state'],
-                    $meta['error'] ?: 'none',
+                    'Timed out waiting for SPIFFE credentials (x509_state: %s, jwt_state: %s, error: %s)',
+                    $meta['x509_state'] ?? 'unknown',
+                    $meta['jwt_state'] ?? 'unknown',
+                    $meta['error'] ?? 'none',
                 ));
             }
-
             usleep($sleep);
-            $sleep = min($sleep * 2, 1_000_000); // cap at 1s
+            $sleep = min($sleep * 2, 1_000_000);
         }
+    }
+
+    // ── Internal ─────────────────────────────────────────────────
+
+    private function readMetaRaw(): array
+    {
+        $path = "{$this->baseDir}/meta.json";
+        if (!file_exists($path)) {
+            return [
+                'version' => 0, 'x509_state' => 'idle', 'jwt_state' => 'idle',
+                'x509_count' => 0, 'jwt_count' => 0, 'updated_at' => 0, 'error' => '',
+            ];
+        }
+        $data = @file_get_contents($path);
+        if ($data === false) {
+            return ['version' => 0, 'x509_state' => 'idle', 'jwt_state' => 'idle',
+                'x509_count' => 0, 'jwt_count' => 0, 'updated_at' => 0, 'error' => ''];
+        }
+        return json_decode($data, true, 8) ?? ['version' => 0];
+    }
+
+    private function readJsonFile(string $path): ?array
+    {
+        if (!file_exists($path)) {
+            return null;
+        }
+        $data = @file_get_contents($path);
+        if ($data === false) {
+            return null;
+        }
+        return json_decode($data, true, 16) ?: null;
+    }
+
+    /**
+     * Seqlock consistent read: ensures the version didn't change during the read.
+     *
+     * @template T
+     * @param callable(): T $readFn
+     * @return T|null
+     */
+    private function consistentRead(callable $readFn): mixed
+    {
+        for ($spin = 0; $spin < self::MAX_SPIN; $spin++) {
+            $v1 = $this->readMetaRaw()['version'] ?? 0;
+
+            if ($v1 & 1) {
+                usleep(self::SPIN_SLEEP_US);
+                continue;
+            }
+
+            $result = $readFn();
+
+            $v2 = $this->readMetaRaw()['version'] ?? 0;
+            if ($v1 === $v2) {
+                return $result;
+            }
+
+            usleep(self::SPIN_SLEEP_US);
+        }
+
+        return null;
     }
 }

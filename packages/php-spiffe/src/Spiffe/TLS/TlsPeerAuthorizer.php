@@ -200,29 +200,6 @@ final class TlsPeerAuthorizer
         return $this->authorizeFromPem($peerCertPem);
     }
 
-    /**
-     * Authorize from a Swoole connection's peer certificate.
-     *
-     * For Swoole Server with ssl_verify_peer enabled, the peer cert
-     * is accessible via the connection info.
-     *
-     * @param \Swoole\Server $server
-     * @param int $fd  Connection file descriptor
-     */
-    public function authorizeSwooleConnection(object $server, int $fd): AuthorizationResult
-    {
-        if (!method_exists($server, 'getClientCert')) {
-            return $this->denied('Swoole server does not support getClientCert()');
-        }
-
-        $peerCertPem = $server->getClientCert($fd);
-        if ($peerCertPem === false || $peerCertPem === '') {
-            return $this->denied('No client certificate available for this Swoole connection');
-        }
-
-        return $this->authorizeFromPem($peerCertPem);
-    }
-
     // ══════════════════════════════════════════════════════════════════
     //  Policy access
     // ══════════════════════════════════════════════════════════════════

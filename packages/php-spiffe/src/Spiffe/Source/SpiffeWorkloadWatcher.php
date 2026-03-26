@@ -6,13 +6,15 @@ namespace Spiffe\Source;
 
 use Spiffe\Bundle\JwtBundle;
 use Spiffe\Bundle\X509Bundle;
+use Spiffe\Runtime\RuntimeDetector;
+use Spiffe\Runtime\RuntimeInterface;
 use Spiffe\SharedMemory\SpiffeTableStore;
 use Spiffe\X509Svid;
 
 /**
  * Top-level orchestrator for the SPIFFE Workload API watcher.
  *
- * Manages both X509Source and JwtSource within a Swoole coroutine runtime,
+ * Manages both X509Source and JwtSource within a Swow coroutine runtime,
  * providing a single entry point for the entire SPIFFE credential subsystem.
  *
  * ┌──────────────────────────────────────────────────────────────────┐
@@ -41,9 +43,9 @@ use Spiffe\X509Svid;
  *
  *   $watcher = new SpiffeWorkloadWatcher($config);
  *   $watcher->onReady(function ($x509, $jwt) { ... });
- *   $watcher->run();   // blocks — enters Swoole coroutine runtime
+ *   $watcher->run();   // blocks — enters coroutine runtime
  *
- * For non-blocking integration (inside an existing Swoole runtime):
+ * For non-blocking integration (inside an existing coroutine context):
  *
  *   $watcher->start();           // spawns coroutines, returns immediately
  *   $watcher->awaitReady();      // blocks current coroutine until both sources ready
@@ -54,6 +56,7 @@ use Spiffe\X509Svid;
 final class SpiffeWorkloadWatcher
 {
     private SourceConfig $config;
+    private RuntimeInterface $runtime;
     private ?X509Source $x509Source = null;
     private ?JwtSource $jwtSource = null;
     private bool $running = false;
@@ -61,7 +64,7 @@ final class SpiffeWorkloadWatcher
     // ── PEM file output ──────────────────────────────────────────────
     private ?string $pemDir = null;
 
-    // ── Shared memory (Swoole Table) ─────────────────────────────────
+    // ── Shared memory (file-based cross-process store) ─────────────────
     private ?SpiffeTableStore $tableStore = null;
 
     // ── Observer callbacks ───────────────────────────────────────────
@@ -80,9 +83,10 @@ final class SpiffeWorkloadWatcher
     /** @var callable(string): void */
     private $logger;
 
-    public function __construct(?SourceConfig $config = null)
+    public function __construct(?SourceConfig $config = null, ?RuntimeInterface $runtime = null)
     {
         $this->config = $config ?? new SourceConfig();
+        $this->runtime = $runtime ?? RuntimeDetector::detect();
         $this->logger = static function (string $msg): void {
             fwrite(STDOUT, sprintf("[spiffe-watcher] %s %s\n", date('Y-m-d\TH:i:s'), $msg));
         };
@@ -110,14 +114,13 @@ final class SpiffeWorkloadWatcher
     }
 
     /**
-     * Enable cross-process credential sharing via Swoole Table.
+     * Enable cross-process credential sharing via the filesystem store.
      *
      * When set, the watcher atomically publishes credentials to shared
-     * memory on each rotation. Worker processes use SpiffeTableReader
-     * to access the same tables without running their own gRPC streams.
+     * files on each rotation. Worker processes use SpiffeTableReader
+     * to access the same data without running their own gRPC streams.
      *
-     * IMPORTANT: The Swoole Tables must be created BEFORE Server::start()
-     * or process forking. Pass tables created by SpiffeTableSchema::createAll().
+     * Call SpiffeTableSchema::createAll() before starting the watcher.
      */
     public function withSharedMemory(SpiffeTableStore $store): self
     {
@@ -183,40 +186,38 @@ final class SpiffeWorkloadWatcher
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  Blocking entry point (creates Swoole runtime)
+    //  Blocking entry point (creates coroutine runtime)
     // ══════════════════════════════════════════════════════════════════
 
     /**
      * Run the watcher as a standalone blocking process.
      *
-     * This creates a Swoole coroutine runtime, starts both sources,
+     * This enters the coroutine runtime, starts both sources,
      * installs signal handlers, and blocks until SIGTERM/SIGINT.
      *
      * Use this from bin/spiffe-watcher.php.
      */
     public function run(): void
     {
-        \Swoole\Coroutine\run(function () {
+        $this->runtime->runBlocking(function () {
             $this->start();
             $this->awaitReady();
 
             $this->log('Both sources ready — watching for updates');
 
-            // Install signal handlers for graceful shutdown
             $shutdownOnce = false;
             $signalHandler = function () use (&$shutdownOnce) {
                 if ($shutdownOnce) {
                     return;
                 }
                 $shutdownOnce = true;
-
                 $this->log('Received shutdown signal');
                 $this->shutdown();
             };
 
-            \Swoole\Coroutine::create(function () use ($signalHandler) {
-                // Use Swoole's process signal handling inside coroutine
-                $chan = new \Swoole\Coroutine\Channel(1);
+            // Signal handler coroutine
+            $this->runtime->spawn(function () use ($signalHandler) {
+                $chan = $this->runtime->createChannel(1);
 
                 pcntl_signal(SIGTERM, function () use ($chan) {
                     $chan->push(true);
@@ -225,20 +226,19 @@ final class SpiffeWorkloadWatcher
                     $chan->push(true);
                 });
 
-                // Tick loop for signal dispatch
                 while ($this->running) {
                     pcntl_signal_dispatch();
                     if (!$chan->isEmpty()) {
                         $signalHandler();
                         break;
                     }
-                    \Swoole\Coroutine::sleep(0.5);
+                    $this->runtime->sleep(0.5);
                 }
             });
 
-            // Block the main coroutine until shutdown
+            // Block until shutdown
             while ($this->running) {
-                \Swoole\Coroutine::sleep(1.0);
+                $this->runtime->sleep(1.0);
             }
 
             $this->log('Watcher stopped');
@@ -246,11 +246,11 @@ final class SpiffeWorkloadWatcher
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  Non-blocking entry point (for existing Swoole runtimes)
+    //  Non-blocking entry point (for existing coroutine contexts)
     // ══════════════════════════════════════════════════════════════════
 
     /**
-     * Start both sources within the current Swoole coroutine context.
+     * Start both sources within the current coroutine context.
      *
      * Returns immediately — the sources spawn their own watcher coroutines.
      * Call awaitReady() if you need to block until material is available.
@@ -263,8 +263,8 @@ final class SpiffeWorkloadWatcher
 
         $this->running = true;
 
-        $this->x509Source = new X509Source($this->config);
-        $this->jwtSource = new JwtSource($this->config);
+        $this->x509Source = new X509Source($this->config, $this->runtime);
+        $this->jwtSource = new JwtSource($this->config, $this->runtime);
 
         // Wire up internal observers
         $this->wireObservers();
@@ -303,7 +303,7 @@ final class SpiffeWorkloadWatcher
 
         $deadline = $timeout > 0 ? microtime(true) + $timeout : PHP_FLOAT_MAX;
 
-        // Poll both sources until ready (Swoole coroutine-friendly)
+        // Poll both sources until ready (coroutine-friendly)
         while (!$this->x509Source->isReady() || !$this->jwtSource->isReady()) {
             if (microtime(true) > $deadline) {
                 throw new \RuntimeException(sprintf(
@@ -317,7 +317,7 @@ final class SpiffeWorkloadWatcher
                 throw new \RuntimeException('Watcher was shut down before sources became ready');
             }
 
-            \Swoole\Coroutine::sleep(0.1);
+            $this->runtime->sleep(0.1);
         }
 
         // Notify onReady observers
@@ -530,11 +530,11 @@ final class SpiffeWorkloadWatcher
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  Internal: Swoole Table shared memory writer
+    //  Internal: shared memory writer
     // ══════════════════════════════════════════════════════════════════
 
     /**
-     * Wire the Swoole Table store to source lifecycle events.
+     * Wire the shared store to source lifecycle events.
      *
      * On each rotation:
      *   - X.509 SVIDs → serialized as PEM into spiffe_x509 table
@@ -553,9 +553,8 @@ final class SpiffeWorkloadWatcher
                 $store->publishX509($svids);
                 $store->clearError();
                 $this->log(sprintf(
-                    'Shared memory: published %d X.509 SVID(s) (version %d)',
+                    'Shared memory: published %d X.509 SVID(s)',
                     count($svids),
-                    $store->metaTable()->get('global', 'version'),
                 ));
             } catch (\Throwable $e) {
                 $store->updateError("X509 publish failed: {$e->getMessage()}");
@@ -587,9 +586,8 @@ final class SpiffeWorkloadWatcher
                 $store->publishJwtBundles($bundleMap);
                 $store->clearError();
                 $this->log(sprintf(
-                    'Shared memory: published %d JWT bundle(s) (version %d)',
+                    'Shared memory: published %d JWT bundle(s)',
                     count($bundleMap),
-                    $store->metaTable()->get('global', 'version'),
                 ));
             } catch (\Throwable $e) {
                 $store->updateError("JWT publish failed: {$e->getMessage()}");

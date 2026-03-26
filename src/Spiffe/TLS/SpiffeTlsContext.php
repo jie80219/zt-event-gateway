@@ -19,17 +19,16 @@ use Spiffe\X509Svid;
  * │                                                                      │
  * │    Credential Source                 Output Adapters                  │
  * │   ┌─────────────────┐                                               │
- * │   │ SpiffeTableReader│──┐   ┌─▶ forSwooleServer()   → Swoole conf   │
- * │   │ (shared memory)  │  │   │                                        │
- * │   └─────────────────┘  │   ├─▶ forSwooleClient()   → Swoole SSL     │
- * │           OR           ├───┤                                        │
- * │   ┌─────────────────┐  │   ├─▶ forStreamContext()   → PHP streams   │
+ * │   │ SpiffeTableReader│──┐   ┌─▶ forStreamContext()  → PHP streams   │
+ * │   │ (shared files)   │  │   │                                        │
+ * │   └─────────────────┘  ├───┼─▶ forGuzzle()         → Guzzle opts   │
+ * │           OR           │   │                                        │
+ * │   ┌─────────────────┐  │   ├─▶ forWorkerman()      → Workerman ctx │
  * │   │ X509Source       │──┘   │                                        │
- * │   │ (coroutine)      │      ├─▶ forGuzzle()         → Guzzle opts   │
- * │   └─────────────────┘      │                                        │
- * │                             ├─▶ forWorkerman()      → Workerman ctx │
- * │   ┌─────────────────┐      │                                        │
- * │   │ TlsCredential   │◀─────┘  (current cached snapshot)            │
+ * │   │ (coroutine)      │      └─▶ applyCurl()         → cURL handle  │
+ * │   └─────────────────┘                                               │
+ * │   ┌─────────────────┐                                               │
+ * │   │ TlsCredential   │  (current cached snapshot)                    │
  * │   │ (PEM + files)    │                                               │
  * │   └─────────────────┘                                               │
  * └──────────────────────────────────────────────────────────────────────┘
@@ -39,7 +38,7 @@ use Spiffe\X509Svid;
  *
  * Two construction modes:
  *
- *   // Worker process — reads from Swoole Table shared memory
+ *   // Worker process — reads from shared filesystem store
  *   $ctx = SpiffeTlsContext::fromReader($reader);
  *
  *   // Coroutine context — reads directly from X509Source
@@ -172,94 +171,8 @@ final class SpiffeTlsContext
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  Swoole Server — SSL server configuration
-    // ══════════════════════════════════════════════════════════════════
-
-    /**
-     * Configuration array for Swoole\Http\Server or Swoole\Server::set().
-     *
-     * Usage:
-     *   $server = new Swoole\Http\Server('0.0.0.0', 8443, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
-     *   $server->set($ctx->forSwooleServer());
-     *
-     * @param list<string>|null $allowedPeerIds  If set, enables mTLS and restricts
-     *                                           peers to these SPIFFE IDs
-     * @return array<string, mixed>
-     */
-    public function forSwooleServer(?array $allowedPeerIds = null): array
-    {
-        $cred = $this->current();
-        $files = $cred->materializeFiles();
-
-        $config = [
-            'ssl_cert_file'   => $files['cert'],
-            'ssl_key_file'    => $files['key'],
-            'ssl_protocols'   => SWOOLE_SSL_TLSv1_2 | SWOOLE_SSL_TLSv1_3,
-            'ssl_ciphers'     => 'ECDHE+AESGCM:DHE+AESGCM:ECDHE+CHACHA20',
-        ];
-
-        // mTLS: require and verify client certificate
-        if ($allowedPeerIds !== null) {
-            $config['ssl_verify_peer']       = true;
-            $config['ssl_client_cert_file']  = $files['ca'];
-            $config['ssl_allow_self_signed'] = false;
-        }
-
-        return $config;
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    //  Swoole Client — SSL client configuration
-    // ══════════════════════════════════════════════════════════════════
-
-    /**
-     * Configuration array for Swoole\Coroutine\Client::set() or
-     * Swoole\Coroutine\Http\Client::set().
-     *
-     * Usage:
-     *   $client = new Swoole\Coroutine\Http\Client('peer', 8443, true);
-     *   $client->set($ctx->forSwooleClient());
-     *
-     * @param string|null $expectedPeerId  Expected peer SPIFFE ID for SAN validation
-     * @return array<string, mixed>
-     */
-    public function forSwooleClient(?string $expectedPeerId = null): array
-    {
-        $cred = $this->current();
-        $files = $cred->materializeFiles();
-
-        $config = [
-            'ssl_cert_file'       => $files['cert'],
-            'ssl_key_file'        => $files['key'],
-            'ssl_cafile'          => $files['ca'],
-            'ssl_verify_peer'     => true,
-            'ssl_allow_self_signed' => false,
-        ];
-
-        // If a specific peer SPIFFE ID is expected, set the SAN check
-        if ($expectedPeerId !== null) {
-            $config['ssl_host_name'] = $expectedPeerId;
-        }
-
-        return $config;
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    //  Swoole HTTP/2 Client — for gRPC or HTTP/2 connections
-    // ══════════════════════════════════════════════════════════════════
-
-    /**
-     * Configuration for Swoole\Coroutine\Http2\Client::set().
-     *
-     * @return array<string, mixed>
-     */
-    public function forSwooleHttp2Client(?string $expectedPeerId = null): array
-    {
-        return $this->forSwooleClient($expectedPeerId);
-    }
-
-    // ══════════════════════════════════════════════════════════════════
     //  PHP stream_context — for fopen(), file_get_contents(), etc.
+    //  (Swow hooks PHP streams, so this is the primary SSL API)
     // ══════════════════════════════════════════════════════════════════
 
     /**

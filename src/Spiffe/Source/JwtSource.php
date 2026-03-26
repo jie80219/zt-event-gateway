@@ -38,7 +38,7 @@ use Spiffe\Workload\JWTSVIDRequest;
  *                ▼                        ▼
  *              Closed ◀── (any state via close())
  *
- * Usage (inside Swoole\Coroutine\run):
+ * Usage (inside a Swow coroutine context):
  *
  *   $source = new JwtSource();
  *   $source->start();                                 // spawns bundle watcher

@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Spiffe\Source;
 
 use Spiffe\Bundle\X509Bundle;
-use Spiffe\SwooleSpiffeWorkloadAPIClient;
+use Spiffe\Runtime\ChannelInterface;
+use Spiffe\Runtime\RuntimeDetector;
+use Spiffe\Runtime\RuntimeInterface;
+use Spiffe\SpiffeWorkloadAPIClient;
 use Spiffe\TrustDomain;
 use Spiffe\Validation\X509SvidValidator;
 use Spiffe\X509Svid;
@@ -15,14 +18,14 @@ use Spiffe\Workload\X509SVIDResponse;
  * Managed X.509-SVID source with state-machine lifecycle.
  *
  * X509Source subscribes to the SPIRE Agent's FetchX509SVID server stream
- * within a Swoole coroutine, maintaining always-fresh X.509 material:
+ * within a Swow coroutine, maintaining always-fresh X.509 material:
  *
  *  - Automatic rotation: when the Agent pushes a new X509SVIDResponse,
  *    the source validates and atomically swaps the cached material
  *  - Resilient reconnection: on stream interruption, backs off and
  *    re-establishes the watch
  *  - Safe reads: callers access the current SVID/bundle snapshot via
- *    lock-free reads (Swoole single-thread coroutine model)
+ *    lock-free reads (Swow single-thread coroutine model)
  *  - Observer hooks: register callbacks for rotation, state changes,
  *    and errors
  *
@@ -36,7 +39,7 @@ use Spiffe\Workload\X509SVIDResponse;
  *                ▼                        ▼
  *              Closed ◀── (any state via close())
  *
- * Usage (inside Swoole\Coroutine\run):
+ * Usage (inside a Swow coroutine context):
  *
  *   $source = new X509Source();
  *   $source->start();                       // non-blocking, spawns watcher coroutine
@@ -49,9 +52,9 @@ final class X509Source
 {
     private SourceState $state = SourceState::Idle;
     private SourceConfig $config;
-    private ?SwooleSpiffeWorkloadAPIClient $client = null;
+    private RuntimeInterface $runtime;
+    private ?SpiffeWorkloadAPIClient $client = null;
 
-    // ── Cached material (atomically swapped) ─────────────────────────
     /** @var list<X509Svid> Current X.509 SVIDs (primary + any extras) */
     private array $svids = [];
 
@@ -61,11 +64,9 @@ final class X509Source
     /** @var array<string, X509Bundle> Federated bundles keyed by trust domain */
     private array $federatedBundles = [];
 
-    // ── Retry state ──────────────────────────────────────────────────
     private int $consecutiveErrors = 0;
     private ?\Throwable $lastError = null;
 
-    // ── Observer callbacks ───────────────────────────────────────────
     /** @var list<callable(list<X509Svid>, array<string, X509Bundle>): void> */
     private array $onRotated = [];
 
@@ -75,16 +76,13 @@ final class X509Source
     /** @var list<callable(\Throwable): void> */
     private array $onError = [];
 
-    // ── Coroutine synchronization ────────────────────────────────────
-    /** @var \Swoole\Coroutine\Channel|null Signals first-material readiness */
-    private $readyChannel = null;
-
-    /** @var int|null Watcher coroutine ID for cancellation */
+    private ?ChannelInterface $readyChannel = null;
     private ?int $watcherCid = null;
 
-    public function __construct(?SourceConfig $config = null)
+    public function __construct(?SourceConfig $config = null, ?RuntimeInterface $runtime = null)
     {
         $this->config = $config ?? new SourceConfig();
+        $this->runtime = $runtime ?? RuntimeDetector::detect();
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -110,9 +108,9 @@ final class X509Source
         $this->assertTransition(SourceState::Initializing);
         $this->transition(SourceState::Initializing);
 
-        $this->readyChannel = new \Swoole\Coroutine\Channel(1);
+        $this->readyChannel = $this->runtime->createChannel(1);
 
-        $this->watcherCid = \Swoole\Coroutine::create(function () {
+        $this->watcherCid = $this->runtime->spawn(function () {
             $this->watchLoop();
         });
     }
@@ -131,7 +129,7 @@ final class X509Source
         $this->transition(SourceState::Closed);
 
         // Signal any waiters in awaitReady()
-        if ($this->readyChannel !== null && $this->readyChannel->stats()['consumer_num'] > 0) {
+        if ($this->readyChannel !== null && $this->readyChannel->consumerCount() > 0) {
             $this->readyChannel->push(false);
         }
 
@@ -282,7 +280,7 @@ final class X509Source
     {
         while ($this->state !== SourceState::Closed) {
             try {
-                $this->client = new SwooleSpiffeWorkloadAPIClient(
+                $this->client = new SpiffeWorkloadAPIClient(
                     $this->config->socketPath,
                     $this->config->connectTimeout,
                     $this->config->streamTimeout > 0 ? $this->config->streamTimeout : 30.0,
@@ -322,15 +320,14 @@ final class X509Source
             $this->consecutiveErrors++;
 
             if ($this->config->maxRetries > 0 && $this->consecutiveErrors > $this->config->maxRetries) {
-                // Permanent failure — stay in Error, signal waiters
-                if ($this->readyChannel !== null && $this->readyChannel->stats()['consumer_num'] > 0) {
+                if ($this->readyChannel !== null && $this->readyChannel->consumerCount() > 0) {
                     $this->readyChannel->push(false);
                 }
                 break;
             }
 
             $delay = $this->config->backoffDelay($this->consecutiveErrors);
-            \Swoole\Coroutine::sleep($delay);
+            $this->runtime->sleep($delay);
 
             // Re-enter Initializing for reconnect
             if ($this->state === SourceState::Error) {
@@ -491,7 +488,7 @@ final class X509Source
             throw new \RuntimeException('X509Source has not been started — call start() first');
         }
 
-        // Block on the ready channel (Swoole coroutine-friendly)
+        // Block on the ready channel (coroutine-friendly)
         if ($this->readyChannel !== null) {
             $result = $this->readyChannel->pop();
             if ($result !== true) {

@@ -12,7 +12,20 @@
       "Bash(sed 's|/Users/jiezhiyang/zt-event-gateway/||')",
       "Bash(find /Users/jiezhiyang/zt-event-gateway/spiffe/spire-*-e2e -type f)",
       "Bash(ls /Users/jiezhiyang/zt-event-gateway/docker-compose*.yml)",
-      "Bash(bash packages/php-spiffe/split.sh)"
+      "Bash(bash packages/php-spiffe/split.sh)",
+      "Bash(find /Users/jiezhiyang/zt-event-gateway -path */tests/*Test.php -not -path */vendor/* -not -path */swow/*)",
+      "Bash(php -m)",
+      "Bash(php -v)",
+      "Bash(composer dump-autoload:*)",
+      "Bash(vendor/bin/phpunit --colors=always 2>&1)",
+      "Bash(wc:*)",
+      "Bash(ls:*)",
+      "Bash(find /Users/jiezhiyang/zt-event-gateway/src/Spiffe -name \"*.php\" -type f -exec wc -l {} +)",
+      "Bash(grep -h \"class \" /Users/jiezhiyang/zt-event-gateway/src/Spiffe/*.php)",
+      "Bash(grep -h \"^class \" /Users/jiezhiyang/zt-event-gateway/src/Spiffe/*.php)",
+      "Bash(find /Users/jiezhiyang/zt-event-gateway/src/Spiffe -name \"*.php\" -type f -exec grep -l \"^class \" {})",
+      "Bash(find /Users/jiezhiyang/zt-event-gateway/tests -name \"*Test.php\" -type f -exec grep -l \"^class \" {})",
+      "Bash(grep:*)"
     ]
   }
 }

@@ -18,14 +18,14 @@ use Spiffe\Workload\X509SVIDResponse;
  * Managed X.509-SVID source with state-machine lifecycle.
  *
  * X509Source subscribes to the SPIRE Agent's FetchX509SVID server stream
- * within a Swoole coroutine, maintaining always-fresh X.509 material:
+ * within a Swow coroutine, maintaining always-fresh X.509 material:
  *
  *  - Automatic rotation: when the Agent pushes a new X509SVIDResponse,
  *    the source validates and atomically swaps the cached material
  *  - Resilient reconnection: on stream interruption, backs off and
  *    re-establishes the watch
  *  - Safe reads: callers access the current SVID/bundle snapshot via
- *    lock-free reads (Swoole single-thread coroutine model)
+ *    lock-free reads (Swow single-thread coroutine model)
  *  - Observer hooks: register callbacks for rotation, state changes,
  *    and errors
  *
@@ -39,7 +39,7 @@ use Spiffe\Workload\X509SVIDResponse;
  *                ▼                        ▼
  *              Closed ◀── (any state via close())
  *
- * Usage (inside Swoole\Coroutine\run):
+ * Usage (inside a Swow coroutine context):
  *
  *   $source = new X509Source();
  *   $source->start();                       // non-blocking, spawns watcher coroutine
@@ -488,7 +488,7 @@ final class X509Source
             throw new \RuntimeException('X509Source has not been started — call start() first');
         }
 
-        // Block on the ready channel (Swoole coroutine-friendly)
+        // Block on the ready channel (coroutine-friendly)
         if ($this->readyChannel !== null) {
             $result = $this->readyChannel->pop();
             if ($result !== true) {
