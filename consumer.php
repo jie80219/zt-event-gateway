@@ -16,7 +16,7 @@ if ($argc < 2) {
 }
 
 $queueName = $argv[1]; // 傳入的佇列名稱
-$requestQueue = getenv('REQUEST_QUEUE') ?: 'request_queue';
+$requestQueue = getenv('REQUEST_QUEUE') ?: 'order_queue';
 while (true) {
     $rabbitMQ = null;
     try {

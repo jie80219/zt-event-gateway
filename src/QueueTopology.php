@@ -31,7 +31,7 @@ final class QueueTopology
         }
 
         return [
-            'request_queue' => [$requestQueue],
+            'order_queue' => [$requestQueue],
             'request_bindings' => [$requestRoutingKey],
             'event_queues' => array_values(array_unique($eventQueues)),
         ];

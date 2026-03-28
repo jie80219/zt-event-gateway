@@ -1,148 +1,156 @@
 <?php
 
-namespace App\Commands;
+declare(strict_types=1);
 
-use CodeIgniter\CLI\BaseCommand;
-use CodeIgniter\CLI\CLI;
-use PhpAmqpLib\Connection\AMQPStreamConnection;
-use PhpAmqpLib\Wire\AMQPTable;
+use PhpAmqpLib\Connection\AMQPSocketConnection;
 
-class InitRabbitMQ extends BaseCommand
+require_once __DIR__ . '/vendor/autoload.php';
+
+final class CliOut
 {
-    protected $group       = 'RabbitMQ';
-    protected $name        = 'rabbitmq:init';
-    protected $description = 'Initialize Event-Gateway Topology (Entry Queue + Anser-EDA Events).';
-    protected $usage       = 'rabbitmq:init [-f]';
-    protected $options     = [
-        '-f' => 'Force reset (Delete existing queues/exchanges before declaring)',
-    ];
-
-    // =========================================================================
-    // 1. 架構常數定義
-    // =========================================================================
-    const MAIN_EXCHANGE = 'events';     // Anser-EDA 標準 Exchange
-    const EXCHANGE_TYPE = 'direct';     // Direct 模式
-
-    // Gateway 的入口佇列 (這是你遺失的部分)
-    const ENTRY_QUEUE_NAME = 'request_queue';
-    const ENTRY_ROUTING_KEY = 'request.new';
-
-    // =========================================================================
-    // 2. 定義 Anser-EDA 的六個核心事件
-    // =========================================================================
-    // 注意：這裡建議使用完整的 Namespace 類別名稱，以符合 Anser-EDA HandlerScanner 的習慣
-    private $eventQueues = [
-        'OrderCreateRequestedEvent', // 事件 1: 訂單建立請求
-        'InventoryDeductedEvent',    // 事件 2: 庫存已扣除
-        'PaymentProcessedEvent',     // 事件 3: 付款已處理
-        'OrderCreatedEvent',         // 事件 4: 訂單建立成功
-        'RollbackInventoryEvent',    // 事件 5: 補償-庫存回滾
-        'RollbackOrderEvent',        // 事件 6: 補償-訂單取消
-    ];
-
-    public function run(array $params)
+    public static function line(string $message): void
     {
-        $fresh = isset($params['f']) || CLI::getOption('f');
+        fwrite(STDOUT, $message . PHP_EOL);
+    }
 
-        CLI::write("🚀 [Anser-Gateway] Initializing Hybrid Topology...", 'yellow');
+    public static function error(string $message): void
+    {
+        fwrite(STDERR, $message . PHP_EOL);
+    }
+}
 
-        $host = getenv('RABBITMQ_HOST') ?: 'anser_rabbitmq';
-        $port = getenv('RABBITMQ_PORT') ?: 5672;
-        $user = getenv('RABBITMQ_USER') ?: 'guest';
-        $pass = getenv('RABBITMQ_PASS') ?: 'guest';
+final class RabbitMqInitializer
+{
+    private const MAIN_EXCHANGE = 'events';
+    private const EXCHANGE_TYPE = 'direct';
+    private const ENTRY_QUEUE_NAME = 'order_queue';
+    private const ENTRY_ROUTING_KEY = 'request.new';
+
+    /** @var array<int, string> */
+    private array $eventQueues = [
+        'OrderCreateRequestedEvent',
+        'InventoryDeductedEvent',
+        'PaymentProcessedEvent',
+        'OrderCreatedEvent',
+        'RollbackInventoryEvent',
+        'RollbackOrderEvent',
+    ];
+
+    public function run(bool $fresh): int
+    {
+        CliOut::line('[Anser-Gateway] Initializing Hybrid Topology...');
+
+        $host = $this->envAny(['RABBITMQ_HOST', 'AMQP_HOST'], 'rabbitmq');
+        $port = (int) $this->envAny(['RABBITMQ_PORT', 'AMQP_PORT'], '5672');
+
+        $connection = null;
+        $channel = null;
 
         try {
-            $connection = new AMQPStreamConnection($host, $port, $user, $pass);
+            $connection = $this->connectRabbitMq($host, $port);
             $channel = $connection->channel();
 
-            // 如果有 -f 參數，先執行清除
             if ($fresh) {
                 $this->teardown($channel);
             }
 
-            // 執行初始化
             $this->setup($channel);
+            CliOut::line('Initialization completed.');
 
-            $channel->close();
-            $connection->close();
-
-            CLI::write("✅ Initialization Completed Successfully!", 'green');
-
+            return 0;
         } catch (\Throwable $e) {
-            CLI::error("❌ Initialization Failed: " . $e->getMessage());
+            CliOut::error('Initialization failed: ' . $e->getMessage());
+            return 1;
+        } finally {
+            if ($channel !== null) {
+                $channel->close();
+            }
+            if ($connection !== null) {
+                $connection->close();
+            }
         }
     }
 
-    private function setup($channel)
+    private function setup($channel): void
     {
-        CLI::write("🛠️  Setting up Exchange...", 'cyan');
+        $channel->exchange_declare(self::MAIN_EXCHANGE, self::EXCHANGE_TYPE, false, true, false);
 
-        // 1. 宣告主要 Exchange
-        $channel->exchange_declare(
-            self::MAIN_EXCHANGE,
-            self::EXCHANGE_TYPE,
-            false,
-            true, // durable
-            false
-        );
-        CLI::write("   ├── [Exchange] " . self::MAIN_EXCHANGE . " (" . self::EXCHANGE_TYPE . ") created.", 'light_gray');
-
-        // 2. 建立並綁定 Gateway Entry Queue (入口佇列)
-        CLI::write("🛠️  Setting up Gateway Entry Queue...", 'cyan');
-        
-        $channel->queue_declare(
-            self::ENTRY_QUEUE_NAME, 
-            false, 
-            true, // durable
-            false, 
-            false
-        );
-        
+        $channel->queue_declare(self::ENTRY_QUEUE_NAME, false, true, false, false);
         $channel->queue_bind(self::ENTRY_QUEUE_NAME, self::MAIN_EXCHANGE, self::ENTRY_ROUTING_KEY);
-        
-        CLI::write("   ├── [Queue] " . self::ENTRY_QUEUE_NAME, 'green');
-        CLI::write("   │    └── Bound Key: " . self::ENTRY_ROUTING_KEY, 'dark_gray');
+        CliOut::line('Created queue: ' . self::ENTRY_QUEUE_NAME . ' -> ' . self::ENTRY_ROUTING_KEY);
 
-        // 3. 建立並綁定 Anser-EDA 事件佇列
-        CLI::write("🛠️  Setting up Saga Event Queues...", 'cyan');
-        
         foreach ($this->eventQueues as $eventName) {
-            // Queue Name 與 Routing Key 通常都設為事件類別名稱
-            $queueName = $eventName;
-            $routingKey = $eventName;
-
-            $channel->queue_declare($queueName, false, true, false, false);
-            $channel->queue_bind($queueName, self::MAIN_EXCHANGE, $routingKey);
-
-            CLI::write("   ├── [Queue] {$queueName}", 'green');
-            CLI::write("   │    └── Bound Key: {$routingKey}", 'dark_gray');
+            $channel->queue_declare($eventName, false, true, false, false);
+            $channel->queue_bind($eventName, self::MAIN_EXCHANGE, $eventName);
+            CliOut::line('Created queue: ' . $eventName . ' -> ' . $eventName);
         }
     }
 
-    private function teardown($channel)
+    private function teardown($channel): void
     {
-        CLI::write("⚠️  [Fresh Mode] Cleaning up old topology...", 'red');
+        CliOut::line('[Fresh Mode] cleaning old topology...');
 
-        // 1. 刪除 Entry Queue
         try {
             $channel->queue_delete(self::ENTRY_QUEUE_NAME);
-            CLI::write("   🗑️  Deleted Queue: " . self::ENTRY_QUEUE_NAME, 'light_red');
-        } catch (\Exception $e) {}
-
-        // 2. 刪除 Event Queues
-        foreach ($this->eventQueues as $qName) {
-            try {
-                $channel->queue_delete($qName);
-                CLI::write("   🗑️  Deleted Queue: {$qName}", 'light_red');
-            } catch (\Exception $e) {}
+        } catch (\Throwable $e) {
         }
 
-        // 3. 刪除 Exchange
+        foreach ($this->eventQueues as $queueName) {
+            try {
+                $channel->queue_delete($queueName);
+            } catch (\Throwable $e) {
+            }
+        }
+
         try {
             $channel->exchange_delete(self::MAIN_EXCHANGE);
-            CLI::write("   🗑️  Deleted Exchange: " . self::MAIN_EXCHANGE, 'light_red');
-        } catch (\Exception $e) {}
+        } catch (\Throwable $e) {
+        }
+    }
 
-        CLI::newLine();
+    private function connectRabbitMq(string $host, int $port): AMQPSocketConnection
+    {
+        $candidates = [];
+
+        $envUser = $this->envAny(['RABBITMQ_USER', 'AMQP_USER'], '');
+        $envPass = $this->envAny(['RABBITMQ_PASS', 'RABBITMQ_PASSWORD', 'AMQP_PASSWORD'], '');
+        if ($envUser !== '' && $envPass !== '') {
+            $candidates[] = [$envUser, $envPass];
+        }
+
+        $candidates[] = ['zt', 'ztpass'];
+        // No guest fallback — use 'zt'/'ztpass' or env vars only
+
+        $lastException = null;
+
+        foreach ($candidates as [$user, $pass]) {
+            try {
+                return new AMQPSocketConnection($host, $port, $user, $pass);
+            } catch (\Throwable $e) {
+                $lastException = $e;
+            }
+        }
+
+        if ($lastException instanceof \Throwable) {
+            throw $lastException;
+        }
+
+        throw new \RuntimeException('Unable to connect to RabbitMQ with any credential candidate.');
+    }
+
+    private function envAny(array $names, string $default): string
+    {
+        foreach ($names as $name) {
+            $value = getenv($name);
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
+        }
+
+        return $default;
     }
 }
+
+$fresh = in_array('-f', $argv, true);
+$initializer = new RabbitMqInitializer();
+exit($initializer->run($fresh));

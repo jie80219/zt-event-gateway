@@ -18,8 +18,8 @@ $env = static function (string $key, string $default): string {
 
 $host = $env('AMQP_HOST', $env('RABBITMQ_HOST', '127.0.0.1'));
 $port = (int) $env('AMQP_PORT', $env('RABBITMQ_PORT', '5672'));
-$user = $env('AMQP_USER', $env('RABBITMQ_USER', 'guest'));
-$password = $env('AMQP_PASSWORD', $env('RABBITMQ_PASS', 'guest'));
+$user = $env('AMQP_USER', $env('RABBITMQ_USER', 'zt'));
+$password = $env('AMQP_PASSWORD', $env('RABBITMQ_PASS', 'ztpass'));
 $exchange = $env('AMQP_EXCHANGE', 'events');
 
 $input = [];

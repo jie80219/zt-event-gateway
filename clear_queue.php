@@ -14,9 +14,9 @@ $env = static function (string $key, string $default): string {
 
 $host = $env('AMQP_HOST', $env('RABBITMQ_HOST', '127.0.0.1'));
 $port = (int) $env('AMQP_PORT', $env('RABBITMQ_PORT', '5672'));
-$user = $env('AMQP_USER', $env('RABBITMQ_USER', 'guest'));
-$password = $env('AMQP_PASSWORD', $env('RABBITMQ_PASS', 'guest'));
-$requestQueue = $env('REQUEST_QUEUE', 'request_queue');
+$user = $env('AMQP_USER', $env('RABBITMQ_USER', 'zt'));
+$password = $env('AMQP_PASSWORD', $env('RABBITMQ_PASS', 'ztpass'));
+$requestQueue = $env('REQUEST_QUEUE', 'order_queue');
 
 $scanner = new HandlerScanner();
 $eventQueues = $scanner->scanEventTypesFromFile(__DIR__ . '/Sagas/OrderSaga.php');

@@ -21,11 +21,11 @@ $env = static function (string $key, string $default): string {
 
 $host = $env('AMQP_HOST', 'rabbitmq');
 $port = (int) $env('AMQP_PORT', '5672');
-$user = $env('AMQP_USER', 'guest');
-$password = $env('AMQP_PASSWORD', 'guest');
+$user = $env('AMQP_USER', 'zt');
+$password = $env('AMQP_PASSWORD', 'ztpass');
 $exchange = $env('AMQP_EXCHANGE', 'events');
 $exchangeType = $env('AMQP_EXCHANGE_TYPE', 'direct');
-$requestQueue = $env('REQUEST_QUEUE', 'request_queue');
+$requestQueue = $env('REQUEST_QUEUE', 'order_queue');
 $requestRoutingKey = $env('REQUEST_ROUTING_KEY', 'request.new');
 $sagaFilePath = dirname(__DIR__) . '/Sagas/OrderSaga.php';
 
@@ -62,7 +62,7 @@ try {
     fwrite(
         STDOUT,
         sprintf(
-            "[worker] listening request_queue=%s event_queues=%s exchange=%s request_route=%s\n",
+            "[worker] listening order_queue=%s event_queues=%s exchange=%s routing_key=%s\n",
             $requestQueue,
             implode('|', $eventQueues),
             $exchange,

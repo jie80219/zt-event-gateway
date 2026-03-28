@@ -10,8 +10,8 @@ bootstrapEnv();
 
 $mqHost = envValue('LOAD_BALANCE_AMQP_HOST', envValue('AMQP_HOST', 'rabbitmq'));
 $mqPort = (int) envValue('LOAD_BALANCE_AMQP_PORT', envValue('AMQP_PORT', '5672'));
-$mqUser = envValue('LOAD_BALANCE_AMQP_USER', envValue('AMQP_USER', 'guest'));
-$mqPass = envValue('LOAD_BALANCE_AMQP_PASSWORD', envValue('AMQP_PASSWORD', 'guest'));
+$mqUser = envValue('LOAD_BALANCE_AMQP_USER', envValue('AMQP_USER', 'zt'));
+$mqPass = envValue('LOAD_BALANCE_AMQP_PASSWORD', envValue('AMQP_PASSWORD', 'ztpass'));
 $mqQueue = envValue('LOAD_BALANCE_RECALC_QUEUE', 'recalc_weight');
 $metricsPattern = envValue('LOAD_BALANCE_METRICS_PATTERN', 'metrics:*');
 $monitorInterval = (int) envValue('LOAD_BALANCE_MONITOR_INTERVAL', '5');

@@ -33,8 +33,7 @@ class RabbitMQConnection
         if ($envUser !== false && $envPass !== false) {
             $candidates[] = ['user' => $envUser, 'pass' => $envPass];
         }
-        $candidates[] = ['user' => 'root', 'pass' => 'root'];
-        $candidates[] = ['user' => 'guest', 'pass' => 'guest'];
+        $candidates[] = ['user' => 'zt', 'pass' => 'ztpass'];
 
         $lastException = null;
 

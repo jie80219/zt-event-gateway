@@ -1,0 +1,22 @@
+{
+  "users": [
+    {
+      "name": "zt",
+      "password_hash": "rT2+7DUVKylJGO8YsurUujFPqEQm1RDnXw7dFuNj2ALxZQQa",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": ["administrator"]
+    }
+  ],
+  "vhosts": [
+    {"name": "/"}
+  ],
+  "permissions": [
+    {
+      "user": "zt",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ]
+}

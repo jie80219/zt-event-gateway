@@ -10,6 +10,11 @@ use SDPMlab\ZtEventGateway\MessageQueue\UnrecoverableMessageException;
 
 final class EventConsumer
 {
+    /** @var list<string> Allowed SPIFFE ID prefixes */
+    private const ALLOWED_SOURCES = [
+        'spiffe://zt.local/',
+    ];
+
     public function __construct(private readonly EventBus $eventBus)
     {
     }
@@ -28,6 +33,25 @@ final class EventConsumer
             throw new UnrecoverableMessageException('Missing event type or data.');
         }
 
+        // ── SPIFFE identity verification ─────────────────────
+        $sourceSpiffeId = $payload['spiffe_id'] ?? '';
+        $spiffePath = $payload['spiffe_path'] ?? [];
+
+        if ($sourceSpiffeId !== '') {
+            $this->verifySpiffeSource($sourceSpiffeId);
+            fwrite(STDOUT, sprintf(
+                "[event-consumer] source=%s path=[%s] event=%s\n",
+                $sourceSpiffeId,
+                implode(' → ', $spiffePath),
+                substr(strrchr($eventType, '\\') ?: $eventType, 1),
+            ));
+        } else {
+            fwrite(STDOUT, sprintf(
+                "[event-consumer] WARNING: no SPIFFE identity on event=%s\n",
+                $eventType,
+            ));
+        }
+
         $event = $this->buildEventInstance($eventType, $eventData);
         if ($event === null) {
             throw new UnrecoverableMessageException(sprintf('Unknown event class: %s', $eventType));
@@ -36,6 +60,20 @@ final class EventConsumer
         $this->eventBus->dispatch($event);
 
         fwrite(STDOUT, sprintf("[event-consumer] handled event=%s\n", $eventType));
+    }
+
+    private function verifySpiffeSource(string $spiffeId): void
+    {
+        foreach (self::ALLOWED_SOURCES as $prefix) {
+            if (str_starts_with($spiffeId, $prefix)) {
+                return;
+            }
+        }
+
+        throw new UnrecoverableMessageException(sprintf(
+            'Untrusted SPIFFE source: %s',
+            $spiffeId,
+        ));
     }
 
     private function buildEventInstance(string $eventClass, array $payload): ?object

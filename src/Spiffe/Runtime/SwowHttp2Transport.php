@@ -48,7 +48,7 @@ final class SwowHttp2Transport
             return;
         }
 
-        $this->socket = new Socket(Socket::TYPE_UNIX_STREAM);
+        $this->socket = new Socket(Socket::TYPE_UNIX);
         $this->socket->connect($this->udsPath, 0, $this->connectTimeout);
 
         // Send HTTP/2 connection preface
@@ -205,7 +205,7 @@ final class SwowHttp2Transport
 
     private function write(string $data): void
     {
-        $this->socket->sendString($data, $this->readTimeout);
+        $this->socket->send($data, 0, strlen($data), $this->readTimeout);
     }
 
     /**

@@ -1,17 +1,18 @@
 name: zt-event-gateway
 services:
+
+  # ── Infrastructure ──────────────────────────────────────────────
+
   rabbitmq:
     image: rabbitmq:3.13-management
     container_name: zt-rabbitmq
     ports:
       - "5672:5672"
       - "15672:15672"
-    environment:
-      RABBITMQ_DEFAULT_USER: zt
-      RABBITMQ_DEFAULT_PASS: ztpass
-      RABBITMQ_DEFAULT_VHOST: /
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+      - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./docker/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
@@ -43,6 +44,68 @@ services:
       timeout: 3s
       retries: 20
 
+  # ── SPIFFE / SPIRE ──────────────────────────────────────────────
+  #
+  #  x509pop attestation: Agent 用 X.509 憑證向 Server 證明身份，
+  #  可無限次 re-attest（不像 join_token 是一次性的）。
+  #
+  #  spiffe-helper: 從 Agent Workload API 取得 SVID，寫成 PEM 檔案
+  #  到 spiffe-certs volume，供 PHP 容器直接讀取。
+
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.12.0
+    container_name: zt-spire-server
+    command:
+      - -config
+      - /opt/spire/conf/server/server.conf
+    volumes:
+      - ./spiffe/spire-server-e2e/server.conf:/opt/spire/conf/server/server.conf:ro
+      - ./spiffe/certs/agent-ca.crt.pem:/opt/spire/conf/server/agent-ca.crt.pem:ro
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.12.0
+    container_name: zt-spire-agent
+    command:
+      - -config
+      - /opt/spire/conf/agent/agent.conf
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    volumes:
+      - ./spiffe/spire-agent-e2e/agent.conf:/opt/spire/conf/agent/agent.conf:ro
+      - ./spiffe/certs/agent.key.pem:/opt/spire/conf/agent/agent.key.pem:ro
+      - ./spiffe/certs/agent.crt.pem:/opt/spire/conf/agent/agent.crt.pem:ro
+      - spire-agent-sockets:/run/spire/sockets
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  spiffe-helper:
+    image: ghcr.io/spiffe/spiffe-helper:0.8.0
+    container_name: zt-spiffe-helper
+    command:
+      - -config
+      - /etc/spiffe-helper/helper.conf
+    pid: "service:spire-agent"
+    depends_on:
+      spire-agent:
+        condition: service_started
+    volumes:
+      - ./spiffe/helper/helper.conf:/etc/spiffe-helper/helper.conf:ro
+      - spire-agent-sockets:/run/spire/sockets:ro
+      - spiffe-certs:/certs
+
+  # ── Application ─────────────────────────────────────────────────
+
   anser-gateway:
     build:
       context: ./anser-gateway
@@ -57,6 +120,8 @@ services:
       RABBITMQ_PORT: "5672"
       RABBITMQ_USER: "zt"
       RABBITMQ_PASS: "ztpass"
+      SPIFFE_ID: "spiffe://zt.local/php-gateway"
+      SPIFFE_CERT_DIR: "/certs"
       gatewayregister.address: "anser-gateway"
       gatewayregister.healthRoute: "api/health"
       servicediscovery.address: "consul:8500"
@@ -64,6 +129,7 @@ services:
       servicediscovery.LBStrategy: "dynamic"
     volumes:
       - ./anser-gateway:/app
+      - spiffe-certs:/certs:ro
     ports:
       - "8080:8080"
     depends_on:
@@ -90,6 +156,9 @@ services:
       RABBITMQ_PORT: "5672"
       RABBITMQ_USER: "zt"
       RABBITMQ_PASS: "ztpass"
+      SPIFFE_CERT_DIR: "/certs"
+    volumes:
+      - spiffe-certs:/certs:ro
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -110,6 +179,10 @@ services:
       RABBITMQ_PORT: "5672"
       RABBITMQ_USER: "zt"
       RABBITMQ_PASS: "ztpass"
+      SPIFFE_ID: "spiffe://zt.local/php-worker"
+      SPIFFE_CERT_DIR: "/certs"
+    volumes:
+      - spiffe-certs:/certs:ro
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -159,3 +232,5 @@ services:
 volumes:
   rabbitmq_data:
   redis_data:
+  spire-agent-sockets:
+  spiffe-certs:

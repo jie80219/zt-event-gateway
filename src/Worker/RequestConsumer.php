@@ -10,6 +10,11 @@ use SDPMlab\ZtEventGateway\MessageQueue\UnrecoverableMessageException;
 
 final class RequestConsumer
 {
+    /** @var list<string> Allowed SPIFFE ID prefixes for message sources */
+    private const ALLOWED_SOURCES = [
+        'spiffe://zt.local/',
+    ];
+
     public function __construct(private readonly MessageBus $messageBus)
     {
     }
@@ -21,6 +26,22 @@ final class RequestConsumer
             throw new UnrecoverableMessageException('Invalid request payload.');
         }
 
+        // ── SPIFFE identity verification ─────────────────────
+        $sourceSpiffeId = $payload['spiffe_id'] ?? '';
+        $spiffePath = $payload['spiffe_path'] ?? [];
+
+        if ($sourceSpiffeId !== '') {
+            $this->verifySpiffeSource($sourceSpiffeId);
+            fwrite(STDOUT, sprintf(
+                "[request-consumer] verified source=%s path=[%s]\n",
+                $sourceSpiffeId,
+                implode(' → ', $spiffePath),
+            ));
+        } else {
+            fwrite(STDOUT, "[request-consumer] WARNING: message has no SPIFFE identity\n");
+        }
+
+        // ── Route resolution ─────────────────────────────────
         $route = $payload['route'] ?? $payload['eventType'] ?? $payload['type'] ?? null;
         if (!is_string($route) || $route === '') {
             throw new UnrecoverableMessageException('Missing request route.');
@@ -40,9 +61,28 @@ final class RequestConsumer
             $eventData['traceId'] = (string) $payload['id'];
         }
 
-        $this->messageBus->publishEvent($eventClass, $eventData);
+        // Forward the SPIFFE path to the next event
+        $this->messageBus->publishEvent($eventClass, $eventData, null, is_array($spiffePath) ? $spiffePath : []);
 
         fwrite(STDOUT, sprintf("[request-consumer] published event=%s\n", $eventClass));
+    }
+
+    /**
+     * Verify the message source belongs to our trust domain.
+     */
+    private function verifySpiffeSource(string $spiffeId): void
+    {
+        foreach (self::ALLOWED_SOURCES as $prefix) {
+            if (str_starts_with($spiffeId, $prefix)) {
+                return;
+            }
+        }
+
+        throw new UnrecoverableMessageException(sprintf(
+            'Untrusted SPIFFE source: %s (allowed: %s)',
+            $spiffeId,
+            implode(', ', self::ALLOWED_SOURCES),
+        ));
     }
 
     private function resolveEventClass(string $route): string
