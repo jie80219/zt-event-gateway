@@ -45,12 +45,6 @@ services:
       retries: 20
 
   # ── SPIFFE / SPIRE ──────────────────────────────────────────────
-  #
-  #  x509pop attestation: Agent 用 X.509 憑證向 Server 證明身份，
-  #  可無限次 re-attest（不像 join_token 是一次性的）。
-  #
-  #  spiffe-helper: 從 Agent Workload API 取得 SVID，寫成 PEM 檔案
-  #  到 spiffe-certs volume，供 PHP 容器直接讀取。
 
   spire-server:
     image: ghcr.io/spiffe/spire-server:1.12.0
@@ -89,76 +83,28 @@ services:
       retries: 30
       start_period: 15s
 
-  spiffe-helper:
-    image: ghcr.io/spiffe/spiffe-helper:0.8.0
-    container_name: zt-spiffe-helper
-    command:
-      - -config
-      - /etc/spiffe-helper/helper.conf
-    pid: "service:spire-agent"
-    depends_on:
-      spire-agent:
-        condition: service_started
-    volumes:
-      - ./spiffe/helper/helper.conf:/etc/spiffe-helper/helper.conf:ro
-      - spire-agent-sockets:/run/spire/sockets:ro
-      - spiffe-certs:/certs
+  # ── Application (OpenSwoole) ────────────────────────────────────
 
-  # ── Application ─────────────────────────────────────────────────
-
-  anser-gateway:
+  gateway:
     build:
-      context: ./anser-gateway
-      dockerfile: Dockerfile
-    container_name: zt-anser-gateway
-    working_dir: /app
-    command: ["sh", "-c", "composer install --no-interaction --prefer-dist && php anser serve start"]
+      context: .
+      dockerfile: docker/php-openswoole/Dockerfile
+    container_name: zt-gateway
+    command: ["php", "bin/gateway.php"]
     environment:
-      gateway.workerUser: root
-      gateway.listeningPort: "8080"
+      GATEWAY_HOST: "0.0.0.0"
+      GATEWAY_PORT: "8080"
+      GATEWAY_WORKERS: "2"
       RABBITMQ_HOST: "rabbitmq"
       RABBITMQ_PORT: "5672"
       RABBITMQ_USER: "zt"
       RABBITMQ_PASS: "ztpass"
       SPIFFE_ID: "spiffe://zt.local/php-gateway"
-      SPIFFE_CERT_DIR: "/certs"
-      gatewayregister.address: "anser-gateway"
-      gatewayregister.healthRoute: "api/health"
-      servicediscovery.address: "consul:8500"
-      servicediscovery.defaultServiceGroup: "AnserGateway"
-      servicediscovery.LBStrategy: "dynamic"
+      SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
     volumes:
-      - ./anser-gateway:/app
-      - spiffe-certs:/certs:ro
+      - spire-agent-sockets:/run/spire/sockets:ro
     ports:
       - "8080:8080"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      consul:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  app:
-    build:
-      context: .
-      dockerfile: docker/php/Dockerfile
-    container_name: zt-anser-app
-    command: ["sh", "-c", "tail -f /dev/null"]
-    environment:
-      APP_SERVICE_NAME: anser-app
-      AMQP_HOST: "rabbitmq"
-      AMQP_PORT: "5672"
-      AMQP_USER: "zt"
-      AMQP_PASSWORD: "ztpass"
-      RABBITMQ_HOST: "rabbitmq"
-      RABBITMQ_PORT: "5672"
-      RABBITMQ_USER: "zt"
-      RABBITMQ_PASS: "ztpass"
-      SPIFFE_CERT_DIR: "/certs"
-    volumes:
-      - spiffe-certs:/certs:ro
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -166,7 +112,7 @@ services:
   php-worker:
     build:
       context: .
-      dockerfile: docker/php/Dockerfile
+      dockerfile: docker/php-openswoole/Dockerfile
     container_name: zt-php-worker
     command: ["php", "bin/worker.php"]
     environment:
@@ -180,12 +126,14 @@ services:
       RABBITMQ_USER: "zt"
       RABBITMQ_PASS: "ztpass"
       SPIFFE_ID: "spiffe://zt.local/php-worker"
-      SPIFFE_CERT_DIR: "/certs"
+      SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
     volumes:
-      - spiffe-certs:/certs:ro
+      - spire-agent-sockets:/run/spire/sockets:ro
     depends_on:
       rabbitmq:
         condition: service_healthy
+
+  # ── Load Balance (preserved from anser-gateway) ─────────────────
 
   monitor:
     build:
@@ -233,4 +181,3 @@ volumes:
   rabbitmq_data:
   redis_data:
   spire-agent-sockets:
-  spiffe-certs:

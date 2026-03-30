@@ -77,7 +77,13 @@
       "Bash(bash scripts/start-spiffe.sh 2>&1)",
       "Read(//Users/jiezhiyang/zt-event-gateway/**)",
       "Bash(rm agent.csr.pem agent-ext.cnf)",
-      "Bash(bash scripts/start-spiffe.sh)"
+      "Bash(bash scripts/start-spiffe.sh)",
+      "Bash(docker images:*)",
+      "Bash(docker image:*)",
+      "Bash(docker info:*)",
+      "Bash(docker context:*)",
+      "Bash(curl -s http://127.0.0.1:8080/api/health)",
+      "Bash(bash scripts/stress_test.sh 500 2>&1)"
     ]
   }
 }
