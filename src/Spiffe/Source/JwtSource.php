@@ -9,7 +9,7 @@ use Spiffe\JwtSvid;
 use Spiffe\Runtime\ChannelInterface;
 use Spiffe\Runtime\RuntimeDetector;
 use Spiffe\Runtime\RuntimeInterface;
-use Spiffe\SpiffeWorkloadAPIClient;
+use Spiffe\WorkloadAPIClientInterface;
 use Spiffe\TrustDomain;
 use Spiffe\Validation\JwtSvidValidator;
 use Spiffe\Workload\JWTBundlesResponse;
@@ -52,8 +52,8 @@ final class JwtSource
     private SourceConfig $config;
     private RuntimeInterface $runtime;
 
-    private ?SpiffeWorkloadAPIClient $streamClient = null;
-    private ?SpiffeWorkloadAPIClient $fetchClient = null;
+    private ?WorkloadAPIClientInterface $streamClient = null;
+    private ?WorkloadAPIClientInterface $fetchClient = null;
 
     /** @var array<string, JwtBundle> Keyed by trust domain name */
     private array $bundles = [];
@@ -354,9 +354,7 @@ final class JwtSource
     {
         while ($this->state !== SourceState::Closed) {
             try {
-                $this->streamClient = new SpiffeWorkloadAPIClient(
-                    $this->config->socketPath,
-                    $this->config->connectTimeout,
+                $this->streamClient = $this->config->createClient(
                     $this->config->streamTimeout > 0 ? $this->config->streamTimeout : 30.0,
                 );
 
@@ -479,9 +477,7 @@ final class JwtSource
             return;
         }
 
-        $this->fetchClient = new SpiffeWorkloadAPIClient(
-            $this->config->socketPath,
-            $this->config->connectTimeout,
+        $this->fetchClient = $this->config->createClient(
             $this->config->streamTimeout > 0 ? $this->config->streamTimeout : 30.0,
         );
     }

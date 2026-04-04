@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ZtEventGateway\Worker;
 
 use PhpAmqpLib\Message\AMQPMessage;
+use SDPMlab\ZtEventGateway\Ingress\CanonicalOrderRequest;
 use SDPMlab\ZtEventGateway\MessageQueue\MessageBus;
 use SDPMlab\ZtEventGateway\MessageQueue\UnrecoverableMessageException;
 
@@ -26,43 +27,31 @@ final class RequestConsumer
             throw new UnrecoverableMessageException('Invalid request payload.');
         }
 
-        // ── SPIFFE identity verification ─────────────────────
-        $sourceSpiffeId = $payload['spiffe_id'] ?? '';
-        $spiffePath = $payload['spiffe_path'] ?? [];
-
-        if ($sourceSpiffeId !== '') {
-            $this->verifySpiffeSource($sourceSpiffeId);
-            fwrite(STDOUT, sprintf(
-                "[request-consumer] verified source=%s path=[%s]\n",
-                $sourceSpiffeId,
-                implode(' → ', $spiffePath),
-            ));
-        } else {
-            fwrite(STDOUT, "[request-consumer] WARNING: message has no SPIFFE identity\n");
+        try {
+            $envelope = CanonicalOrderRequest::validateEnvelope($payload);
+        } catch (\InvalidArgumentException $exception) {
+            throw new UnrecoverableMessageException($exception->getMessage());
         }
 
-        // ── Route resolution ─────────────────────────────────
-        $route = $payload['route'] ?? $payload['eventType'] ?? $payload['type'] ?? null;
-        if (!is_string($route) || $route === '') {
-            throw new UnrecoverableMessageException('Missing request route.');
-        }
+        $sourceSpiffeId = $envelope['spiffeId'];
+        $spiffePath = $envelope['spiffePath'];
+        $route = $envelope['route'];
+        $eventData = $envelope['eventData'];
+
+        $this->verifySpiffeSource($sourceSpiffeId);
+        fwrite(STDOUT, sprintf(
+            "[request-consumer] verified source=%s path=[%s]\n",
+            $sourceSpiffeId,
+            implode(' -> ', $spiffePath),
+        ));
 
         $eventClass = $this->resolveEventClass($route);
         if (!class_exists($eventClass)) {
             throw new UnrecoverableMessageException(sprintf('Unknown request route: %s', $route));
         }
 
-        $eventData = $payload['data'] ?? [];
-        if (!is_array($eventData)) {
-            throw new UnrecoverableMessageException('Invalid request data.');
-        }
-
-        if (isset($payload['id']) && !isset($eventData['traceId'])) {
-            $eventData['traceId'] = (string) $payload['id'];
-        }
-
         // Forward the SPIFFE path to the next event
-        $this->messageBus->publishEvent($eventClass, $eventData, null, is_array($spiffePath) ? $spiffePath : []);
+        $this->messageBus->publishEvent($eventClass, $eventData, null, $spiffePath);
 
         fwrite(STDOUT, sprintf("[request-consumer] published event=%s\n", $eventClass));
     }

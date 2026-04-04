@@ -24,7 +24,7 @@ use Swoole\Http2\Request as Http2Request;
  * Uses Swoole\Coroutine\Http2\Client for native HTTP/2 over UDS.
  * No hand-rolled HTTP/2 framing needed — Swoole handles it all.
  */
-class SwooleSpiffeWorkloadAPIClient
+class SwooleSpiffeWorkloadAPIClient implements WorkloadAPIClientInterface
 {
     private const DEFAULT_SOCKET_PATH = 'unix:/tmp/spire-agent/public/api.sock';
 

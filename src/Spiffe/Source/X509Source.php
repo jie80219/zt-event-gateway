@@ -8,9 +8,9 @@ use Spiffe\Bundle\X509Bundle;
 use Spiffe\Runtime\ChannelInterface;
 use Spiffe\Runtime\RuntimeDetector;
 use Spiffe\Runtime\RuntimeInterface;
-use Spiffe\SpiffeWorkloadAPIClient;
 use Spiffe\TrustDomain;
 use Spiffe\Validation\X509SvidValidator;
+use Spiffe\WorkloadAPIClientInterface;
 use Spiffe\X509Svid;
 use Spiffe\Workload\X509SVIDResponse;
 
@@ -53,7 +53,7 @@ final class X509Source
     private SourceState $state = SourceState::Idle;
     private SourceConfig $config;
     private RuntimeInterface $runtime;
-    private ?SpiffeWorkloadAPIClient $client = null;
+    private ?WorkloadAPIClientInterface $client = null;
 
     /** @var list<X509Svid> Current X.509 SVIDs (primary + any extras) */
     private array $svids = [];
@@ -280,9 +280,7 @@ final class X509Source
     {
         while ($this->state !== SourceState::Closed) {
             try {
-                $this->client = new SpiffeWorkloadAPIClient(
-                    $this->config->socketPath,
-                    $this->config->connectTimeout,
+                $this->client = $this->config->createClient(
                     $this->config->streamTimeout > 0 ? $this->config->streamTimeout : 30.0,
                 );
 

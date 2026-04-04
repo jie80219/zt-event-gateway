@@ -1,132 +1,159 @@
 # zt-event-gateway
 
-Starter skeleton for:
+OpenSwoole gateway + RabbitMQ worker pipeline for order ingress and event forwarding.
 
-- PHP event-driven flow (producer + consumer)
-- Anser-Gateway for API ingress before event-driven workflow
-- SPIFFE/SPIRE-ready secure routing config for workload identity verification
+## 1. Run the stack
 
-## 1) Run the stack
-
-Prerequisite: Docker Desktop (or Docker Engine) must be running.
+Prerequisite: Docker Desktop (or Docker Engine) is running.
 
 ```bash
 composer install
-docker compose up --build -d
+docker compose up --build -d rabbitmq gateway
 ```
 
-Gateway entrypoints:
-- `http://localhost:8080` => Anser-Gateway (`anser-gateway`)
+Gateway endpoints:
 
-Health check through Anser-Gateway:
+- `GET http://localhost:8080/api/health`
+- `POST http://localhost:8080/api/orders`
+
+Quick health check:
 
 ```bash
 curl http://localhost:8080/api/health
 ```
 
-Publish an order event:
+Submit an order request (ingress aliases are accepted and normalized):
 
 ```bash
 curl -X POST http://localhost:8080/api/orders \
   -H "Content-Type: application/json" \
-  -d '{"customerId":"cust-001","amount":1680,"currency":"TWD"}'
+  -H "X-Correlation-Id: trace-demo-001" \
+  -d '{"user_id":1,"product_list":[{"p_key":1,"amount":2}],"total":100}'
 ```
 
-Async ingress flow:
+Gateway response for valid input remains:
 
-`Anser-Gateway -> request_queue -> RequestConsumer -> events exchange -> EventConsumer(OrderSaga)`
+- HTTP `202`
+- body contains `trace_id`
 
-Watch worker logs:
+## 2. Main flow
 
-```bash
-docker logs -f zt-php-worker
-```
+Business backbone in this phase:
 
-Dynamic LB helper services:
+`Gateway -> order_queue -> RequestConsumer -> events`
 
-```bash
-docker logs -f zt-lb-monitor
-docker logs -f zt-lb-recalc-worker
-```
+Current implementation path:
 
-Infra UIs:
+1. Gateway receives `POST /api/orders`.
+2. Gateway normalizes payload to canonical order data.
+3. Gateway publishes canonical envelope to exchange `events` with routing key `request.new`.
+4. Queue `order_queue` receives the request message.
+5. `RequestConsumer` validates canonical envelope and SPIFFE trust domain.
+6. Worker republishes downstream event into `events` exchange.
 
-- Consul UI: http://localhost:8500
-- Redis: `localhost:6379`
+## 3. Canonical ingress contract (`schema_version=1`)
 
-Quick checks for entropy score pipeline:
-
-```bash
-docker compose exec redis redis-cli HGETALL metrics:anser-gateway
-docker compose logs monitor --tail=50
-docker compose logs recalc-worker --tail=50
-```
-
-Anser-EDA style flow (manual):
-
-```bash
-composer install
-php initialization.php
-php consumer.php OrderCreateRequestedEvent
-php consumer.php OrderCreatedEvent
-php consumer.php InventoryDeductedEvent
-php consumer.php PaymentProcessedEvent
-php publisher.php
-```
-
-Anser-EDA style flow (inside Docker `app` container):
-
-```bash
-docker compose up --build -d
-docker compose exec app php initialization.php
-docker compose exec app php consumer.php OrderCreateRequestedEvent
-```
-
-RabbitMQ management UI through unified gateway entry:
-
-- http://localhost:15672/
-- login: `zt / ztpass`
-
-## 2) Event contract
-
-Gateway ingress writes order requests into queue `request_queue`:
+Gateway now publishes a fixed envelope shape:
 
 ```json
 {
-  "type": "OrderCreateRequestedEvent",
+  "schema_version": 1,
+  "specversion": "1.0",
+  "type": "gateway.request",
+  "route": "OrderCreateRequestedEvent",
+  "source": "/gateway/order",
+  "id": "trace-demo-001",
+  "time": "2026-04-01T10:00:00+00:00",
+  "spiffe_id": "spiffe://zt.local/php-gateway",
+  "spiffe_path": ["spiffe://zt.local/php-gateway"],
   "data": {
-    "orderId": "...",
-    "userKey": "...",
-    "productList": [],
-    "total": 1680
+    "userKey": "1",
+    "productList": [
+      {"p_key": 1, "amount": 2}
+    ],
+    "total": 100
   }
 }
 ```
 
-Then `RequestConsumer` republishes system events to exchange `events`, and `EventConsumer` consumes the event queues generated from saga handlers.
+Ingress field mapping used by gateway:
 
-## 3) SPIFFE/SPIRE integration
+- `userKey` accepts aliases: `user_id`, `customerId`, `customer_id`
+- `productList` accepts alias: `product_list`
+- product `p_key` accepts aliases: `productId`, `product_id`
+- product `amount` accepts aliases: `qty`, `quantity`
+- `total` accepts alias: `amount`
 
-- secure Envoy config: `docker/envoy/envoy-spiffe.yaml` (optional, not enabled in current Anser-only compose)
-- SPIRE setup notes: `docs/spiffe-spire.md`
+Validation behavior:
 
-Recommended rollout:
+- invalid JSON: HTTP `400`, no queue message
+- missing required fields: HTTP `422`, no queue message
+- worker rejects untrusted `spiffe_id` as unrecoverable message
 
-1. Run the default compose stack first.
-2. Deploy SPIRE server and agents.
-3. Register workload SPIFFE IDs for gateway workloads.
-4. Switch Envoy to `envoy-spiffe.yaml` to enforce mTLS and SAN checks.
+## 4. E2E scripts
 
-## 4) Key files
+Run one full E2E suite:
 
-- `bin/worker.php`: Request/Event worker entrypoint
-- `Sagas/OrderSaga.php`: Anser-EDA style saga orchestration
-- `src/EventBus.php`: event publish/subscribe abstraction
-- `src/MessageQueue/MessageBus.php`: RabbitMQ publish/bind plumbing
-- `initialization.php`: auto setup queues from Saga handlers
-- `consumer.php`: Anser-EDA style queue consumer
-- `publisher.php`: event publisher
-- `anser-gateway/config/Routes.php`: Anser-Gateway route entry
-- `anser-gateway/system/ServiceDiscovery/LoadBalance/EntropyScoring.php`: entropy score calculation
-- `anser-gateway/monitor/monitor_trigger.php`: metric variance monitor
-- `anser-gateway/worker/recalc_worker.php`: MQ-driven score recalculation worker
+```bash
+composer gateway:e2e
+```
+
+Or directly:
+
+```bash
+./scripts/e2e-gateway.sh
+```
+
+E2E assertions include:
+
+1. health endpoint returns `200`
+2. order request returns `202 + trace_id`
+3. `order_queue` contains same trace with `spiffe_id`, `spiffe_path`, `route`, and canonical schema
+4. worker logs show SPIFFE source verification and downstream publish success
+5. invalid JSON returns `400` and never enters queue
+6. missing required fields returns `4xx` and never enters queue
+7. forged untrusted SPIFFE message is rejected without requeue storm
+
+Supported environment options:
+
+- `E2E_QUEUE_CHECK_MODE=requeue|consume` (default: `requeue`)
+- `E2E_DIAG_LEVEL=none|full` (default: `full`)
+- `E2E_KEEP_ON_FAIL=1` to keep containers on failure
+- `E2E_BUILD_IMAGES=0|1` (default: `1`)
+- `E2E_WAIT_TIMEOUT=<seconds>`
+
+## 5. CI entrypoint (Unit -> E2E)
+
+Single command:
+
+```bash
+composer ci:verify
+```
+
+Behavior:
+
+1. run unit tests
+2. run E2E repeatedly (`E2E_RUNS`, default `20`)
+3. stop on first E2E failure
+4. collect docker logs into `artifacts/ci/e2e-run-N/`
+5. prebuild gateway/worker images once by default (`CI_PREBUILD_IMAGES=1`)
+
+Examples:
+
+```bash
+# default 20 runs
+composer ci:verify
+
+# quick local check
+E2E_RUNS=1 composer ci:verify
+```
+
+## 6. Related files
+
+- `bin/gateway.php`: OpenSwoole gateway ingress and queue publish
+- `src/Ingress/CanonicalOrderRequest.php`: canonical schema normalization + envelope validation
+- `src/Worker/RequestConsumer.php`: strict canonical consume + SPIFFE trust validation
+- `bin/worker.php`: worker bootstrap and queue subscriptions
+- `scripts/e2e-gateway.sh`: end-to-end gateway/worker verification
+- `scripts/ci-verify.sh`: CI-oriented unit+E2E runner
+- `docs/spiffe-spire.md`: SPIFFE/SPIRE setup notes

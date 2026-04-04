@@ -18,6 +18,9 @@ declare(strict_types=1);
 use Swoole\Http\Server;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
+use SDPMlab\ZtEventGateway\Ingress\CanonicalOrderRequest;
+use Spiffe\Source\SourceConfig;
+use Spiffe\Source\X509Source;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
@@ -58,11 +61,54 @@ $workerState = new class {
     public ?\PhpAmqpLib\Connection\AMQPSocketConnection $amqpConn = null;
     public bool $topologyDeclared = false;
     public string $spiffeId = '';
+    public ?X509Source $x509Source = null;
 };
 
 // ── Worker start: initialize connections ────────────────────────
 $server->on('workerStart', function (Server $server, int $workerId) use ($env, $workerState) {
     $workerState->spiffeId = $env('SPIFFE_ID', '');
+
+    // Start X509Source if SPIRE Agent socket is configured
+    $spiffeSocket = $env('SPIFFE_ENDPOINT_SOCKET', '');
+    if ($spiffeSocket !== '') {
+        try {
+            $sourceConfig = new SourceConfig(
+                socketPath: $spiffeSocket,
+                maxRetries: 5,
+                initialBackoff: 1.0,
+                maxBackoff: 15.0,
+                connectTimeout: 5.0,
+                streamTimeout: 0.0,
+            );
+
+            $workerState->x509Source = new X509Source($sourceConfig);
+            $workerState->x509Source->onRotated(function (array $svids) use ($workerState) {
+                if ($svids !== []) {
+                    $workerState->spiffeId = (string) $svids[0]->spiffeId();
+                    fwrite(STDOUT, sprintf(
+                        "[gateway] SVID rotated: %s\n",
+                        $workerState->spiffeId,
+                    ));
+                }
+            });
+            $workerState->x509Source->onError(function (\Throwable $e) {
+                fwrite(STDERR, sprintf("[gateway] X509Source error: %s\n", $e->getMessage()));
+            });
+            $workerState->x509Source->start();
+
+            fwrite(STDOUT, sprintf(
+                "[gateway] Worker #%d X509Source started (socket=%s)\n",
+                $workerId,
+                $spiffeSocket,
+            ));
+        } catch (\Throwable $e) {
+            fwrite(STDERR, sprintf(
+                "[gateway] Worker #%d X509Source failed to start: %s\n",
+                $workerId,
+                $e->getMessage(),
+            ));
+        }
+    }
 
     fwrite(STDOUT, sprintf(
         "[gateway] Worker #%d started (pid=%d, spiffe_id=%s)\n",
@@ -113,15 +159,36 @@ function handleHealth(Response $res): void
 function handleOrderCreate(Request $req, Response $res, callable $env, object $state): void
 {
     $rawBody = $req->rawContent();
-    $data = [];
+    $requestPayload = [];
 
-    if ($rawBody !== '' && $rawBody !== false) {
-        $data = json_decode($rawBody, true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            $res->status(400);
-            $res->end(json_encode(['status' => 'Bad Request', 'message' => 'Invalid JSON.']));
-            return;
-        }
+    if ($rawBody === '' || $rawBody === false) {
+        $res->status(400);
+        $res->end(json_encode([
+            'status' => 'Bad Request',
+            'message' => 'Request body must be valid JSON.',
+        ]));
+        return;
+    }
+
+    $requestPayload = json_decode($rawBody, true);
+    if (!is_array($requestPayload)) {
+        $res->status(400);
+        $res->end(json_encode([
+            'status' => 'Bad Request',
+            'message' => 'Request body must be valid JSON.',
+        ]));
+        return;
+    }
+
+    try {
+        $data = CanonicalOrderRequest::normalizeOrderData($requestPayload);
+    } catch (\InvalidArgumentException $exception) {
+        $res->status(422);
+        $res->end(json_encode([
+            'status' => 'Unprocessable Entity',
+            'message' => $exception->getMessage(),
+        ]));
+        return;
     }
 
     $traceId = $req->header['x-correlation-id'] ?? uniqid('txn_', true);
@@ -129,8 +196,9 @@ function handleOrderCreate(Request $req, Response $res, callable $env, object $s
     $targetEvent = $env('REQUEST_EVENT_TYPE', 'OrderCreateRequestedEvent');
 
     $eventPayload = json_encode([
+        'schema_version' => CanonicalOrderRequest::SCHEMA_VERSION,
         'specversion' => '1.0',
-        'type'        => 'gateway.request',
+        'type'        => CanonicalOrderRequest::ENVELOPE_TYPE,
         'route'       => $targetEvent,
         'source'      => '/gateway/order',
         'id'          => $traceId,

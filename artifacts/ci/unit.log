@@ -1,0 +1,16 @@
+PHP Warning:  Module "Swow" is already loaded in Unknown on line 0
+
+Warning: Module "Swow" is already loaded in Unknown on line 0
+PHPUnit 10.5.63 by Sebastian Bergmann and contributors.
+
+Runtime:       PHP 8.3.23
+Configuration: /Users/jiezhiyang/zt-event-gateway/phpunit.xml
+
+................................................................[request-consumer] verified source=spiffe://zt.local/php-gateway path=[spiffe://zt.local/php-gateway]
+[request-consumer] published event=App\Events\OrderCreateRequestedEvent
+. 65 / 66 ( 98%)
+.                                                                 66 / 66 (100%)
+
+Time: 00:00.111, Memory: 10.00 MB
+
+OK (66 tests, 150 assertions)

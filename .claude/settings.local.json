@@ -83,7 +83,20 @@
       "Bash(docker info:*)",
       "Bash(docker context:*)",
       "Bash(curl -s http://127.0.0.1:8080/api/health)",
-      "Bash(bash scripts/stress_test.sh 500 2>&1)"
+      "Bash(bash scripts/stress_test.sh 500 2>&1)",
+      "Bash(git log:*)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('name:', d.get\\('name',''\\)\\); print\\('deps:', list\\(d.get\\('require',{}\\).keys\\(\\)\\)\\)\")",
+      "Bash(head:*)",
+      "Bash(find /Users/jiezhiyang/zt-event-gateway -name \".gitignore\" -type f -exec cat {} \\\\;)",
+      "Bash(cat /Users/jiezhiyang/zt-event-gateway/spiffe/helper/*.conf)",
+      "Bash(vendor/bin/phpunit:*)",
+      "Bash(curl -s -o /dev/null -w \"HTTP Status: %{http_code}\\\\n\" http://localhost:8080/api/health)",
+      "Bash(curl -s http://localhost:8080/api/health)",
+      "Bash(curl -s -u zt:ztpass http://localhost:15672/api/queues)",
+      "Bash(curl -s -w '\\\\n\\\\nHTTP Status: %{http_code}' -X POST http://localhost:8080/api/orders -H 'Content-Type: application/json' -H 'X-Correlation-Id: trace-e2e-test-001' -d '{:*)",
+      "Bash(python3 -c ':*)",
+      "Bash(curl -s -w '\\\\nHTTP: %{http_code}' -X POST http://localhost:8080/api/orders -H 'Content-Type: application/json' -d not-json)",
+      "Bash(curl -s -w '\\\\nHTTP: %{http_code}' -X POST http://localhost:8080/api/orders -H 'Content-Type: application/json' -d '{\"userKey\":\"1\"}')"
     ]
   }
 }

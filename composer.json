@@ -59,7 +59,10 @@
     "consumer": "php consumer.php OrderCreateRequestedEvent",
     "publish": "php publisher.php",
     "spiffe:watch": "php bin/spiffe-watcher.php",
+    "test:unit": "vendor/bin/phpunit -c phpunit.xml",
     "spiffe:e2e": "bash spiffe/e2e/run-e2e.sh",
+    "gateway:e2e": "bash scripts/e2e-gateway.sh",
+    "ci:verify": "bash scripts/ci-verify.sh",
     "spiffe:split": "bash packages/php-spiffe/split.sh"
   }
 }

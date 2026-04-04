@@ -37,7 +37,7 @@ use Spiffe\Workload\X509SVIDResponse;
  *   │     SPIRE Agent UDS socket                      │
  *   └────────────────────────────────────────────────┘
  */
-class SpiffeWorkloadAPIClient
+class SpiffeWorkloadAPIClient implements WorkloadAPIClientInterface
 {
     private const DEFAULT_SOCKET_PATH = 'unix:/tmp/spire-agent/public/api.sock';
 
