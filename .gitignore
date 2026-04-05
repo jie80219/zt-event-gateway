@@ -3,3 +3,7 @@
 /.vscode/
 /.phpunit.result.cache
 /.swow
+/swow/
+/.env
+/.env.local
+/artifacts/
