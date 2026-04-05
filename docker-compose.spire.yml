@@ -1,0 +1,97 @@
+name: zt-spire-platform
+# ─────────────────────────────────────────────────────────────────────
+# Platform stack: SPIFFE/SPIRE Server + shared infra (Redis/Consul/MQ)
+#
+# Start first:
+#   docker compose -f docker-compose.spire.yml up -d
+#
+# This stack owns the shared network `zt-net` and the shared volume
+# `spire-agent-sockets`, which the gateway stack mounts as `external`.
+# ─────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Shared Infrastructure ──────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: zt-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./docker/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - zt-net
+
+  consul:
+    image: hashicorp/consul:1.20
+    container_name: zt-consul
+    command: ["agent", "-dev", "-ui", "-client=0.0.0.0"]
+    ports:
+      - "8500:8500"
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - zt-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: zt-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - zt-net
+
+  # ── SPIFFE / SPIRE Server ──────────────────────────────────────────
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.12.0
+    container_name: zt-spire-server
+    command:
+      - -config
+      - /opt/spire/conf/server/server.conf
+    ports:
+      # Expose so spire-agents on other hosts can reach it.
+      - "8081:8081"
+    volumes:
+      - ./spiffe/spire-server-e2e/server.conf:/opt/spire/conf/server/server.conf:ro
+      - ./spiffe/certs/agent-ca.crt.pem:/opt/spire/conf/server/agent-ca.crt.pem:ro
+      - spire-server-data:/opt/spire/data
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    networks:
+      - zt-net
+
+volumes:
+  rabbitmq_data:
+  redis_data:
+  spire-server-data:
+  # Shared with the gateway stack. Declared here so this stack creates it;
+  # the gateway stack references it with `external: true`.
+  spire-agent-sockets:
+    name: zt-spire-agent-sockets
+
+networks:
+  zt-net:
+    name: zt-net
+    driver: bridge

@@ -1,0 +1,29 @@
+graph LR
+    %% 外部元件
+    Client(["Client"])
+    Keycloak(["Keycloak"])
+
+    %% 內部叢集
+    subgraph K8s ["Kubernetes Cluster"]
+        Spire["SPIFFE/SPIRE"]
+        Gateway["API Gateway<br/>(RoadRunner)"]
+        OrderService["Order Service"]
+        PaymentService["Payment Service"]
+        Postgres[("PostgreSQL<br/>(Outbox table)")]
+        RabbitMQ(("RabbitMQ"))
+    end
+
+    %% Client 請求與驗證
+    Client -- "HTTPS<br/>(Get Token)" --> Keycloak
+    Client -- "HTTPS<br/>(Send Request)" --> Gateway
+    Gateway -. "HTTPS<br/>(Verify Token)" .-> Keycloak
+
+    %% 工作負載驗證 (Workload Attestation)
+    Spire -. "(Verify Workload)" .-> Gateway
+    Spire -. "(Verify Workload)" .-> OrderService
+
+    %% 內部通訊、寫入資料庫與非同步事件
+    Gateway -- "mTLS<br/>(Forward Request)" --> OrderService
+    OrderService -- "TCP<br/>(Write Data)" --> Postgres
+    OrderService -- "AMQP<br/>(Publish Event)" --> RabbitMQ
+    RabbitMQ -- "AMQP<br/>(Subscribe Event)" --> PaymentService
