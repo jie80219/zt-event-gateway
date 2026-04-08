@@ -96,7 +96,18 @@
       "Bash(curl -s -w '\\\\n\\\\nHTTP Status: %{http_code}' -X POST http://localhost:8080/api/orders -H 'Content-Type: application/json' -H 'X-Correlation-Id: trace-e2e-test-001' -d '{:*)",
       "Bash(python3 -c ':*)",
       "Bash(curl -s -w '\\\\nHTTP: %{http_code}' -X POST http://localhost:8080/api/orders -H 'Content-Type: application/json' -d not-json)",
-      "Bash(curl -s -w '\\\\nHTTP: %{http_code}' -X POST http://localhost:8080/api/orders -H 'Content-Type: application/json' -d '{\"userKey\":\"1\"}')"
+      "Bash(curl -s -w '\\\\nHTTP: %{http_code}' -X POST http://localhost:8080/api/orders -H 'Content-Type: application/json' -d '{\"userKey\":\"1\"}')",
+      "Bash(docker --version)",
+      "Bash(bash:*)",
+      "Bash(E2E_BUILD_IMAGES=0 bash:*)",
+      "Bash(E2E_BUILD_IMAGES=0 E2E_WAIT_TIMEOUT=120 bash:*)",
+      "Bash(find /Users/jiezhiyang/zt-event-gateway -name \"*.php\" -type f -exec grep -l \"SDPMlab\\\\\\\\\\\\Anser\" {} \\\\;)",
+      "Bash(git -c core.pager=cat grep -h -E \"getenv\\\\\\('[A-Z_]+'|envString\\\\\\('[A-Z_]+'\" bin src)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(composer show:*)",
+      "Bash(composer test:unit)",
+      "Bash(gh auth:*)"
     ]
   }
 }
