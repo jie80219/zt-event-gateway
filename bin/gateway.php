@@ -19,6 +19,10 @@ use Swoole\Http\Server;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
 use SDPMlab\ZtEventGateway\Ingress\CanonicalOrderRequest;
+use SDPMlab\LSVID\LSVIDException;
+use SDPMlab\LSVID\LSVIDSigner;
+use SDPMlab\ZtEventGateway\Spiffe\LSVID\SpiffeTableSvidReader;
+use Spiffe\SharedMemory\SpiffeTableReader;
 use Spiffe\Source\SourceConfig;
 use Spiffe\Source\X509Source;
 
@@ -62,11 +66,63 @@ $workerState = new class {
     public bool $topologyDeclared = false;
     public string $spiffeId = '';
     public ?X509Source $x509Source = null;
+    public ?LSVIDSigner $lsvidSigner = null;
+    public string $downstreamSpiffeId = '';
 };
 
 // ── Worker start: initialize connections ────────────────────────
 $server->on('workerStart', function (Server $server, int $workerId) use ($env, $workerState) {
     $workerState->spiffeId = $env('SPIFFE_ID', '');
+    $workerState->downstreamSpiffeId = $env('WORKER_SPIFFE_ID', 'spiffe://zt.local/php-worker');
+
+    // ── LSVID Step 1 (Creation) wiring ───────────────────────────
+    //   The gateway is the chain origin: every accepted ingress
+    //   request must carry a freshly minted L0 whose iss === sub ===
+    //   this gateway's SPIFFE ID and aud === the downstream worker.
+    //   We probe the SHM SVID store at worker start; if a primary
+    //   X.509-SVID is available we build an LSVIDSigner. When SHM is
+    //   empty (local dev without spiffe-helper) the handler falls
+    //   back to an unsigned envelope and logs the degradation.
+    //
+    //   Opt-out:   LSVID_ENABLED=0
+    //   SHM path:  SPIFFE_SHM_DIR (default: package built-in)
+    if ($env('LSVID_ENABLED', '1') !== '0') {
+        try {
+            $shmDir = $env('SPIFFE_SHM_DIR', '');
+            $reader = $shmDir !== ''
+                ? new SpiffeTableReader($shmDir)
+                : new SpiffeTableReader();
+
+            $primary = $reader->readX509Primary();
+            if ($primary !== null && !empty($primary['key_pem']) && !empty($primary['cert_pem'])) {
+                $workerState->lsvidSigner = new LSVIDSigner(new SpiffeTableSvidReader($reader));
+                // Prefer the SPIFFE ID observed in the SHM SVID over the
+                // env-provided one — they should match, but SHM is the
+                // ground truth after rotation.
+                if (!empty($primary['spiffe_id'])) {
+                    $workerState->spiffeId = (string) $primary['spiffe_id'];
+                }
+                fwrite(STDOUT, sprintf(
+                    "[gateway] LSVID Step 1 enabled (iss=%s, aud=%s)\n",
+                    $workerState->spiffeId,
+                    $workerState->downstreamSpiffeId,
+                ));
+            } else {
+                fwrite(STDERR, sprintf(
+                    "[gateway] LSVID DEGRADED — no primary X.509-SVID in SHM (dir=%s). "
+                    . "Ingress envelopes will be unsigned. Start spiffe-helper to enable Step 1.\n",
+                    $shmDir !== '' ? $shmDir : '(default)',
+                ));
+            }
+        } catch (\Throwable $e) {
+            fwrite(STDERR, sprintf(
+                "[gateway] LSVID signer init failed: %s\n",
+                $e->getMessage(),
+            ));
+        }
+    } else {
+        fwrite(STDOUT, "[gateway] LSVID disabled via LSVID_ENABLED=0\n");
+    }
 
     // Start X509Source if SPIRE Agent socket is configured
     $spiffeSocket = $env('SPIFFE_ENDPOINT_SOCKET', '');
@@ -195,7 +251,7 @@ function handleOrderCreate(Request $req, Response $res, callable $env, object $s
     $routingKey = $env('REQUEST_ROUTING_KEY', 'request.new');
     $targetEvent = $env('REQUEST_EVENT_TYPE', 'OrderCreateRequestedEvent');
 
-    $eventPayload = json_encode([
+    $envelope = [
         'schema_version' => CanonicalOrderRequest::SCHEMA_VERSION,
         'specversion' => '1.0',
         'type'        => CanonicalOrderRequest::ENVELOPE_TYPE,
@@ -206,7 +262,41 @@ function handleOrderCreate(Request $req, Response $res, callable $env, object $s
         'spiffe_id'   => $state->spiffeId,
         'spiffe_path' => $state->spiffeId !== '' ? [$state->spiffeId] : [],
         'data'        => $data,
-    ]);
+    ];
+
+    // ── LSVID Step 1 — Creation (L0) ─────────────────────────────
+    //   The gateway is the authoritative origin of the identity
+    //   chain: it mints an L0 whose iss === sub === gateway SPIFFE
+    //   ID (workload-rooted), aud === downstream worker SPIFFE ID,
+    //   and carries traceId/route for downstream correlation. The
+    //   signer itself populates iat/exp/jti; caller-provided values
+    //   for reserved claims are ignored.
+    if ($state->lsvidSigner !== null) {
+        try {
+            $l0 = $state->lsvidSigner->createBase(
+                audience: $state->downstreamSpiffeId,
+                subject:  null, // workload-rooted: subject = signer SVID
+                extraClaims: [
+                    'traceId' => $traceId,
+                    'route'   => $targetEvent,
+                    'level'   => 'L0',
+                ],
+            );
+            $envelope['lsvid'] = $l0->raw;
+        } catch (LSVIDException $e) {
+            // Fail-open in Step 1: if minting blows up (e.g. SHM
+            // race during rotation) we let the request through
+            // without lsvid rather than dropping the user's order.
+            // The worker's prefix-check path still gates identity.
+            fwrite(STDERR, sprintf(
+                "[gateway] LSVID L0 mint failed (trace=%s): %s\n",
+                $traceId,
+                $e->getMessage(),
+            ));
+        }
+    }
+
+    $eventPayload = json_encode($envelope);
 
     // Get or create persistent AMQP channel
     $channel = getAmqpChannel($env, $state);

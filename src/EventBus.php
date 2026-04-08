@@ -3,6 +3,7 @@ namespace SDPMlab\ZtEventGateway;
 
 use SDPMlab\ZtEventGateway\MessageQueue\MessageBus;
 use SDPMlab\ZtEventGateway\EventStore\EventStoreDB;
+use SDPMlab\LSVID\LSVIDContext;
 
 class EventBus
 {
@@ -57,6 +58,11 @@ class EventBus
     {
         $routingKey = substr(strrchr($eventType, '\\'), 1);
 
+        // Pull the currently-handled inbound LSVID (if any). MessageBus will
+        // wrap it as the `nested` claim of the new level it signs, producing
+        // the L0 → L1 → L2 … nested chain.
+        $priorLsvid = LSVIDContext::current();
+
         if ($this->eventStoreDB !== null) {
             $this->eventStoreDB->appendEvent($streamName, [
                 'eventId' => uniqid('event_', true),
@@ -65,10 +71,17 @@ class EventBus
                 'metadata' => [
                     'spiffe_id' => $this->messageBus->getSpiffeId(),
                     'spiffe_path' => $spiffePath,
+                    'lsvid_prior' => $priorLsvid,
                 ],
             ]);
         }
 
-        $this->messageBus->publishEvent($eventType, $eventData, null, $spiffePath);
+        $this->messageBus->publishEvent(
+            eventType: $eventType,
+            eventData: $eventData,
+            exchange: null,
+            spiffePath: $spiffePath,
+            priorLsvid: $priorLsvid,
+        );
     }
 }

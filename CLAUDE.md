@@ -4,7 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a **Claude Code plugin** - a collection of production-ready agents, skills, hooks, commands, rules, and MCP configurations. The project provides battle-tested workflows for software development using Claude Code.
+This is a **Implementation of a Distributed Transaction API Gateway Based On SPIFFE/SPIRE Zero-Trust Architecture and Event-Driven Framework** - a collection of production-ready agents, skills, hooks, commands, rules, and MCP configurations. The project provides battle-tested workflows for software development using Claude Code.
+
+## Stack
+- **Language / Runtime**：PHP `^8.3`
+- **HTTP Gateway**：OpenSwoole（非 Swow，見下方 SPIFFE 章節說明）
+- **Messaging**：RabbitMQ via `php-amqplib/php-amqplib ^3.7.4`
+- **Identity**：SPIRE Server + Agent，信任域 `zt.local`；本地 path package `packages/php-spiffe`（symlink）
+- **Event store / Saga**：`prooph/event-store ^7.9`、`prooph/pdo-event-store ^1.15`
+- **Supporting**：`ramsey/uuid`、`monolog/monolog`、`vlucas/phpdotenv`、`guzzlehttp/guzzle`、`sdpmlab/anser`、`sdpmlab/anser-action`
+- **Tests**：`phpunit/phpunit ^10.5`
 
 ## Running Tests
 

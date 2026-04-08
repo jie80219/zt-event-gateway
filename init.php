@@ -4,25 +4,35 @@ require_once './vendor/autoload.php';
 
 use SDPMlab\Anser\Service\ServiceList;
 
+$env = static function (string $key, string $default): string {
+    $value = getenv($key);
+    return is_string($value) && $value !== '' ? $value : $default;
+};
+
+$isHttps = $env('SPIFFE_MTLS_ENABLED', '0') === '1';
+$defaultHost = $env('SERVICE_HOST', 'host.docker.internal');
+$mtlsPort = (int) $env('MTLS_PORT', '8443');
+$httpPort  = 8080;  // RoadRunner internal HTTP port
+
 ServiceList::addLocalService(
     name: "ProductionService",
-    address: "host.docker.internal",
-    port: 8081,
-    isHttps: false
+    address: $env('PRODUCTION_SERVICE_HOST', $defaultHost),
+    port: $isHttps ? $mtlsPort : (int) $env('PRODUCTION_SERVICE_PORT', '8081'),
+    isHttps: $isHttps
 );
 
 ServiceList::addLocalService(
     name: "UserService",
-    address: "host.docker.internal",
-    port: 8083,
-    isHttps: false
+    address: $env('USER_SERVICE_HOST', $defaultHost),
+    port: $isHttps ? $mtlsPort : (int) $env('USER_SERVICE_PORT', '8083'),
+    isHttps: $isHttps
 );
 
 ServiceList::addLocalService(
     name: "OrderService",
-    address: "host.docker.internal",
-    port: 8082,
-    isHttps: false
+    address: $env('ORDER_SERVICE_HOST', $defaultHost),
+    port: $isHttps ? $mtlsPort : (int) $env('ORDER_SERVICE_PORT', '8082'),
+    isHttps: $isHttps
 );
 
 define("LOG_PATH", __DIR__ . DIRECTORY_SEPARATOR ."Logs" . DIRECTORY_SEPARATOR);

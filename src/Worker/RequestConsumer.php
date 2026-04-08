@@ -8,6 +8,8 @@ use PhpAmqpLib\Message\AMQPMessage;
 use SDPMlab\ZtEventGateway\Ingress\CanonicalOrderRequest;
 use SDPMlab\ZtEventGateway\MessageQueue\MessageBus;
 use SDPMlab\ZtEventGateway\MessageQueue\UnrecoverableMessageException;
+use SDPMlab\LSVID\LSVIDException;
+use SDPMlab\LSVID\LSVIDValidator;
 
 final class RequestConsumer
 {
@@ -16,8 +18,11 @@ final class RequestConsumer
         'spiffe://zt.local/',
     ];
 
-    public function __construct(private readonly MessageBus $messageBus)
-    {
+    public function __construct(
+        private readonly MessageBus $messageBus,
+        private readonly ?LSVIDValidator $lsvidValidator = null,
+        private readonly bool $lsvidRequired = false,
+    ) {
     }
 
     public function process(AMQPMessage $message): void
@@ -45,13 +50,78 @@ final class RequestConsumer
             implode(' -> ', $spiffePath),
         ));
 
+        // ── Nested LSVID: validate any prior-level token on the inbound
+        //    envelope, then forward it as the `nested` claim of the next
+        //    level signed by MessageBus. When no prior token exists, the
+        //    next hop becomes the base (L0) — but only when LSVID is not
+        //    required. With LSVID_REQUIRED=1, absence is an error.
+        $priorLsvid = null;
+        $inboundLsvid = is_string($payload['lsvid'] ?? null) ? (string) $payload['lsvid'] : null;
+
+        if ($inboundLsvid !== null) {
+            // LSVID present — validator MUST be configured. A wiring error
+            // where the validator is null but the envelope carries an lsvid
+            // is treated as unrecoverable (fail-closed).
+            if ($this->lsvidValidator === null) {
+                throw new UnrecoverableMessageException(
+                    'LSVID present on envelope but no LSVIDValidator is configured. '
+                    . 'This is a wiring error — check worker LSVID configuration.',
+                );
+            }
+
+            try {
+                $workerSpiffeId = getenv('SPIFFE_ID') ?: null;
+
+                $parsed = $this->lsvidValidator->validate(
+                    $inboundLsvid,
+                    expectedAudience: $workerSpiffeId,
+                    expectedSubject: $sourceSpiffeId,
+                );
+
+                // Additional reconciliation: L0.sub must match envelope source.
+                $chain = $parsed->chain();
+                if ($chain !== []) {
+                    $l0Subject = $chain[0]->subject();
+                    if ($l0Subject !== null && $l0Subject !== $sourceSpiffeId) {
+                        throw new LSVIDException(sprintf(
+                            'L0 subject %s does not match envelope source %s.',
+                            $l0Subject,
+                            $sourceSpiffeId,
+                        ));
+                    }
+                }
+
+                $priorLsvid = $inboundLsvid;
+                fwrite(STDOUT, sprintf(
+                    "[request-consumer] LSVID L%d OK iss=%s\n",
+                    $parsed->level(),
+                    $parsed->issuer(),
+                ));
+            } catch (LSVIDException $e) {
+                throw new UnrecoverableMessageException('Invalid inbound LSVID: ' . $e->getMessage());
+            }
+        } elseif ($this->lsvidRequired) {
+            throw new UnrecoverableMessageException(
+                'LSVID required but envelope carries none. '
+                . 'Ensure the gateway mints L0 at ingress (LSVID_ENABLED=1).',
+            );
+        } else {
+            // Migration period: no lsvid, not required — proceed without.
+            fwrite(STDOUT, "[request-consumer] no LSVID on envelope (migration-period fallback).\n");
+        }
+
         $eventClass = $this->resolveEventClass($route);
         if (!class_exists($eventClass)) {
             throw new UnrecoverableMessageException(sprintf('Unknown request route: %s', $route));
         }
 
-        // Forward the SPIFFE path to the next event
-        $this->messageBus->publishEvent($eventClass, $eventData, null, $spiffePath);
+        $this->messageBus->publishEvent(
+            eventType: $eventClass,
+            eventData: $eventData,
+            exchange: null,
+            spiffePath: $spiffePath,
+            priorLsvid: $priorLsvid,
+        );
 
         fwrite(STDOUT, sprintf("[request-consumer] published event=%s\n", $eventClass));
     }

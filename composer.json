@@ -7,8 +7,6 @@
     "php": "^8.3",
     "php-amqplib/php-amqplib": "^3.7.4",
     "ramsey/uuid": "^4.7",
-    "swow/swow": "^1.2",
-    "workerman/workerman": "^4.1",
     "nikic/fast-route": "^1.3",
     "guzzlehttp/guzzle": "^7.0",
     "monolog/monolog": "^3.4",
@@ -18,11 +16,13 @@
     "sdpmlab/anser": "^0.2.6",
     "prooph/event-store": "^7.9",
     "prooph/pdo-event-store": "^1.15",
-    "sdpmlab/php-spiffe": "^1.0@dev"
+    "sdpmlab/php-spiffe": "^1.0@dev",
+    "sdpmlab/php-lsvid": "^1.0@dev"
   },
   "require-dev": {
     "friendsofphp/php-cs-fixer": "^3.17",
-    "phpunit/phpunit": "^10.5"
+    "phpunit/phpunit": "^10.5",
+    "openswoole/ide-helper": "^4.11"
   },
   "autoload-dev": {
     "psr-4": {
@@ -33,6 +33,13 @@
     {
       "type": "path",
       "url": "packages/php-spiffe",
+      "options": {
+        "symlink": true
+      }
+    },
+    {
+      "type": "path",
+      "url": "packages/php-lsvid",
       "options": {
         "symlink": true
       }

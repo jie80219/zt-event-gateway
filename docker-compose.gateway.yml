@@ -54,8 +54,12 @@ services:
       RABBITMQ_PASS: "ztpass"
       SPIFFE_ID: "spiffe://zt.local/php-gateway"
       SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
+      WORKER_SPIFFE_ID: "spiffe://zt.local/php-worker"
+      LSVID_ENABLED: "1"
+      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
     volumes:
       - spire-agent-sockets:/run/spire/sockets:ro
+      - spiffe-shared:/tmp/spiffe-shared
     ports:
       - "8080:8080"
     depends_on:
@@ -83,8 +87,22 @@ services:
       RABBITMQ_PASS: "ztpass"
       SPIFFE_ID: "spiffe://zt.local/php-worker"
       SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
+      DOWNSTREAM_SPIFFE_ID: "spiffe://zt.local/php-worker"
+      LSVID_ENABLED: "1"
+      LSVID_REQUIRED: "0"
+      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
+      # ── mTLS to downstream services ──
+      SPIFFE_MTLS_ENABLED: "1"
+      MTLS_PORT: "8443"
+      ORDER_SERVICE_HOST: "zt-order-service"
+      PRODUCTION_SERVICE_HOST: "zt-production-service"
+      USER_SERVICE_HOST: "zt-user-service"
+      ORDER_SPIFFE_ID: "spiffe://zt.local/order-service"
+      PRODUCTION_SPIFFE_ID: "spiffe://zt.local/production-service"
+      USER_SPIFFE_ID: "spiffe://zt.local/user-service"
     volumes:
       - spire-agent-sockets:/run/spire/sockets:ro
+      - spiffe-shared:/tmp/spiffe-shared
     depends_on:
       spire-agent:
         condition: service_healthy
@@ -138,6 +156,9 @@ volumes:
   spire-agent-sockets:
     external: true
     name: zt-spire-agent-sockets
+  spiffe-shared:
+    external: true
+    name: zt-spiffe-shared
 
 networks:
   zt-net:

@@ -7,6 +7,9 @@ namespace ZtEventGateway\Worker;
 use PhpAmqpLib\Message\AMQPMessage;
 use SDPMlab\ZtEventGateway\EventBus;
 use SDPMlab\ZtEventGateway\MessageQueue\UnrecoverableMessageException;
+use SDPMlab\LSVID\LSVIDContext;
+use SDPMlab\LSVID\LSVIDException;
+use SDPMlab\LSVID\LSVIDValidator;
 
 final class EventConsumer
 {
@@ -15,8 +18,11 @@ final class EventConsumer
         'spiffe://zt.local/',
     ];
 
-    public function __construct(private readonly EventBus $eventBus)
-    {
+    public function __construct(
+        private readonly EventBus $eventBus,
+        private readonly ?LSVIDValidator $lsvidValidator = null,
+        private readonly bool $lsvidRequired = false,
+    ) {
     }
 
     public function process(AMQPMessage $message): void
@@ -52,12 +58,56 @@ final class EventConsumer
             ));
         }
 
+        // ── Nested LSVID: verify full chain, then expose the raw token
+        //    to the Saga layer via LSVIDContext. EventBus::publish() reads
+        //    it and asks MessageBus to wrap it as the `nested` claim of
+        //    the next level signed downstream.
+        $rawLsvid = is_string($payload['lsvid'] ?? null) ? (string) $payload['lsvid'] : null;
+
+        if ($rawLsvid !== null) {
+            // LSVID present — validator MUST be configured.
+            if ($this->lsvidValidator === null) {
+                throw new UnrecoverableMessageException(
+                    'LSVID present on event envelope but no LSVIDValidator is configured.',
+                );
+            }
+
+            try {
+                $workerSpiffeId = getenv('SPIFFE_ID') ?: null;
+
+                $parsed = $this->lsvidValidator->validate(
+                    $rawLsvid,
+                    expectedAudience: $workerSpiffeId,
+                );
+
+                fwrite(STDOUT, sprintf(
+                    "[event-consumer] LSVID chain L0..L%d verified: %s\n",
+                    $parsed->level(),
+                    implode(
+                        ' -> ',
+                        array_map(static fn($l) => $l->issuer(), $parsed->chain()),
+                    ),
+                ));
+            } catch (LSVIDException $e) {
+                throw new UnrecoverableMessageException('LSVID validation failed: ' . $e->getMessage());
+            }
+        } elseif ($this->lsvidRequired) {
+            throw new UnrecoverableMessageException(
+                'LSVID required but event envelope carries none.',
+            );
+        }
+
         $event = $this->buildEventInstance($eventType, $eventData);
         if ($event === null) {
             throw new UnrecoverableMessageException(sprintf('Unknown event class: %s', $eventType));
         }
 
-        $this->eventBus->dispatch($event);
+        LSVIDContext::set($rawLsvid);
+        try {
+            $this->eventBus->dispatch($event);
+        } finally {
+            LSVIDContext::clear();
+        }
 
         fwrite(STDOUT, sprintf("[event-consumer] handled event=%s\n", $eventType));
     }

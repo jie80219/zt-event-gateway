@@ -82,6 +82,38 @@ ${SPIRE_SERVER_BIN} entry create \
     -ttl 3600 \
     2>&1 || true
 
+log "Registering workload: spiffe://${TRUST_DOMAIN}/php-worker"
+${SPIRE_SERVER_BIN} entry create \
+    -parentID "spiffe://${TRUST_DOMAIN}/agent" \
+    -spiffeID "spiffe://${TRUST_DOMAIN}/php-worker" \
+    -selector "unix:uid:0" \
+    -ttl 3600 \
+    2>&1 || true
+
+log "Registering workload: spiffe://${TRUST_DOMAIN}/order-service"
+${SPIRE_SERVER_BIN} entry create \
+    -parentID "spiffe://${TRUST_DOMAIN}/agent" \
+    -spiffeID "spiffe://${TRUST_DOMAIN}/order-service" \
+    -selector "unix:uid:0" \
+    -ttl 3600 \
+    2>&1 || true
+
+log "Registering workload: spiffe://${TRUST_DOMAIN}/production-service"
+${SPIRE_SERVER_BIN} entry create \
+    -parentID "spiffe://${TRUST_DOMAIN}/agent" \
+    -spiffeID "spiffe://${TRUST_DOMAIN}/production-service" \
+    -selector "unix:uid:0" \
+    -ttl 3600 \
+    2>&1 || true
+
+log "Registering workload: spiffe://${TRUST_DOMAIN}/user-service"
+${SPIRE_SERVER_BIN} entry create \
+    -parentID "spiffe://${TRUST_DOMAIN}/agent" \
+    -spiffeID "spiffe://${TRUST_DOMAIN}/user-service" \
+    -selector "unix:uid:0" \
+    -ttl 3600 \
+    2>&1 || true
+
 log "Registering workload: spiffe://${TRUST_DOMAIN}/test-client"
 ${SPIRE_SERVER_BIN} entry create \
     -parentID "spiffe://${TRUST_DOMAIN}/agent" \
