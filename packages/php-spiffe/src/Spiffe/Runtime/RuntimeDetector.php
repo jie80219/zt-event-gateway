@@ -17,14 +17,19 @@ final class RuntimeDetector
             return self::$instance;
         }
 
-        if (!extension_loaded('swow')) {
-            throw new \RuntimeException(
-                'ext-swow is required but not loaded. Install Swow (>=1.2): https://github.com/swow/swow'
-            );
+        if (extension_loaded('openswoole') || extension_loaded('swoole')) {
+            self::$instance = new OpenSwooleRuntime();
+            return self::$instance;
         }
 
-        self::$instance = new SwowRuntime();
-        return self::$instance;
+        if (extension_loaded('swow')) {
+            self::$instance = new SwowRuntime();
+            return self::$instance;
+        }
+
+        throw new \RuntimeException(
+            'A coroutine runtime is required. Install OpenSwoole (ext-openswoole) or Swow (ext-swow).'
+        );
     }
 
     public static function use(RuntimeInterface $runtime): void
@@ -39,6 +44,12 @@ final class RuntimeDetector
 
     public static function available(): string
     {
-        return extension_loaded('swow') ? 'swow' : 'none';
+        if (extension_loaded('openswoole') || extension_loaded('swoole')) {
+            return 'openswoole';
+        }
+        if (extension_loaded('swow')) {
+            return 'swow';
+        }
+        return 'none';
     }
 }

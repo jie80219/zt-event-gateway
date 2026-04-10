@@ -66,6 +66,25 @@ docker exec zt-spire-server /opt/spire/bin/spire-server entry create \
     -selector "unix:uid:0" \
     -x509SVIDTTL 3600 2>&1 | grep -v "AlreadyExists" || true
 
+# Register downstream services (mTLS endpoints)
+docker exec zt-spire-server /opt/spire/bin/spire-server entry create \
+    -parentID "$AGENT_ID" \
+    -spiffeID "spiffe://zt.local/order-service" \
+    -selector "unix:uid:0" \
+    -x509SVIDTTL 3600 2>&1 | grep -v "AlreadyExists" || true
+
+docker exec zt-spire-server /opt/spire/bin/spire-server entry create \
+    -parentID "$AGENT_ID" \
+    -spiffeID "spiffe://zt.local/production-service" \
+    -selector "unix:uid:0" \
+    -x509SVIDTTL 3600 2>&1 | grep -v "AlreadyExists" || true
+
+docker exec zt-spire-server /opt/spire/bin/spire-server entry create \
+    -parentID "$AGENT_ID" \
+    -spiffeID "spiffe://zt.local/user-service" \
+    -selector "unix:uid:0" \
+    -x509SVIDTTL 3600 2>&1 | grep -v "AlreadyExists" || true
+
 log "Registered entries:"
 docker exec zt-spire-server /opt/spire/bin/spire-server entry show 2>&1 | grep "SPIFFE ID"
 
@@ -90,8 +109,18 @@ log "  SPIRE Server:  zt-spire-server (healthy)"
 log "  SPIRE Agent:   zt-spire-agent (x509pop)"
 log "  SPIFFE Helper: zt-spiffe-helper → /certs/"
 log ""
-log "  PEM files shared to Gateway + Worker:"
+log "  Registered workloads:"
+log "    spiffe://zt.local/php-gateway"
+log "    spiffe://zt.local/php-worker"
+log "    spiffe://zt.local/order-service"
+log "    spiffe://zt.local/production-service"
+log "    spiffe://zt.local/user-service"
+log ""
+log "  PEM files shared to Gateway + Worker + Services:"
 log "    /certs/svid.pem"
 log "    /certs/svid_key.pem"
 log "    /certs/bundle.pem"
+log ""
+log "  Start all services with:"
+log "    docker compose up -d"
 log "═══════════════════════════════════════════════"

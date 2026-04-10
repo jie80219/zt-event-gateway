@@ -107,7 +107,19 @@
       "Bash(git commit -m ':*)",
       "Bash(composer show:*)",
       "Bash(composer test:unit)",
-      "Bash(gh auth:*)"
+      "Bash(gh auth:*)",
+      "Bash(ssh -T git@github.com)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(composer install:*)",
+      "Bash(find:*)",
+      "Bash(git rm:*)",
+      "Bash(git push:*)",
+      "Bash(git tag:*)",
+      "Bash(git -C /Users/jiezhiyang/zt-event-gateway status)",
+      "Bash(git:*)",
+      "Bash(curl:*)",
+      "Bash(composer require:*)",
+      "Bash(docker pull:*)"
     ]
   }
 }

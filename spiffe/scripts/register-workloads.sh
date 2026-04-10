@@ -1,23 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${SPIRE_SERVER_CONTAINER:=spire-server}"
+: "${SPIRE_SERVER_CONTAINER:=zt-spire-server}"
 : "${TRUST_DOMAIN:=zt.local}"
-: "${GATEWAY_PARENT_ID:?Set GATEWAY_PARENT_ID first}"
-: "${PHP_GATEWAY_PARENT_ID:?Set PHP_GATEWAY_PARENT_ID first}"
 
-# Example:
-# export GATEWAY_PARENT_ID=spiffe://zt.local/spire/agent/x509pop/<gateway-agent-fingerprint>
-# export PHP_GATEWAY_PARENT_ID=spiffe://zt.local/spire/agent/x509pop/<php-gateway-agent-fingerprint>
+# ── Resolve the agent's SPIFFE ID automatically ──────────────────
+AGENT_ID=$(docker exec "${SPIRE_SERVER_CONTAINER}" \
+    /opt/spire/bin/spire-server agent list 2>&1 \
+    | grep -oE 'spiffe://[^ "]+' | head -1 || echo "")
 
-/opt/spire/bin/spire-server entry create \
-  -parentID "${GATEWAY_PARENT_ID}" \
-  -spiffeID "spiffe://${TRUST_DOMAIN}/gateway" \
-  -selector unix:user:envoy
+if [ -z "$AGENT_ID" ]; then
+    echo "ERROR: No attested agent found. Start spire-agent first."
+    exit 1
+fi
+echo "Agent ID: $AGENT_ID"
 
-/opt/spire/bin/spire-server entry create \
-  -parentID "${PHP_GATEWAY_PARENT_ID}" \
-  -spiffeID "spiffe://${TRUST_DOMAIN}/php-gateway" \
-  -selector unix:user:envoy
+register() {
+    local spiffe_id="$1"
+    local selector="$2"
+    docker exec "${SPIRE_SERVER_CONTAINER}" \
+        /opt/spire/bin/spire-server entry create \
+        -parentID "$AGENT_ID" \
+        -spiffeID "$spiffe_id" \
+        -selector "$selector" \
+        -x509SVIDTTL 3600 2>&1 | grep -v "AlreadyExists" || true
+}
 
-/opt/spire/bin/spire-server entry show
+# ── Gateway & Worker (unix:uid:0 — process-level attestation) ────
+register "spiffe://${TRUST_DOMAIN}/php-gateway" "unix:uid:0"
+register "spiffe://${TRUST_DOMAIN}/php-worker"  "unix:uid:0"
+
+# ── Downstream Services (unix:uid:0 — each service) ─────────────
+register "spiffe://${TRUST_DOMAIN}/order-service"      "unix:uid:0"
+register "spiffe://${TRUST_DOMAIN}/production-service"  "unix:uid:0"
+register "spiffe://${TRUST_DOMAIN}/user-service"        "unix:uid:0"
+
+echo ""
+echo "Registered entries:"
+docker exec "${SPIRE_SERVER_CONTAINER}" \
+    /opt/spire/bin/spire-server entry show 2>&1 | grep "SPIFFE ID"

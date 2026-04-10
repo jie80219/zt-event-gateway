@@ -106,6 +106,28 @@ class OrderService extends SimpleService
     }
 
     /**
+     * 確認訂單完成（更新訂單狀態）
+     *
+     * @param integer $userId
+     * @param string $orderId
+     * @return ActionInterface
+     */
+    public function confirmOrderAction(int $userId, string $orderId): ActionInterface
+    {
+        return $this->getAction(
+            method: "PUT",
+            path: "/api/v1/order/{$orderId}"
+        )->setOptions([
+            "headers" => [
+                "X-User-Key" => $userId
+            ],
+            "json" => [
+                "status" => "completed"
+            ]
+        ]);
+    }
+
+    /**
      * 訂單補償（刪除）
      *
      * @param integer $userId

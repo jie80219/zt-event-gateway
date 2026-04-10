@@ -7,8 +7,7 @@ RUN \
     docker-php-ext-install opcache && docker-php-ext-enable opcache && \
     pecl install xdebug && docker-php-ext-enable xdebug && \
     echo '' | pecl install event && \
-    docker-php-ext-enable --ini-name zz-event.ini event && \
-    docker-php-ext-enable redis || true
+    docker-php-ext-enable --ini-name zz-event.ini event
 
 # SWOW extension
 RUN \

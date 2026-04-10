@@ -16,7 +16,7 @@
 
     <source>
         <include>
-            <directory>src/Spiffe</directory>
+            <directory>src</directory>
         </include>
         <exclude>
             <directory>src/Spiffe/Workload</directory>

@@ -4,28 +4,24 @@ declare(strict_types=1);
 
 namespace Spiffe\Runtime;
 
-use Swow\Socket;
+use OpenSwoole\Coroutine\Socket;
 
 /**
- * Minimal HTTP/2 transport for gRPC over UDS, built on Swow's Socket.
+ * HTTP/2 transport for gRPC over UDS, built on OpenSwoole's Coroutine\Socket.
  *
- * Swow-native HTTP/2 transport built on Swow\Socket for gRPC communication.
- * Implements only the gRPC-required subset of HTTP/2:
+ * Mirrors SwowHttp2Transport but uses OpenSwoole socket primitives:
+ *   - Swow\Socket        → OpenSwoole\Coroutine\Socket
+ *   - sendString()       → sendAll()
+ *   - recvString($len)   → recvAll($len)
  *
- *   - Connection preface + SETTINGS exchange
- *   - HEADERS frame (with minimal HPACK literal encoding)
- *   - DATA frame (gRPC length-prefixed messages)
- *   - Response frame reading (HEADERS + DATA + trailers)
- *
- * Non-goals: flow control tuning, server push, HPACK dynamic table,
- * priority, stream multiplexing (gRPC uses one stream per call).
+ * HTTP/2 framing logic is shared via the Http2Frame helper.
  */
-final class SwowHttp2Transport implements Http2TransportInterface
+final class OpenSwooleHttp2Transport implements Http2TransportInterface
 {
     private ?Socket $socket = null;
     private string $udsPath;
-    private int $connectTimeout;
-    private int $readTimeout;
+    private float $connectTimeout;
+    private float $readTimeout;
 
     /** @var int Next stream ID (client streams are odd: 1, 3, 5, ...) */
     private int $nextStreamId = 1;
@@ -35,21 +31,25 @@ final class SwowHttp2Transport implements Http2TransportInterface
     public function __construct(string $udsPath, float $connectTimeout = 5.0, float $readTimeout = 30.0)
     {
         $this->udsPath = $udsPath;
-        $this->connectTimeout = (int) ($connectTimeout * 1000);
-        $this->readTimeout = (int) ($readTimeout * 1000);
+        $this->connectTimeout = $connectTimeout;
+        $this->readTimeout = $readTimeout;
     }
 
-    /**
-     * Establish the HTTP/2 connection over UDS.
-     */
     public function connect(): void
     {
         if ($this->connected) {
             return;
         }
 
-        $this->socket = new Socket(Socket::TYPE_UNIX_STREAM);
-        $this->socket->connect($this->udsPath, 0, $this->connectTimeout);
+        $this->socket = new Socket(AF_UNIX, SOCK_STREAM, 0);
+
+        if (!$this->socket->connect($this->udsPath, 0, $this->connectTimeout)) {
+            throw new \RuntimeException(sprintf(
+                'Failed to connect to UDS %s: %s',
+                $this->udsPath,
+                $this->socket->errMsg,
+            ));
+        }
 
         // Send HTTP/2 connection preface
         $this->write(Http2Frame::CONNECTION_PREFACE);
@@ -58,13 +58,12 @@ final class SwowHttp2Transport implements Http2TransportInterface
         $this->write(Http2Frame::settings());
 
         // Read server's SETTINGS frame
-        $this->readFrame(); // server SETTINGS
+        $this->readFrame();
 
         // Send SETTINGS ACK
         $this->write(Http2Frame::settings(ack: true));
 
         // Optionally read SETTINGS ACK from server
-        // (some servers send it, some don't — just drain if available)
         $this->readFrameNonBlocking();
 
         // Send large window update for connection-level flow control
@@ -73,40 +72,25 @@ final class SwowHttp2Transport implements Http2TransportInterface
         $this->connected = true;
     }
 
-    /**
-     * Send a gRPC unary request and read the response.
-     *
-     * @return array{status: int, headers: array<string, string>, data: string}
-     */
     public function unaryRequest(string $method, string $grpcPayload): array
     {
         $this->ensureConnected();
         $streamId = $this->allocateStream();
 
-        // Send HEADERS + DATA
         $this->write(Http2Frame::grpcHeaders($method, $streamId));
         $this->write(Http2Frame::grpcData($grpcPayload, $streamId, endStream: true));
 
-        // Read response frames
         return $this->readGrpcResponse($streamId);
     }
 
-    /**
-     * Send a gRPC server-streaming request and yield responses.
-     *
-     * @param callable(array{headers: array<string, string>, data: string}): bool $onFrame
-     *        Return false to stop reading.
-     */
     public function serverStreamRequest(string $method, string $grpcPayload, callable $onFrame): void
     {
         $this->ensureConnected();
         $streamId = $this->allocateStream();
 
-        // Send HEADERS (no END_STREAM) + DATA with END_STREAM
         $this->write(Http2Frame::grpcHeaders($method, $streamId));
         $this->write(Http2Frame::grpcData($grpcPayload, $streamId, endStream: true));
 
-        // Read frames until end-of-stream
         while (true) {
             $frame = $this->readFrame();
             if ($frame === null) {
@@ -128,7 +112,6 @@ final class SwowHttp2Transport implements Http2TransportInterface
             if ($frame['type'] === Http2Frame::HEADERS) {
                 $headers = Http2Frame::hpackDecode($frame['payload']);
 
-                // Trailers with grpc-status → end of stream
                 if (isset($headers['grpc-status'])) {
                     $status = (int) $headers['grpc-status'];
                     if ($status !== 0) {
@@ -139,14 +122,13 @@ final class SwowHttp2Transport implements Http2TransportInterface
                             $headers['grpc-message'] ?? 'unknown',
                         ));
                     }
-                    break; // clean end of stream
+                    break;
                 }
                 continue;
             }
 
             // DATA frame → deliver to callback
             if ($frame['type'] === Http2Frame::DATA && $frame['stream_id'] === $streamId) {
-                // Send WINDOW_UPDATE to prevent flow control stall
                 if (strlen($frame['payload']) > 0) {
                     $this->write(Http2Frame::windowUpdate(0, strlen($frame['payload'])));
                     $this->write(Http2Frame::windowUpdate($streamId, strlen($frame['payload'])));
@@ -161,7 +143,6 @@ final class SwowHttp2Transport implements Http2TransportInterface
                 }
             }
 
-            // End of stream flag on DATA
             if ($frame['flags'] & Http2Frame::FLAG_END_STREAM) {
                 break;
             }
@@ -199,18 +180,20 @@ final class SwowHttp2Transport implements Http2TransportInterface
     private function allocateStream(): int
     {
         $id = $this->nextStreamId;
-        $this->nextStreamId += 2; // client streams are odd
+        $this->nextStreamId += 2;
         return $id;
     }
 
     private function write(string $data): void
     {
-        $this->socket->sendString($data, $this->readTimeout);
+        $sent = $this->socket->sendAll($data, $this->readTimeout);
+        if ($sent === false) {
+            $this->connected = false;
+            throw new \RuntimeException('Socket write failed: ' . $this->socket->errMsg);
+        }
     }
 
     /**
-     * Read a single HTTP/2 frame.
-     *
      * @return array{type: int, flags: int, stream_id: int, payload: string}|null
      */
     private function readFrame(): ?array
@@ -237,17 +220,14 @@ final class SwowHttp2Transport implements Http2TransportInterface
         ];
     }
 
-    /**
-     * Try to read a frame without blocking (best-effort drain).
-     */
     private function readFrameNonBlocking(): void
     {
         try {
-            $headerBytes = $this->socket->recvString(Http2Frame::HEADER_SIZE, 100);
-            if (strlen($headerBytes) === Http2Frame::HEADER_SIZE) {
+            $headerBytes = $this->socket->recvAll(Http2Frame::HEADER_SIZE, 0.1);
+            if ($headerBytes !== false && strlen($headerBytes) === Http2Frame::HEADER_SIZE) {
                 $header = Http2Frame::decodeHeader($headerBytes);
                 if ($header['length'] > 0) {
-                    $this->socket->recvString($header['length'], 100);
+                    $this->socket->recvAll($header['length'], 0.1);
                 }
             }
         } catch (\Throwable) {
@@ -258,8 +238,12 @@ final class SwowHttp2Transport implements Http2TransportInterface
     private function readExact(int $length): ?string
     {
         try {
-            $data = $this->socket->recvString($length, $this->readTimeout);
-            return strlen($data) === $length ? $data : null;
+            $data = $this->socket->recvAll($length, $this->readTimeout);
+            if ($data === false || strlen($data) !== $length) {
+                $this->connected = false;
+                return null;
+            }
+            return $data;
         } catch (\Throwable) {
             $this->connected = false;
             return null;
@@ -267,8 +251,6 @@ final class SwowHttp2Transport implements Http2TransportInterface
     }
 
     /**
-     * Read a full gRPC response (HEADERS + DATA + optional trailers).
-     *
      * @return array{status: int, headers: array<string, string>, data: string}
      */
     private function readGrpcResponse(int $streamId): array
@@ -282,7 +264,6 @@ final class SwowHttp2Transport implements Http2TransportInterface
                 throw new \RuntimeException('Connection closed while reading gRPC response');
             }
 
-            // Handle control frames
             if (in_array($frame['type'], [Http2Frame::WINDOW_UPDATE, Http2Frame::SETTINGS, Http2Frame::PING], true)) {
                 if ($frame['type'] === Http2Frame::PING && !($frame['flags'] & Http2Frame::FLAG_ACK)) {
                     $this->write(Http2Frame::encode(Http2Frame::PING, Http2Frame::FLAG_ACK, 0, $frame['payload']));
@@ -298,7 +279,7 @@ final class SwowHttp2Transport implements Http2TransportInterface
                 $responseHeaders = array_merge($responseHeaders, $headers);
 
                 if ($frame['flags'] & Http2Frame::FLAG_END_STREAM) {
-                    break; // trailers-only response
+                    break;
                 }
             }
 

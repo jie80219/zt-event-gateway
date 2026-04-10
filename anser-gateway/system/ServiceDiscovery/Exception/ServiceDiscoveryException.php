@@ -23,11 +23,11 @@ class ServiceDiscoveryException extends AnserGatewayException
 
     public static function forAnserGatewayRegisterError($data): ServiceDiscoveryException
     {
-        return new self("AnserGateway 註冊至 Consul 時發生錯誤，錯誤訊息 - [{$data['code']}] {$data['msg']}，請確認.env檔中，關於 servicediscovery 或 gatewayregister 設定是否有誤");
+        return new self("AnserGateway 註冊時發生錯誤，錯誤訊息 - [{$data['code']}] {$data['msg']}，請確認.env檔中，關於 servicediscovery 或 gatewayregister 設定是否有誤");
     }
 
-    public static function forConsulServiceNotFound($statusCode): ServiceDiscoveryException
+    public static function forServiceDiscoveryConnectionError($statusCode): ServiceDiscoveryException
     {
-        return new self("HTTP連線錯誤[{$statusCode}]，請確認服務探索中心 - Consul 是否運行正常");
+        return new self("HTTP連線錯誤[{$statusCode}]，請確認服務探索中心是否運行正常");
     }
 }

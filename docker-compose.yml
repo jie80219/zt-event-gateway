@@ -18,31 +18,23 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    networks:
+      - anser_project_network
 
-  consul:
-    image: hashicorp/consul:1.20
-    container_name: zt-consul
-    command: ["agent", "-dev", "-ui", "-client=0.0.0.0"]
+  eventstoredb:
+    container_name: eventstoredb
+    image: eventstore/eventstore:latest
+    environment:
+        EVENTSTORE_CLUSTER_SIZE: 1
+        EVENTSTORE_RUN_PROJECTIONS: All
+        EVENTSTORE_START_STANDARD_PROJECTIONS: "true"
+        EVENTSTORE_INSECURE: "true"
+        EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: "true"
     ports:
-      - "8500:8500"
-    healthcheck:
-      test: ["CMD", "consul", "members"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
-  redis:
-    image: redis:7-alpine
-    container_name: zt-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+        - '1113:1113' # TCP 客戶端通信
+        - '2113:2113' # HTTP API 接口
+    networks:
+        - anser_project_network
 
   # ── SPIFFE / SPIRE ──────────────────────────────────────────────
 
@@ -61,6 +53,8 @@ services:
       timeout: 3s
       retries: 30
       start_period: 10s
+    networks:
+      - anser_project_network
 
   spire-agent:
     image: ghcr.io/spiffe/spire-agent:1.12.0
@@ -77,11 +71,32 @@ services:
       - ./spiffe/certs/agent.crt.pem:/opt/spire/conf/agent/agent.crt.pem:ro
       - spire-agent-sockets:/run/spire/sockets
     healthcheck:
-      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck"]
+      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/sockets/agent.sock"]
       interval: 5s
       timeout: 3s
       retries: 30
       start_period: 15s
+    networks:
+      - anser_project_network
+
+  spiffe-watcher:
+    build:
+      context: .
+      dockerfile: docker/php-openswoole/Dockerfile
+    container_name: zt-spiffe-watcher
+    command: ["php", "bin/spiffe-watcher.php"]
+    environment:
+      SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
+      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
+      SPIFFE_VALIDATE: "1"
+    volumes:
+      - spire-agent-sockets:/run/spire/sockets:ro
+      - spiffe-shared:/tmp/spiffe-shared
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+    networks:
+      - anser_project_network
 
   # ── Application (OpenSwoole) ────────────────────────────────────
 
@@ -99,15 +114,27 @@ services:
       RABBITMQ_PORT: "5672"
       RABBITMQ_USER: "zt"
       RABBITMQ_PASS: "ztpass"
+      EVENTSTOREDB_HOST: eventstoredb
+      EVENTSTOREDB_PORT: 2113
       SPIFFE_ID: "spiffe://zt.local/php-gateway"
       SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
+      WORKER_SPIFFE_ID: "spiffe://zt.local/php-worker"
+      LSVID_ENABLED: "1"
+      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
     volumes:
       - spire-agent-sockets:/run/spire/sockets:ro
+      - spiffe-shared:/tmp/spiffe-shared
     ports:
       - "8080:8080"
     depends_on:
       rabbitmq:
         condition: service_healthy
+      spire-agent:
+        condition: service_healthy
+      eventstoredb:
+        condition: service_healthy
+    networks:
+      - anser_project_network
 
   php-worker:
     build:
@@ -127,57 +154,44 @@ services:
       RABBITMQ_PASS: "ztpass"
       SPIFFE_ID: "spiffe://zt.local/php-worker"
       SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
+      DOWNSTREAM_SPIFFE_ID: "spiffe://zt.local/php-worker"
+      LSVID_ENABLED: "1"
+      LSVID_REQUIRED: "0"
+      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
+      # ── mTLS to downstream services ──
+      SPIFFE_MTLS_ENABLED: "0"
+      ORDER_SERVICE_HOST: "order-service"
+      ORDER_SERVICE_PORT: "8082"
+      PRODUCTION_SERVICE_HOST: "production-service"
+      PRODUCTION_SERVICE_PORT: "8083"
+      USER_SERVICE_HOST: "user-service"
+      USER_SERVICE_PORT: "8084"
+      ORDER_SPIFFE_ID: "spiffe://zt.local/order-service"
+      PRODUCTION_SPIFFE_ID: "spiffe://zt.local/production-service"
+      USER_SPIFFE_ID: "spiffe://zt.local/user-service"
+      # ── EventStoreDB ──
+      EVENTSTOREDB_ENABLED: "1"
+      EVENTSTOREDB_HOST: "eventstoredb"
+      EVENTSTOREDB_PORT: "2113"
     volumes:
       - spire-agent-sockets:/run/spire/sockets:ro
+      - spiffe-shared:/tmp/spiffe-shared
     depends_on:
       rabbitmq:
         condition: service_healthy
-
-  # ── Load Balance (preserved from anser-gateway) ─────────────────
-
-  monitor:
-    build:
-      context: ./anser-gateway
-      dockerfile: Dockerfile
-    container_name: zt-lb-monitor
-    working_dir: /app
-    command: ["sh", "-c", "composer install --no-interaction --prefer-dist && php monitor/monitor_trigger.php"]
-    environment:
-      LOAD_BALANCE_AMQP_HOST: "rabbitmq"
-      LOAD_BALANCE_AMQP_PORT: "5672"
-      LOAD_BALANCE_AMQP_USER: "zt"
-      LOAD_BALANCE_AMQP_PASSWORD: "ztpass"
-    volumes:
-      - ./anser-gateway:/app
-    depends_on:
-      rabbitmq:
+      spire-agent:
         condition: service_healthy
-      redis:
+      eventstoredb:
         condition: service_healthy
-    restart: unless-stopped
-
-  recalc-worker:
-    build:
-      context: ./anser-gateway
-      dockerfile: Dockerfile
-    container_name: zt-lb-recalc-worker
-    working_dir: /app
-    command: ["sh", "-c", "composer install --no-interaction --prefer-dist && php worker/recalc_worker.php"]
-    environment:
-      LOAD_BALANCE_AMQP_HOST: "rabbitmq"
-      LOAD_BALANCE_AMQP_PORT: "5672"
-      LOAD_BALANCE_AMQP_USER: "zt"
-      LOAD_BALANCE_AMQP_PASSWORD: "ztpass"
-    volumes:
-      - ./anser-gateway:/app
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
+    networks:
+      - anser_project_network
 
 volumes:
   rabbitmq_data:
-  redis_data:
+  eventstoredb_data:
   spire-agent-sockets:
+  spiffe-shared:
+
+networks:
+  anser_project_network:
+    external: true

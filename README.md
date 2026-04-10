@@ -58,12 +58,9 @@ Gateway now publishes a fixed envelope shape:
 ```json
 {
   "schema_version": 1,
-  "specversion": "1.0",
   "type": "gateway.request",
   "route": "OrderCreateRequestedEvent",
-  "source": "/gateway/order",
   "id": "trace-demo-001",
-  "time": "2026-04-01T10:00:00+00:00",
   "spiffe_id": "spiffe://zt.local/php-gateway",
   "spiffe_path": ["spiffe://zt.local/php-gateway"],
   "data": {

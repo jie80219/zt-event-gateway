@@ -8,7 +8,6 @@ use SDPMlab\Anser\Service\Action;
 use Psr\Http\Message\ResponseInterface;
 use SDPMlab\Anser\Service\ConcurrentAction;
 use SDPMlab\Anser\Exception\ActionException;
-use AnserGateway\ServiceDiscovery\LoadBalance\LoadBalance;
 use AnserGateway\ServiceDiscovery\Exception\ServiceDiscoveryException;
 use SDPMlab\Anser\Service\ServiceSettings;
 
@@ -43,29 +42,21 @@ class ServiceDiscovery
     public int $reloadTime;
 
     /**
-     * Consul Server的真實位置 e.g. http://127.0.0.1:8500
+     * 服務探索中心的真實位置 e.g. http://127.0.0.1:8500
      *
      * @var string
      */
-    protected string $consulAddress;
+    protected string $discoveryAddress;
 
     /**
-     * 即將訪問的Consul Server DataCenter名稱
+     * 即將訪問的 DataCenter 名稱
      *
      * @var string
      */
-    protected string $consulDataCenter;
+    protected string $dataCenter;
 
     /**
-     * 負載均衡策略
-     *
-     * @var object
-     */
-    public $LBStrategy;
-
-
-    /**
-     * 從Consul Server探索的可訪問服務
+     * 從服務探索中心探索的可訪問服務
      *
      * @var array<string,array<string,string>>
      */
@@ -85,18 +76,16 @@ class ServiceDiscovery
         $this->gatewayRegister        = new GatewayRegister();
         $this->defaultServiceGroup    = $this->serviceDiscoveryConfig->defaultServiceGroup;
         $this->reloadTime             = $this->serviceDiscoveryConfig->reloadTime;
-        $this->consulDataCenter       = $this->serviceDiscoveryConfig->dataCenter;
-        $this->consulAddress          = sprintf(
+        $this->dataCenter             = $this->serviceDiscoveryConfig->dataCenter;
+        $this->discoveryAddress       = sprintf(
             '%s://%s',
             strtolower($this->serviceDiscoveryConfig->scheme),
             $this->serviceDiscoveryConfig->address,
         );
-        $this->LBStrategy             = $this->serviceDiscoveryConfig->LBStrategy;
-        LoadBalance::setStrategy($this->LBStrategy);
     }
 
     /**
-     * 註冊AnserGateway 至 Consul Server
+     * 註冊 AnserGateway 至服務探索中心
      *
      * @param string $httpScheme
      * @param integer $port
@@ -121,7 +110,7 @@ class ServiceDiscovery
         array_push($this->gatewayRegister->tags, "http_scheme={$httpScheme}");
 
         $action = (new Action(
-            $this->consulAddress,
+            $this->discoveryAddress,
             "PUT",
             "v1/agent/service/register"
         ))->addOption("json", [
@@ -171,7 +160,7 @@ class ServiceDiscovery
         }
 
         /**
-         * Consul 註冊成功回傳為null
+         * 註冊成功回傳為 null
          */
         if(is_null($data)) {
             return true;
@@ -204,12 +193,12 @@ class ServiceDiscovery
 
         foreach ($this->defaultServiceGroup as $serviceName) {
             $action = (new Action(
-                $this->consulAddress,
+                $this->discoveryAddress,
                 "GET",
                 "/v1/health/service/{$serviceName}"
             ))->addOption("query", [
                 "passing" => "true",
-                "dc"      => $this->consulDataCenter
+                "dc"      => $this->dataCenter
             ])->doneHandler(function (
                 ResponseInterface $response,
                 Action $runtimeAction
@@ -392,28 +381,17 @@ class ServiceDiscovery
             $services = \AnserGateway\Worker\GatewayWorker::$serviceDiscovery->localServices[$serviceName];
 
             if (isset($services)) {
-                if (count($services) > 1) {
-                    $realServiceArray = LoadBalance::do($services);
-                    return new ServiceSettings(
-                        $realServiceArray["name"],
-                        $realServiceArray["address"],
-                        $realServiceArray["port"],
-                        $realServiceArray["scheme"],
-                    );
-                } else {
-                    if (count($services) === 0) {
-                        // 服務不存在
-                        log_message('warning', "未發現服務-{$serviceName} 於Consul進行服務探索時失效，請檢察是否於Consul註冊該服務或於Anser-Gateway設定檔(env)檢查是否設定正確。");
-                        throw ServiceDiscoveryException::forServiceNotFound($serviceName);
-                    }
-                    // 做服務設定的步驟
-                    return new ServiceSettings(
-                        $services[0]["name"],
-                        $services[0]["address"],
-                        $services[0]["port"],
-                        $services[0]["scheme"],
-                    );
+                if (count($services) === 0) {
+                    log_message('warning', "未發現服務-{$serviceName} 於服務探索時失效，請檢查是否已註冊該服務或於Anser-Gateway設定檔(env)檢查是否設定正確。");
+                    throw ServiceDiscoveryException::forServiceNotFound($serviceName);
                 }
+                // 直接取第一個可用服務
+                return new ServiceSettings(
+                    $services[0]["name"],
+                    $services[0]["address"],
+                    $services[0]["port"],
+                    $services[0]["scheme"],
+                );
             } else {
                 return null;
             }

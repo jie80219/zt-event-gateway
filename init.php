@@ -1,6 +1,6 @@
 <?php
 
-require_once './vendor/autoload.php';
+require_once __DIR__ . '/vendor/autoload.php';
 
 use SDPMlab\Anser\Service\ServiceList;
 
@@ -10,7 +10,7 @@ $env = static function (string $key, string $default): string {
 };
 
 $isHttps = $env('SPIFFE_MTLS_ENABLED', '0') === '1';
-$defaultHost = $env('SERVICE_HOST', 'host.docker.internal');
+$defaultHost = $env('SERVICE_HOST', 'localhost');
 $mtlsPort = (int) $env('MTLS_PORT', '8443');
 $httpPort  = 8080;  // RoadRunner internal HTTP port
 

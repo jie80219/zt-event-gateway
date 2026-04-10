@@ -2,7 +2,7 @@
 namespace App\Sagas;
 require_once __DIR__ . '/../init.php';
 use SDPMlab\Anser\Service\ConcurrentAction;
-use SDPMlab\ZtEventGateway\Attributes\EventHandler;
+use SDPMlab\AnserEDA\Attributes\EventHandler;
 use SDPMlab\ZtEventGateway\EventBus;
 use SDPMlab\ZtEventGateway\Saga;
 
@@ -10,6 +10,7 @@ use App\Events\OrderCreateRequestedEvent;
 use App\Events\OrderCreatedEvent;
 use App\Events\InventoryDeductedEvent;
 use App\Events\PaymentProcessedEvent;
+use App\Events\OrderCompletedEvent;
 use App\Events\OrderSagaCompletedEvent;
 use App\Events\RollbackOrderEvent;
 use App\Events\RollbackInventoryEvent;
@@ -31,63 +32,6 @@ class OrderSaga extends Saga{
         $this->userService = new UserService();
         $this->orderService = new OrderService();
         $this->productionService = new ProductionService();
-    }
-
-    public function handle(string $eventType, array $payload): void
-    {
-        $name = $this->eventName($eventType);
-
-        switch ($name) {
-            case 'OrderCreateRequestedEvent':
-                $this->onOrderCreateRequested(new OrderCreateRequestedEvent(
-                    $payload,
-                    isset($payload['traceId']) ? (string) $payload['traceId'] : null
-                ));
-                return;
-
-            case 'OrderCreatedEvent':
-                $this->onOrderCreated(new OrderCreatedEvent(
-                    (string) ($payload['orderId'] ?? $payload['o_key'] ?? ''),
-                    (string) ($payload['userKey'] ?? $payload['customerId'] ?? $this->userKey),
-                    $this->extractProductList($payload),
-                    (int) ($payload['total'] ?? $payload['amount'] ?? 0)
-                ));
-                return;
-
-            case 'InventoryDeductedEvent':
-                $this->onInventoryDeducted(new InventoryDeductedEvent(
-                    (string) ($payload['orderId'] ?? $payload['o_key'] ?? ''),
-                    (string) ($payload['userKey'] ?? $payload['customerId'] ?? $this->userKey),
-                    $this->extractProductList($payload),
-                    (int) ($payload['total'] ?? $payload['amount'] ?? 0)
-                ));
-                return;
-
-            case 'PaymentProcessedEvent':
-                $this->onPaymentProcessed(new PaymentProcessedEvent(
-                    (string) ($payload['orderId'] ?? $payload['o_key'] ?? ''),
-                    filter_var($payload['success'] ?? false, FILTER_VALIDATE_BOOL)
-                ));
-                return;
-
-            case 'RollbackInventoryEvent':
-                $this->onRollbackInventory(new RollbackInventoryEvent(
-                    (string) ($payload['orderId'] ?? $payload['o_key'] ?? ''),
-                    (string) ($payload['userKey'] ?? $payload['customerId'] ?? $this->userKey),
-                    is_array($payload['successfulDeductions'] ?? null) ? $payload['successfulDeductions'] : []
-                ));
-                return;
-
-            case 'RollbackOrderEvent':
-                $this->onRollbackOrder(new RollbackOrderEvent(
-                    (string) ($payload['orderId'] ?? $payload['o_key'] ?? ''),
-                    (string) ($payload['userKey'] ?? $payload['customerId'] ?? $this->userKey)
-                ));
-                return;
-
-            default:
-                $this->log("[OrderSaga] skip unsupported event={$name}");
-        }
     }
 
     #[EventHandler]
@@ -178,42 +122,86 @@ class OrderSaga extends Saga{
 		->do()->getMeaningData();
         if (!$this->isSuccess($info)) {
             $this->log("[x] 支付失敗，開始回滾");
-			#發送回滾訊息
             $this->compensate(RollbackInventoryEvent::class, [
                 'orderId' => $event->orderId,
                 'userKey' => $event->userKey,
-                'successfulDeductions' => $event->productList
+                'successfulDeductions' => $event->productList,
+                'paymentCompleted' => false,
+                'total' => 0,
             ]);
             return;
         }
         $this->log("[x] 支付成功");
-		#下一步訊息
         $this->publish(PaymentProcessedEvent::class, [
             'orderId' => $event->orderId,
-            'success' => true
+            'success' => true,
+            'userKey' => $event->userKey,
+            'total' => $event->total,
+            'productList' => $event->productList,
         ]);
     }
 
     #[EventHandler]
     public function onPaymentProcessed(PaymentProcessedEvent $event)
     {
-        if ($event->success) {
-            $this->log("✅ Saga Step 4: 訂單完成！");
+        if (!$event->success) {
+            $this->compensate(RollbackInventoryEvent::class, [
+                'orderId' => $event->orderId,
+                'userKey' => $event->userKey,
+                'successfulDeductions' => $event->productList,
+                'paymentCompleted' => false,
+                'total' => 0,
+            ]);
+            return;
         }
+
+        $info = $this->orderService
+            ->confirmOrderAction((int)$event->userKey, $event->orderId)
+            ->do()->getMeaningData();
+
+        if (!$this->isSuccess($info)) {
+            $this->compensate(RollbackInventoryEvent::class, [
+                'orderId' => $event->orderId,
+                'userKey' => $event->userKey,
+                'successfulDeductions' => $event->productList,
+                'paymentCompleted' => true,
+                'total' => $event->total,
+            ]);
+            return;
+        }
+
+        $this->log("✅ Saga Step 4: 訂單完成！");
+        $this->publish(OrderSagaCompletedEvent::class, [
+            'orderId' => $event->orderId,
+            'userKey' => $event->userKey,
+            'total' => $event->total,
+            'status' => 'completed',
+        ]);
+    }
+
+    #[EventHandler]
+    public function onOrderSagaCompleted(OrderSagaCompletedEvent $event)
+    {
+        $this->log("✅ Saga 完成: orderId={$event->orderId}");
     }
 
     #[EventHandler]
     public function onRollbackInventory(RollbackInventoryEvent $event)
     {
         $this->log("RollbackSaga Step 2: 回滾已扣減庫存");
-		#進行回滾
-        foreach ($event->successfulDeductions as $product) {
-            $info = $this->productionService
-			->addInventoryCompensateAction
-			($product['p_key'], $event->orderId, $product['amount']
-			)->do()->getMeaningData(); 
+
+        if ($event->paymentCompleted) {
+            $this->userService->walletCompensateAction(
+                (int)$event->userKey, $event->orderId, $event->total
+            )->do()->getMeaningData();
         }
-		#發送下一個訊息
+
+        foreach ($event->successfulDeductions as $product) {
+            $this->productionService
+                ->addInventoryCompensateAction($product['p_key'], $event->orderId, $product['amount'])
+                ->do()->getMeaningData();
+        }
+
         $this->publish(RollbackOrderEvent::class, [
             'orderId' => $event->orderId,
             'userKey' => $event->userKey
@@ -259,19 +247,5 @@ class OrderSaga extends Saga{
             random_int(0, 0xffff),
             random_int(0, 0xffff)
         );
-    }
-
-    private function eventName(string $eventType): string
-    {
-        $pos = strrpos($eventType, '\\');
-
-        return $pos === false ? $eventType : substr($eventType, $pos + 1);
-    }
-
-    private function extractProductList(array $payload): array
-    {
-        $productList = $payload['productList'] ?? $payload['product_detail'] ?? $payload['product_list'] ?? [];
-
-        return is_array($productList) ? array_values($productList) : [];
     }
 }

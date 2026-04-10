@@ -35,14 +35,14 @@ class GatewayRegister extends BaseConfig
     public string $address = 'localhost';
 
     /**
-     * consul 進行 服務健康檢查的時間間隔
+     * 服務健康檢查的時間間隔
      *
      * @var string
      */
     public string $interval = '60s';
 
     /**
-     * consul 進行 服務健康檢查的timeout時間
+     * 服務健康檢查的 timeout 時間
      *
      * @var string
      */

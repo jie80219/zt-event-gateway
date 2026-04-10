@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Spiffe;
 
 use Google\Protobuf\Internal\Message;
+use Spiffe\Runtime\Http2TransportInterface;
+use Spiffe\Runtime\OpenSwooleHttp2Transport;
+use Spiffe\Runtime\RuntimeDetector;
 use Spiffe\Runtime\SwowHttp2Transport;
 use Spiffe\Workload\JWTBundlesRequest;
 use Spiffe\Workload\JWTBundlesResponse;
@@ -52,7 +55,7 @@ class SpiffeWorkloadAPIClient
     private string $udsPath;
     private float $connectTimeout;
     private float $recvTimeout;
-    private ?SwowHttp2Transport $transport = null;
+    private ?Http2TransportInterface $transport = null;
 
     public function __construct(
         string $socketPath = self::DEFAULT_SOCKET_PATH,
@@ -142,7 +145,12 @@ class SpiffeWorkloadAPIClient
         if ($this->transport?->isConnected()) {
             return;
         }
-        $this->transport = new SwowHttp2Transport($this->udsPath, $this->connectTimeout, $this->recvTimeout);
+        $runtime = RuntimeDetector::available();
+        $this->transport = match ($runtime) {
+            'openswoole' => new OpenSwooleHttp2Transport($this->udsPath, $this->connectTimeout, $this->recvTimeout),
+            'swow' => new SwowHttp2Transport($this->udsPath, $this->connectTimeout, $this->recvTimeout),
+            default => throw new \RuntimeException("No supported coroutine runtime detected (found: {$runtime}). Install OpenSwoole or Swow."),
+        };
         $this->transport->connect();
     }
 

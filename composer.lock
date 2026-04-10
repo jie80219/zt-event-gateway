@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "f01ae896cb1459d40ebb00af2cbe9f58",
+    "content-hash": "1bba2bc4e8976bf53966cbfd1fffe45f",
     "packages": [
         {
             "name": "beberlei/assert",
@@ -626,6 +626,64 @@
             },
             "abandoned": "opis/closure",
             "time": "2018-03-21T22:21:57+00:00"
+        },
+        {
+            "name": "jie80219/php-lsvid",
+            "version": "dev-main",
+            "dist": {
+                "type": "path",
+                "url": "packages/php-lsvid",
+                "reference": "ab770bfe4ff73d3ec77da2da67ee396f64768f64"
+            },
+            "require": {
+                "ext-json": "*",
+                "ext-openssl": "*",
+                "php": "^8.1"
+            },
+            "require-dev": {
+                "phpunit/phpunit": "^10.5 || ^11.0",
+                "psr/http-factory": "^1.0",
+                "psr/http-message": "^1.1 || ^2.0",
+                "psr/http-server-middleware": "^1.0"
+            },
+            "suggest": {
+                "psr/http-factory": "Required for LSVIDMiddleware response creation",
+                "psr/http-server-middleware": "Required for the PSR-15 LSVIDMiddleware"
+            },
+            "type": "library",
+            "extra": {
+                "branch-alias": {
+                    "dev-main": "1.0.x-dev"
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "SDPMlab\\LSVID\\": "src/LSVID/"
+                }
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "SDPMlab\\LSVID\\Tests\\": "tests/LSVID/"
+                }
+            },
+            "license": [
+                "Apache-2.0"
+            ],
+            "description": "LSVID (Lightweight SVID) — nested JWS chain signing, validation, and PSR-15 middleware for SPIFFE workload identity.",
+            "homepage": "https://github.com/jie80219/php-lsvid",
+            "keywords": [
+                "jws",
+                "lsvid",
+                "mtls",
+                "nested-token",
+                "spiffe",
+                "workload-identity",
+                "zero-trust"
+            ],
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
         },
         {
             "name": "laravel/serializable-closure",
@@ -2826,6 +2884,122 @@
                 }
             ],
             "time": "2025-12-27T19:49:13+00:00"
+        },
+        {
+            "name": "workerman/coroutine",
+            "version": "v1.1.5",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/workerman-php/coroutine.git",
+                "reference": "b60e44267b90d398dbfa7a320f3e97b46357ac9f"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/workerman-php/coroutine/zipball/b60e44267b90d398dbfa7a320f3e97b46357ac9f",
+                "reference": "b60e44267b90d398dbfa7a320f3e97b46357ac9f",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=8.1",
+                "workerman/workerman": "^5.1"
+            },
+            "require-dev": {
+                "phpunit/phpunit": "^11.0",
+                "psr/log": "*"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Workerman\\": "src",
+                    "Workerman\\Coroutine\\": "src"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "description": "Workerman coroutine",
+            "support": {
+                "issues": "https://github.com/workerman-php/coroutine/issues",
+                "source": "https://github.com/workerman-php/coroutine/tree/v1.1.5"
+            },
+            "time": "2026-03-12T02:07:37+00:00"
+        },
+        {
+            "name": "workerman/workerman",
+            "version": "v5.1.10",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/walkor/workerman.git",
+                "reference": "6ecda94609c40ade0f1e548535d24d8e09e67409"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/walkor/workerman/zipball/6ecda94609c40ade0f1e548535d24d8e09e67409",
+                "reference": "6ecda94609c40ade0f1e548535d24d8e09e67409",
+                "shasum": ""
+            },
+            "require": {
+                "ext-json": "*",
+                "php": ">=8.1",
+                "workerman/coroutine": "^1.1 || dev-main"
+            },
+            "conflict": {
+                "ext-swow": "<v1.0.0"
+            },
+            "require-dev": {
+                "guzzlehttp/guzzle": "^7.10",
+                "mockery/mockery": "^1.6",
+                "pestphp/pest": "^2.36 || ^3 || ^4",
+                "phpstan/phpstan": "^2.1"
+            },
+            "suggest": {
+                "ext-event": "For better performance. "
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Workerman\\": "src"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "walkor",
+                    "email": "walkor@workerman.net",
+                    "homepage": "https://www.workerman.net",
+                    "role": "Developer"
+                }
+            ],
+            "description": "An asynchronous event driven PHP framework for easily building fast, scalable network applications.",
+            "homepage": "https://www.workerman.net",
+            "keywords": [
+                "asynchronous",
+                "event-loop",
+                "framework",
+                "http"
+            ],
+            "support": {
+                "email": "walkor@workerman.net",
+                "forum": "https://www.workerman.net/questions",
+                "issues": "https://github.com/walkor/workerman/issues",
+                "source": "https://github.com/walkor/workerman",
+                "wiki": "https://www.workerman.net/doc/workerman/"
+            },
+            "funding": [
+                {
+                    "url": "https://opencollective.com/workerman",
+                    "type": "open_collective"
+                },
+                {
+                    "url": "https://www.patreon.com/walkor",
+                    "type": "patreon"
+                }
+            ],
+            "time": "2026-03-20T09:38:10+00:00"
         },
         {
             "name": "zumba/json-serializer",
@@ -6772,6 +6946,7 @@
     "aliases": [],
     "minimum-stability": "stable",
     "stability-flags": {
+        "jie80219/php-lsvid": 20,
         "sdpmlab/php-spiffe": 20
     },
     "prefer-stable": false,

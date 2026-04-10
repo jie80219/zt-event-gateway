@@ -65,20 +65,12 @@ abstract class Saga
      * 統一檢查服務層返回是否成功（如 API 回應）
      *
      * 預設成功格式為 ['code' => '200']
-     * 當 code 為 500 時會等待 10 秒後重試，最多重試 3 次
      *
      * @param array $info
-     * @param int $retryCount 當前重試次數
      * @return bool 是否成功
      */
-    protected function isSuccess(array $info, int $retryCount = 0, int $maxRetry = 3): bool
+    protected function isSuccess(array $info): bool
     {
-        if (isset($info['code']) && (string) $info['code'] === '500' && $retryCount < $maxRetry) {
-            $this->log("收到 500 錯誤，第 " . ($retryCount + 1) . " 次重試，等待 10 秒...");
-            sleep(10);
-            return $this->isSuccess($info, $retryCount + 1, $maxRetry);
-        }
-
         return isset($info['code']) && (string) $info['code'] === '200';
     }
 }

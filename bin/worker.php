@@ -18,6 +18,7 @@ use SDPMlab\ZtEventGateway\Spiffe\SpiffeMtlsRegistry;
 use Spiffe\SharedMemory\SpiffeTableReader;
 use Spiffe\TLS\SpiffeTlsContext;
 use SDPMlab\Anser\Service\ActionFilter;
+use SDPMlab\ZtEventGateway\EventStore\EventStoreDB;
 use ZtEventGateway\Worker\EventConsumer;
 use ZtEventGateway\Worker\RequestConsumer;
 
@@ -180,7 +181,20 @@ try {
         $downstreamAudience,
         $lsvidRequired,
     );
-    $eventBus = new EventBus($messageBus, null);
+
+    // ── EventStoreDB wiring ─────────────────────────────────────
+    $eventStoreDB = null;
+    $esEnabled = $env('EVENTSTOREDB_ENABLED', '0') === '1';
+    if ($esEnabled) {
+        $esHost = $env('EVENTSTOREDB_HOST', 'localhost');
+        $esPort = (int) $env('EVENTSTOREDB_PORT', '2113');
+        $eventStoreDB = new EventStoreDB($esHost, $esPort, '', '');
+        fwrite(STDOUT, sprintf("[worker] EventStoreDB enabled (host=%s:%d)\n", $esHost, $esPort));
+    } else {
+        fwrite(STDOUT, "[worker] EventStoreDB disabled\n");
+    }
+
+    $eventBus = new EventBus($messageBus, $eventStoreDB);
     $transportConsumer = new Consumer($channel);
     $requestConsumer = new RequestConsumer($messageBus, $lsvidValidator, $lsvidRequired);
     $eventConsumer = new EventConsumer($eventBus, $lsvidValidator, $lsvidRequired);

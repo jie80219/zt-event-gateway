@@ -11,7 +11,7 @@
 #     1.  Health check (GET /api/health -> 200)
 #     2.  Happy-path order (canonical fields -> 202 + queue envelope)
 #     3.  Field-alias normalization (user_id/product_list/qty/amount -> canonical)
-#     4.  CloudEvents spec compliance (specversion, time RFC3339, source)
+#     4.  Envelope structure compliance (schema_version, route)
 #     5.  Empty body -> 400
 #     6.  Invalid JSON -> 400
 #     7.  Missing required fields -> 422
@@ -166,7 +166,7 @@ queue_messages_ready() {
         '
 }
 
-# Validate full CloudEvents envelope structure.
+# Validate full event envelope structure.
 # Returns "ok" on success, diagnostic string on failure.
 queue_payload_has_trace() {
     local trace_id="$1"
@@ -241,8 +241,8 @@ queue_payload_verify_canonical() {
     ' <<<"$payload_json" 2>/dev/null
 }
 
-# Verify CloudEvents spec compliance: specversion, time (RFC3339), source, route.
-queue_payload_verify_cloudevents() {
+# Verify envelope structure compliance: schema_version, type, route.
+queue_payload_verify_envelope() {
     local trace_id="$1"
     local payload_json="$2"
 
@@ -258,21 +258,14 @@ queue_payload_verify_cloudevents() {
             $d = json_decode($payload, true);
             if (!is_array($d) || ($d["id"] ?? "") !== $trace) continue;
 
-            // specversion must be "1.0"
-            if (($d["specversion"] ?? "") !== "1.0") {
-                echo "specversion=" . ($d["specversion"] ?? "MISSING");
+            // schema_version must be 1
+            if (($d["schema_version"] ?? 0) !== 1) {
+                echo "schema_version=" . ($d["schema_version"] ?? "MISSING");
                 exit(2);
             }
-            // time must be RFC3339
-            $time = $d["time"] ?? "";
-            if (!is_string($time) || $time === "" || \DateTimeImmutable::createFromFormat(DATE_RFC3339, $time) === false) {
-                echo "time-not-rfc3339=" . $time;
-                exit(2);
-            }
-            // source must be non-empty string starting with /
-            $source = $d["source"] ?? "";
-            if (!is_string($source) || $source === "" || $source[0] !== "/") {
-                echo "source-invalid=" . $source;
+            // type must be "gateway.request"
+            if (($d["type"] ?? "") !== "gateway.request") {
+                echo "type=" . ($d["type"] ?? "MISSING");
                 exit(2);
             }
             // route must be non-empty
@@ -439,12 +432,9 @@ publish_forged_message() {
             "routing_key" => $routingKey,
             "payload" => json_encode([
                 "schema_version" => 1,
-                "specversion" => "1.0",
                 "type" => $envelopeType,
                 "route" => "OrderCreateRequestedEvent",
-                "source" => "/forged/test",
                 "id" => $trace,
-                "time" => date(DATE_RFC3339),
                 "spiffe_id" => $spiffeId,
                 "spiffe_path" => [$spiffeId],
                 "data" => [
@@ -479,12 +469,9 @@ publish_bad_schema_message() {
             "routing_key" => "request.new",
             "payload" => json_encode([
                 "schema_version" => $schema,
-                "specversion" => "1.0",
                 "type" => "gateway.request",
                 "route" => "OrderCreateRequestedEvent",
-                "source" => "/test/schema",
                 "id" => $trace,
-                "time" => date(DATE_RFC3339),
                 "spiffe_id" => "spiffe://zt.local/php-gateway",
                 "spiffe_path" => ["spiffe://zt.local/php-gateway"],
                 "data" => [
@@ -623,7 +610,7 @@ pass "test 2: POST /api/orders with canonical fields returns 202 + trace_id"
 if ! wait_for_trace_in_queue "$trace_happy" "$REQUEST_QUEUE" "$WAIT_TIMEOUT"; then
     fail_exit "message not found in ${REQUEST_QUEUE}"
 fi
-pass "test 2b: CloudEvents envelope with SPIFFE metadata arrived in ${REQUEST_QUEUE}"
+pass "test 2b: event envelope with SPIFFE metadata arrived in ${REQUEST_QUEUE}"
 
 # ── Test 3: Field-alias normalization ────────────────────────────────────────
 trace_alias="$(new_trace_id 'e2e-alias')"
@@ -649,14 +636,14 @@ if [[ "$canonical_result" != "ok" ]]; then
 fi
 pass "test 3: aliases -> canonical fields (userKey, productList, p_key:int, amount:int, total:int)"
 
-# ── Test 4: CloudEvents spec compliance ──────────────────────────────────────
-log "test 4: CloudEvents spec compliance on trace=${trace_happy}"
+# ── Test 4: Envelope structure compliance ─────────────────────────────────────
+log "test 4: envelope structure compliance on trace=${trace_happy}"
 # Use the happy-path message already in queue
-ce_result="$(queue_payload_verify_cloudevents "$trace_happy" "$queue_snapshot" || true)"
-if [[ "$ce_result" != "ok" ]]; then
-    fail_exit "CloudEvents spec violation: ${ce_result}"
+env_result="$(queue_payload_verify_envelope "$trace_happy" "$queue_snapshot" || true)"
+if [[ "$env_result" != "ok" ]]; then
+    fail_exit "envelope structure violation: ${env_result}"
 fi
-pass "test 4: specversion=1.0, time=RFC3339, source=/, route present"
+pass "test 4: schema_version=1, type=gateway.request, route present"
 
 # Also verify SPIFFE fields on the happy-path message
 spiffe_result="$(queue_payload_verify_spiffe "$trace_happy" "$queue_snapshot" "spiffe://zt.local/php-gateway" || true)"

@@ -32,19 +32,14 @@ gatewayregister.healthRoute = 'api/health'
 # Service Discovery
 #--------------------------------------------------------------------
 servicediscovery.defaultServiceGroup = AnserGateway
-servicediscovery.address = 'consul:8500'
+# servicediscovery.address = ''
 servicediscovery.scheme  = 'http'
 # servicediscovery.dataCenter = ''                                  # [optional]
 # servicediscovery.reloadTime = 300                                 # [optional] php json encode opt value to use when serializing requests
-servicediscovery.LBStrategy = dynamic
 
 #--------------------------------------------------------------------
 # Entropy Load Balance
 #--------------------------------------------------------------------
-LOAD_BALANCE_REDIS_HOST = redis
-LOAD_BALANCE_REDIS_PORT = 6379
-LOAD_BALANCE_REDIS_DB = 0
-LOAD_BALANCE_REDIS_TIMEOUT = 2.5
 LOAD_BALANCE_METRICS_PATTERN = metrics:*
 LOAD_BALANCE_SCORE_KEY = metrics:anser-gateway
 # LOAD_BALANCE_SCORE_ALIAS = 10.1.1.91=production-1,10.1.1.92=production-2

@@ -42,10 +42,7 @@ class ServiceDiscoveryTest extends TestCase
             assertInstanceOf("\Config\ServiceDiscovery", $this->serviceDiscoveryConfig);
             assertEquals(['Order-Service1','Product-Service1'], $this->defaultServiceGroup);
             assertEquals('5', $this->reloadTime);
-            assertEquals('', $this->consulDataCenter);
-            assertEquals('http://host.docker.internal:8500', $this->consulAddress);
-            assertEquals('random', $this->LBStrategy);
-            assertInstanceOf('\AnserGateway\ServiceDiscovery\LoadBalance\Random', \AnserGateway\ServiceDiscovery\LoadBalance\LoadBalance::$strategy);
+            assertEquals('', $this->dataCenter);
         };
         $binding = $closure->bindTo($this->serviceDiscoveryInstance, get_class($this->serviceDiscoveryInstance));
         $binding();
@@ -189,7 +186,6 @@ class ServiceDiscoveryTest extends TestCase
 
     /**
      * doFoundServices test success
-     * need open consul
      *
      * @return void
      */
@@ -213,7 +209,7 @@ class ServiceDiscoveryTest extends TestCase
     {
         $closure = function () {
             $this->defaultServiceGroup = ['Order_Service1'];
-            $this->consulAddress = 'http://example.com:8600';
+            $this->discoveryAddress = 'http://example.com:8600';
             $result = $this->doFoundServices();
             assertNotNull($result);
         };
@@ -433,7 +429,7 @@ class ServiceDiscoveryTest extends TestCase
     public function testRegisterSelf()
     {
         $closure = function () {
-            $this->consulAddress = 'http://host.docker.internal:8500';
+            $this->discoveryAddress = 'http://host.docker.internal:8500';
             $res = $this->registerSelf('http', 8080);
             assertTrue($res);
         };

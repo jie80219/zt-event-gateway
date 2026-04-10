@@ -14,11 +14,11 @@ class ServiceDiscovery extends BaseConfig
     public array $defaultServiceGroup = [];
 
     /**
-     * Consul Server IP Address and port
+     * Service discovery address
      *
      * @var string
      */
-    public string $address = 'http://localhost:8500';
+    public string $address = '';
 
     /**
      * HTTP Scheme [http or https]
@@ -28,7 +28,7 @@ class ServiceDiscovery extends BaseConfig
     public string $scheme = 'http';
 
     /**
-     * Consul Server DataCenter
+     * DataCenter
      *
      * @var string
      */
@@ -40,13 +40,6 @@ class ServiceDiscovery extends BaseConfig
      * @var integer
      */
     public int $reloadTime = 10;
-
-    /**
-     * 服務負載均衡演算法
-     *
-     * @var string
-     */
-    public string $LBStrategy = 'random';
 
     public function __construct()
     {

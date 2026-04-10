@@ -6,58 +6,112 @@ use PhpAmqpLib\Channel\AMQPChannel;
 use PhpAmqpLib\Connection\AMQPSocketConnection;
 use PhpAmqpLib\Message\AMQPMessage;
 use Workerman\Protocols\Http\Response;
+use SDPMlab\ZtEventGateway\Ingress\CanonicalOrderRequest;
+use SDPMlab\LSVID\LSVIDException;
+use AnserGateway\Spiffe\GatewaySpiffeState;
 
 class Order extends BaseController
 {
     /**
      * Persistent connection shared across all requests within this
-     * Workerman worker process. Survives thousands of requests without
-     * opening new TCP sockets.
+     * worker process. Survives thousands of requests without opening
+     * new TCP sockets.
+     *
+     * A coroutine-level lock serializes access so concurrent Swoole
+     * coroutines don't interleave AMQP frames on the same channel.
      */
     private static ?AMQPSocketConnection $persistentConn = null;
     private static ?AMQPChannel $persistentCh = null;
     private static bool $topologyDeclared = false;
+    private static ?\Swoole\Lock $channelLock = null;
 
     public function create()
     {
         $request = $this->request;
         $rawBody = $request->rawBody();
-        $data = [];
 
-        if ($rawBody !== '') {
-            $data = json_decode($rawBody, true);
+        if ($rawBody === '' || $rawBody === false) {
+            return $this->jsonResponse([
+                'status' => 'Bad Request',
+                'message' => 'Request body must be valid JSON.',
+            ], 400);
+        }
 
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                return $this->jsonResponse([
-                    'status' => 'Bad Request',
-                    'message' => 'Request body must be valid JSON.',
-                ], 400);
-            }
+        $requestPayload = json_decode($rawBody, true);
+        if (!is_array($requestPayload)) {
+            return $this->jsonResponse([
+                'status' => 'Bad Request',
+                'message' => 'Request body must be valid JSON.',
+            ], 400);
+        }
+
+        try {
+            $data = CanonicalOrderRequest::normalizeOrderData($requestPayload);
+        } catch (\InvalidArgumentException $e) {
+            return $this->jsonResponse([
+                'status' => 'Unprocessable Entity',
+                'message' => $e->getMessage(),
+            ], 422);
         }
 
         $traceId = $request->header('X-Correlation-ID') ?: uniqid('txn_', true);
-
         $routingKey = $this->env('REQUEST_ROUTING_KEY', 'request.new');
         $targetEvent = $this->env('REQUEST_EVENT_TYPE', 'OrderCreateRequestedEvent');
 
-        $spiffeId = $this->env('SPIFFE_ID', '');
+        $spiffeId = GatewaySpiffeState::getSpiffeId();
 
-        $eventPayload = json_encode([
-            'specversion' => '1.0',
-            'type' => 'gateway.request',
-            'route' => $targetEvent,
-            'source' => '/gateway/order',
-            'id' => $traceId,
-            'time' => date(DATE_RFC3339),
-            'spiffe_id' => $spiffeId,
-            'spiffe_path' => [$spiffeId],
-            'data' => $data,
-        ]);
+        $envelope = [
+            'schema_version' => CanonicalOrderRequest::SCHEMA_VERSION,
+            'type'        => CanonicalOrderRequest::ENVELOPE_TYPE,
+            'route'       => $targetEvent,
+            'id'          => $traceId,
+            'spiffe_id'   => $spiffeId,
+            'spiffe_path' => $spiffeId !== '' ? [$spiffeId] : [],
+            'data'        => $data,
+        ];
 
+        // ── LSVID Step 1 — Creation (L0) ─────────────────────────
+        $lsvidRequired = ($this->env('LSVID_REQUIRED', '0') === '1');
+        $lsvidSigner = GatewaySpiffeState::getLsvidSigner();
+        if ($lsvidSigner !== null) {
+            try {
+                $l0 = $lsvidSigner->createBase(
+                    audience: GatewaySpiffeState::getDownstreamSpiffeId(),
+                    subject: null,
+                    extraClaims: [
+                        'traceId' => $traceId,
+                        'route'   => $targetEvent,
+                        'level'   => 'L0',
+                    ],
+                );
+                $envelope['lsvid'] = $l0->raw;
+            } catch (LSVIDException $e) {
+                fwrite(STDERR, sprintf(
+                    "[gateway] LSVID L0 mint failed (trace=%s): %s\n",
+                    $traceId,
+                    $e->getMessage(),
+                ));
+                if ($lsvidRequired) {
+                    return $this->jsonResponse([
+                        'status' => 'Internal Server Error',
+                        'message' => 'Identity token creation failed.',
+                    ], 500);
+                }
+            }
+        } elseif ($lsvidRequired) {
+            return $this->jsonResponse([
+                'status' => 'Service Unavailable',
+                'message' => 'LSVID signing is required but signer is not available.',
+            ], 503);
+        }
+
+        // Serialize AMQP access across coroutines sharing this worker process
+        $lock = self::getLock();
+        $lock->lock();
         try {
             $channel = $this->getChannel();
 
-            $msg = new AMQPMessage($eventPayload, [
+            $msg = new AMQPMessage(json_encode($envelope), [
                 'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
             ]);
             $channel->basic_publish($msg, 'events', $routingKey);
@@ -68,7 +122,6 @@ class Order extends BaseController
                 'trace_id' => $traceId,
             ], 202);
         } catch (\Exception $e) {
-            // Connection broken — reset so next request reconnects
             $this->resetConnection();
             fwrite(STDERR, '[RabbitMQ Error] ' . $e->getMessage() . "\n");
 
@@ -81,6 +134,8 @@ class Order extends BaseController
             }
 
             return $this->jsonResponse($payload, 500);
+        } finally {
+            $lock->unlock();
         }
     }
 
@@ -133,6 +188,14 @@ class Order extends BaseController
         $channel->queue_bind($queueName, $exchangeName, $routingKey);
 
         self::$topologyDeclared = true;
+    }
+
+    private static function getLock(): \Swoole\Lock
+    {
+        if (self::$channelLock === null) {
+            self::$channelLock = new \Swoole\Lock(SWOOLE_MUTEX);
+        }
+        return self::$channelLock;
     }
 
     private function resetConnection(): void

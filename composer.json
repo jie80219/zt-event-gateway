@@ -17,7 +17,8 @@
     "prooph/event-store": "^7.9",
     "prooph/pdo-event-store": "^1.15",
     "sdpmlab/php-spiffe": "^1.0@dev",
-    "sdpmlab/php-lsvid": "^1.0@dev"
+    "jie80219/php-lsvid": "^1.0@dev",
+    "workerman/workerman": "^4.1 || ^5.0"
   },
   "require-dev": {
     "friendsofphp/php-cs-fixer": "^3.17",
@@ -48,10 +49,13 @@
   "autoload": {
     "psr-4": {
       "App\\": "",
+      "App\\Controllers\\": "anser-gateway/app/HTTP/Controllers/",
+      "AnserGateway\\": "anser-gateway/system/",
+      "Config\\": "anser-gateway/config/",
       "ZtEventGateway\\": "src/",
       "SDPMlab\\ZtEventGateway\\": "src/",
       "App\\Events\\": "Event-Driven/Events/",
-      "App\\Sagas\\": "src/Sagas/",
+      "App\\Sagas\\": "Sagas/",
       "Filters\\": "anser-gateway/Filters/",
       "Services\\": "Services/",
       "Spiffe\\": "src/Spiffe/",

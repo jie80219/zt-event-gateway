@@ -51,6 +51,8 @@ require dirname(__DIR__) . '/vendor/autoload.php';
 
 use Spiffe\Source\SourceConfig;
 use Spiffe\Source\SpiffeWorkloadWatcher;
+use Spiffe\SharedMemory\SpiffeTableSchema;
+use Spiffe\SharedMemory\SpiffeTableStore;
 
 // ──────────────────────────────────────────────────────────────────
 //  Configuration from environment
@@ -73,12 +75,20 @@ $config = new SourceConfig(
 );
 
 $pemDir = $env('SPIFFE_PEM_DIR', '');
+$shmDir = $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared');
 
 // ──────────────────────────────────────────────────────────────────
 //  Build and run the watcher
 // ──────────────────────────────────────────────────────────────────
 
 $watcher = new SpiffeWorkloadWatcher($config);
+
+// Shared memory store — enables Gateway + Worker to read X.509-SVID
+// for LSVID signing and mTLS credential injection.
+SpiffeTableSchema::createAll($shmDir);
+$watcher->withSharedMemory(new SpiffeTableStore($shmDir));
+
+fwrite(STDOUT, sprintf("[spiffe-watcher] SHM enabled (dir=%s)\n", $shmDir));
 
 // Optional: write PEM files for downstream consumers (Envoy, nginx, curl)
 if ($pemDir !== '') {

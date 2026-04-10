@@ -52,8 +52,6 @@ graph TB
         end
 
         subgraph Infra["Supporting Services"]
-            Consul["Consul :8500<br/>Service Discovery"]
-            Redis["Redis :6379<br/>Load Score Cache"]
         end
     end
 
@@ -95,7 +93,6 @@ graph LR
     subgraph Volumes
         V1["spire-agent-sockets<br/>/run/spire/sockets"]
         V2["rabbitmq_data"]
-        V3["redis_data"]
     end
 
     subgraph Containers
@@ -104,15 +101,12 @@ graph LR
         C3["zt-rabbitmq<br/>:5672 → host:5672<br/>:15672 → host:15672"]
         C4["zt-spire-server<br/>(internal :8081)"]
         C5["zt-spire-agent<br/>(UDS only)"]
-        C6["zt-consul :8500"]
-        C7["zt-redis :6379"]
     end
 
     C1 -.->|"read-only mount"| V1
     C2 -.->|"read-only mount"| V1
     C5 -.->|"read-write mount"| V1
     C3 -.->|"mount"| V2
-    C7 -.->|"mount"| V3
 
     C1 -->|"AMQP 5672"| C3
     C2 -->|"AMQP 5672"| C3
@@ -128,7 +122,7 @@ graph LR
 ```mermaid
 flowchart LR
     A["HTTP Request<br/>POST /api/orders"] -->|"1"| B["Gateway<br/>Normalize + Envelope"]
-    B -->|"2 CloudEvents<br/>+ SPIFFE ID"| C["RabbitMQ<br/>order_queue"]
+    B -->|"2 Event Envelope<br/>+ SPIFFE ID"| C["RabbitMQ<br/>order_queue"]
     C -->|"3 consume"| D["RequestConsumer<br/>verify SPIFFE"]
     D -->|"4 publishEvent"| E["Event Queues<br/>OrderCreateRequested<br/>Event..."]
     E -->|"5 consume"| F["EventConsumer<br/>verify SPIFFE"]
@@ -243,7 +237,7 @@ sequenceDiagram
 
     Note over GW,MB: Step 0: HTTP Ingress
     GW->>GW: normalizeOrderData(request)
-    GW->>MQ: publish(events:request.new)<br/>CloudEvents{spiffe_id, spiffe_path, data}
+    GW->>MQ: publish(events:request.new)<br/>Envelope{spiffe_id, spiffe_path, data}
     GW-->>GW: HTTP 202 Accepted
 
     Note over MQ,MB: Step 1: OrderCreateRequested
@@ -739,7 +733,7 @@ sequenceDiagram
     GW->>GW: log("[gateway] SVID rotated: spiffe://zt.local/php-gateway")
 
     Note over GW: Next HTTP request uses new SPIFFE identity
-    GW->>GW: Build CloudEvents envelope<br/>spiffe_id = new identity
+    GW->>GW: Build event envelope<br/>spiffe_id = new identity
 ```
 
 ---
@@ -772,8 +766,8 @@ sequenceDiagram
     N->>N: extractTotal(amount → 100)
     N-->>GW: {userKey:"1", productList:[...], total:100}
 
-    GW->>GW: Build CloudEvents envelope
-    Note right of GW: {<br/>  schema_version: 1,<br/>  specversion: "1.0",<br/>  type: "gateway.request",<br/>  route: "OrderCreateRequestedEvent",<br/>  source: "/gateway/order",<br/>  id: "txn_abc123",<br/>  time: "2026-04-05T...",<br/>  spiffe_id: "spiffe://zt.local/php-gateway",<br/>  spiffe_path: ["spiffe://zt.local/php-gateway"],<br/>  data: {userKey, productList, total}<br/>}
+    GW->>GW: Build event envelope
+    Note right of GW: {<br/>  schema_version: 1,<br/>  type: "gateway.request",<br/>  route: "OrderCreateRequestedEvent",<br/>  id: "txn_abc123",<br/>  spiffe_id: "spiffe://zt.local/php-gateway",<br/>  spiffe_path: ["spiffe://zt.local/php-gateway"],<br/>  data: {userKey, productList, total}<br/>}
 
     GW->>MQ: basic_publish(msg, "events", "request.new")<br/>delivery_mode: PERSISTENT
     GW-->>C: HTTP 202 Accepted<br/>{"status":"Accepted","trace_id":"txn_abc123"}
