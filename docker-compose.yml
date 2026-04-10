@@ -119,7 +119,9 @@ services:
       SPIFFE_ID: "spiffe://zt.local/php-gateway"
       SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
       WORKER_SPIFFE_ID: "spiffe://zt.local/php-worker"
+      SPIFFE_TRUST_DOMAIN: "zt.local"
       LSVID_ENABLED: "1"
+      LSVID_REQUIRED: "1"
       SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
     volumes:
       - spire-agent-sockets:/run/spire/sockets:ro
@@ -155,8 +157,9 @@ services:
       SPIFFE_ID: "spiffe://zt.local/php-worker"
       SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
       DOWNSTREAM_SPIFFE_ID: "spiffe://zt.local/php-worker"
+      SPIFFE_TRUST_DOMAIN: "zt.local"
       LSVID_ENABLED: "1"
-      LSVID_REQUIRED: "0"
+      LSVID_REQUIRED: "1"
       SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
       # ── mTLS to downstream services ──
       SPIFFE_MTLS_ENABLED: "0"

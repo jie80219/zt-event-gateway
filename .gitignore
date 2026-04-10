@@ -7,6 +7,16 @@
 /.env
 /.env.local
 /artifacts/
+
+# LSVID experiment raw data — keep the summary and latest-bench, ignore
+# per-run timestamped JSON dumps and the docker-compose override file.
+/docs/data/lsvid-bench-20*.json
+/docs/data/stress-A-*.json
+/docs/data/stress-B-*.json
+/docs/data/stress-C-*.json
+/docs/data/stress-D-*.json
+/.lsvid-experiment.override.yml
+
 .claude/
 .claude-logs/
 .claude-logs/*
