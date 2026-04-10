@@ -507,20 +507,20 @@ Worker                              Service (RoadRunner :8443)
   │ ──── Worker SVID client cert ─────────►│  Step 20: Client 出示 Worker SVID
   │      (signed by SPIRE CA)              │
   │                                        │
-  │ ◄─── Verify client cert against ──────│  Step 21: Server 驗證 client cert
+  │ ◄─── Verify client cert against ────── │  Step 21: Server 驗證 client cert
   │      /certs/bundle.pem                 │  (openssl_x509_verify against CA bundle)
   │                                        │
   │ ══════ mTLS 連線建立 ═══════════════════│
   │                                        │
-  │ ── HTTPS POST /api/v1/order ─────────►│
-  │    Header: X-LSVID: eyJhbGc...(L2)    │
+  │ ── HTTPS POST /api/v1/order ─────────► │
+  │    Header: X-LSVID: eyJhbGc...(L2)     │
   │                                        │
   │                          ┌─────────────▼──────────────┐
-  │                          │ CI4 SpiffeLsvidFilter       │
-  │                          │                             │
+  │                          │ CI4 SpiffeLsvidFilter      │
+  │                          │                            │
   │                          │ Step 22: 讀取 X-LSVID header│
-  │                          │                             │
-  │                          │ Step 23: 建立 LSVIDValidator │
+  │                          │                            │
+  │                          │ Step 23: 建立 LSVIDValidator│
   │                          │ $reader = new FileSvidReader(│
   │                          │   certPath: /certs/svid.pem,│
   │                          │   keyPath: /certs/svid_key, │
@@ -535,7 +535,7 @@ Worker                              Service (RoadRunner :8443)
   │                          │      order-service'         │
   │                          │ )                           │
   │                          │                             │
-  │                          │ Step 25: 存入 request       │
+  │                          │ Step 25: 存入 request        │
   │                          │ $request->lsvid = $lsvid    │
   │                          │ $request->lsvidIssuer = ... │
   │                          │ $request->lsvidSubject = ...│
@@ -640,23 +640,23 @@ http:
 │  鏈連續性驗證 (Lines 66-85, 對 L1+ 層級)                         │
 │  ┌─────────────────────────────────────────────────┐            │
 │  │ 每層 extension (i > 0):                          │            │
-│  │   nested.aud MUST === enclosing.iss              │            │
+│  │   nested.aud MUST === enclosing.iss             │            │
 │  │                                                 │            │
 │  │ 例: L0.aud = "worker"                           │            │
 │  │     L1.iss = "worker"  → L0.aud === L1.iss ✓    │            │
 │  │                                                 │            │
-│  │ ✗ 不一致 → LSVIDException('chain broken')       │            │
+│  │ ✗ 不一致 → LSVIDException('chain broken')        │            │
 │  └─────────────────────────────────────────────────┘            │
 │                                                                 │
 │  外層驗證 (Lines 89-113)                                         │
 │  ┌─────────────────────────────────────────────────┐            │
 │  │ a. 最外層 aud 檢查:                               │            │
-│  │    outermost.aud === expectedAudience             │            │
-│  │    (e.g. L2.aud === order-service)               │            │
-│  │                                                  │            │
-│  │ b. L0 subject 檢查 (optional):                    │            │
-│  │    L0.sub === expectedSubject                     │            │
-│  │    (e.g. L0.sub === gateway)                     │            │
+│  │    outermost.aud === expectedAudience           │            │
+│  │    (e.g. L2.aud === order-service)              │            │
+│  │                                                 │            │
+│  │ b. L0 subject 檢查 (optional):                   │            │
+│  │    L0.sub === expectedSubject                   │            │
+│  │    (e.g. L0.sub === gateway)                    │            │
 │  └─────────────────────────────────────────────────┘            │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -779,14 +779,14 @@ Saga handler
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     bin/worker.php (Bootstrap)                │
+│                     bin/worker.php (Bootstrap)              │
 │                                                             │
-│  ┌──────────────────┐  ┌──────────────────┐                │
-│  │ LSVIDSignerRegistry│  │ SpiffeMtlsRegistry│                │
+│  ┌──────────────────┐  ┌──────────────────┐                 │
+│  │ LSVIDSignerRegistry│  │ SpiffeMtlsRegistry│              │
 │  │ ::set($signer)    │  │ ::set($tlsCtx)   │                │
-│  └────────┬─────────┘  └────────┬─────────┘                │
+│  └────────┬─────────┘  └────────┬─────────┘                 │
 │           │                      │                          │
-│  ┌────────▼─────────────────────▼─────────┐                │
+│  ┌────────▼─────────────────────▼─────────┐                 │
 │  │ SpiffeAudienceRegistry                  │                │
 │  │ ::register(url, spiffeId) × 3           │                │
 │  └────────┬────────────────────────────────┘                │
@@ -800,7 +800,7 @@ Saga handler
                     │
                     ▼ (每次 HTTP 呼叫)
 ┌─────────────────────────────────────────────────────────────┐
-│ SpiffeLsvidFilter::beforeCallService()                       │
+│ SpiffeLsvidFilter::beforeCallService()                      │
 │                                                             │
 │  LSVIDSignerRegistry::get() ──→ $signer                     │
 │  LSVIDContext::current()    ──→ $rawLsvid                   │

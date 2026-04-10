@@ -119,7 +119,14 @@
       "Bash(git:*)",
       "Bash(curl:*)",
       "Bash(composer require:*)",
-      "Bash(docker pull:*)"
+      "Bash(docker pull:*)",
+      "Bash(/Users/jiezhiyang/zt-event-gateway/vendor/bin/phpunit -c packages/php-lsvid/phpunit.xml)",
+      "Bash(/Users/jiezhiyang/zt-event-gateway/vendor/bin/phpunit -c /Users/jiezhiyang/zt-event-gateway/packages/php-lsvid/phpunit.xml --filter LSVIDNegativeMatrixTest)",
+      "Bash(/Users/jiezhiyang/zt-event-gateway/vendor/phpunit/phpunit/phpunit --bootstrap /Users/jiezhiyang/zt-event-gateway/vendor/autoload.php --testdox tests/Unit/)",
+      "Bash(/Users/jiezhiyang/zt-event-gateway/vendor/phpunit/phpunit/phpunit --bootstrap vendor/autoload.php tests/Unit/)",
+      "Bash(/Users/jiezhiyang/zt-event-gateway/vendor/phpunit/phpunit/phpunit --bootstrap vendor/autoload.php tests/Unit/Saga/)",
+      "Bash(ITER=1000 php tests/benchmark-lsvid.php)",
+      "Bash(ITER=5000 php tests/benchmark-lsvid.php)"
     ]
   }
 }
