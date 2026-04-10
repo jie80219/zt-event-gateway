@@ -71,7 +71,11 @@ class Order extends BaseController
         ];
 
         // ── LSVID Step 1 — Creation (L0) ─────────────────────────
-        $lsvidRequired = ($this->env('LSVID_REQUIRED', '0') === '1');
+        //   Default is fail-closed: if LSVID_REQUIRED is unset we treat it
+        //   as enabled and refuse to emit an envelope without an L0 token.
+        //   Operators can explicitly opt out (LSVID_REQUIRED=0) for
+        //   migration windows; see docs/lsvid-experiment.md §5.
+        $lsvidRequired = ($this->env('LSVID_REQUIRED', '1') === '1');
         $lsvidSigner = GatewaySpiffeState::getLsvidSigner();
         if ($lsvidSigner !== null) {
             try {

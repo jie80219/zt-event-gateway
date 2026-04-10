@@ -7,7 +7,9 @@ namespace Filters;
 use SDPMlab\Anser\Service\ActionInterface;
 use SDPMlab\Anser\Service\FilterInterface;
 use SDPMlab\LSVID\LSVIDContext;
+use SDPMlab\LSVID\LSVIDException;
 use SDPMlab\ZtEventGateway\Spiffe\LSVIDSignerRegistry;
+use SDPMlab\ZtEventGateway\Spiffe\LSVIDValidatorRegistry;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeAudienceRegistry;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeMtlsRegistry;
 
@@ -42,9 +44,40 @@ class SpiffeLsvidFilter implements FilterInterface
         //    SPIFFE ID and can walk the full chain (L0 → L1 → L2).
         $rawLsvid = LSVIDContext::current();
         $signer = LSVIDSignerRegistry::get();
+        $validator = LSVIDValidatorRegistry::get();
+        $failClosed = (getenv('LSVID_REQUIRED') === '1');
 
         if ($rawLsvid !== null && $signer !== null) {
             $targetAudience = $this->resolveAudience($action);
+
+            // ── Defence in depth ─────────────────────────────────
+            //   Re-validate the prior token (L1 produced by the worker's
+            //   EventConsumer, whose audience points at *this* worker)
+            //   before we extend it. If the context was somehow polluted
+            //   we refuse to sign an L2 that embeds a bad L1 — when
+            //   LSVID_REQUIRED=1 this also blocks the downstream call.
+            if ($validator !== null) {
+                try {
+                    $workerSpiffeId = getenv('SPIFFE_ID') ?: null;
+                    $validator->validate(
+                        $rawLsvid,
+                        expectedAudience: $workerSpiffeId ?: null,
+                    );
+                } catch (LSVIDException $e) {
+                    fwrite(STDERR, sprintf(
+                        "[spiffe-lsvid-filter] prior LSVID failed re-validation: %s\n",
+                        $e->getMessage(),
+                    ));
+                    if ($failClosed) {
+                        throw new \RuntimeException(
+                            'SpiffeLsvidFilter: prior LSVID failed re-validation — refusing to extend.',
+                            0,
+                            $e,
+                        );
+                    }
+                    return; // degraded: skip header injection entirely
+                }
+            }
 
             if ($targetAudience !== null) {
                 try {

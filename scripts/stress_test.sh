@@ -20,6 +20,10 @@ URL="${STRESS_URL:-http://127.0.0.1:8080/api/orders}"
 HEALTH="${HEALTH_URL:-http://127.0.0.1:8080/api/health}"
 TOTAL_REQUESTS=${1:-50}
 CONCURRENCY=${2:-1}
+# Informational label written into STRESS_JSON_OUT so the LSVID experiment
+# script can correlate each run with its LSVID config (baseline/on/fail-closed).
+LSVID_MODE="${LSVID_MODE:-unset}"
+STRESS_JSON_OUT="${STRESS_JSON_OUT:-}"
 
 USER_IDS=(1 2 3 4 5)
 PRODUCT_KEYS=(1 2 3 4 5)
@@ -83,6 +87,7 @@ export URL TMPDIR_STRESS
 # ── Run stress test ─────────────────────────────────────────
 
 echo "Sending $TOTAL_REQUESTS requests (concurrency=$CONCURRENCY) to $URL"
+echo "LSVID mode: $LSVID_MODE"
 echo "-----------------------------------------------------"
 
 START_TIME=$(get_timestamp_ms)
@@ -209,5 +214,37 @@ RATE=$(calc "print(f'{$TOTAL_REQUESTS / ($DURATION / 1000):.1f}')")
 echo ""
 echo "   Duration: ${DURATION} ms  ($RATE req/s)"
 echo "-----------------------------------------------------"
+
+# ── Optional JSON export for the LSVID experiment script ───────────
+if [ -n "$STRESS_JSON_OUT" ] && [ "$LATENCY_COUNT" -gt 0 ]; then
+    mkdir -p "$(dirname "$STRESS_JSON_OUT")"
+    python3 - "$STRESS_JSON_OUT" "$LSVID_MODE" "$TOTAL_REQUESTS" "$CONCURRENCY" \
+        "$SUCCESS" "$FAIL" "$DURATION" "$RATE" \
+        "$PMIN" "$AVG" "$PMAX" "$P50" "$P90" "$P95" "$P99" <<'PY'
+import json, sys
+out, mode, total, conc, succ, fail, dur, rate, pmin, avg, pmax, p50, p90, p95, p99 = sys.argv[1:]
+data = {
+    "lsvid_mode": mode,
+    "total_requests": int(total),
+    "concurrency": int(conc),
+    "success": int(succ),
+    "failed": int(fail),
+    "duration_ms": int(dur),
+    "rate_per_sec": float(rate),
+    "latency_sec": {
+        "min": float(pmin),
+        "avg": float(avg),
+        "max": float(pmax),
+        "p50": float(p50),
+        "p90": float(p90),
+        "p95": float(p95),
+        "p99": float(p99),
+    },
+}
+with open(out, "w") as f:
+    json.dump(data, f, indent=2)
+PY
+    echo "JSON written to: $STRESS_JSON_OUT"
+fi
 
 [ "$FAIL" -gt 0 ] && exit 1 || exit 0

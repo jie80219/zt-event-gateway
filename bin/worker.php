@@ -13,6 +13,7 @@ use SDPMlab\LSVID\LSVIDSigner;
 use SDPMlab\LSVID\LSVIDValidator;
 use SDPMlab\ZtEventGateway\Spiffe\LSVID\SpiffeTableSvidReader;
 use SDPMlab\ZtEventGateway\Spiffe\LSVIDSignerRegistry;
+use SDPMlab\ZtEventGateway\Spiffe\LSVIDValidatorRegistry;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeAudienceRegistry;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeMtlsRegistry;
 use Spiffe\SharedMemory\SpiffeTableReader;
@@ -60,8 +61,9 @@ try {
     $lsvidEnabled = $env('LSVID_ENABLED', '1') !== '0';
     $lsvidSigner = null;
     $lsvidValidator = null;
-    $lsvidRequired = $env('LSVID_REQUIRED', '0') === '1';
+    $lsvidRequired = $env('LSVID_REQUIRED', '1') === '1';
     $downstreamAudience = $env('DOWNSTREAM_SPIFFE_ID', '');
+    $trustDomain = $env('SPIFFE_TRUST_DOMAIN', 'zt.local');
 
     if ($lsvidEnabled) {
         $shmDir = $env('SPIFFE_SHM_DIR', '');
@@ -74,7 +76,14 @@ try {
             $svidReader = new SpiffeTableSvidReader($reader);
             $jtiCache = new JtiReplayCache();
             $lsvidSigner = new LSVIDSigner($svidReader);
-            $lsvidValidator = new LSVIDValidator($svidReader, clockSkewSeconds: 30, jtiCache: $jtiCache);
+            $lsvidValidator = new LSVIDValidator(
+                $svidReader,
+                clockSkewSeconds: 30,
+                jtiCache: $jtiCache,
+                trustDomain: $trustDomain,
+                requireNbf: false,
+                requireAudienceOnAllLevels: true,
+            );
 
             // Validate downstream audience — required when LSVID is fully enabled.
             if ($downstreamAudience === '' && $lsvidRequired) {
@@ -116,6 +125,15 @@ try {
         // 1. LSVID signer for extending the chain.
         LSVIDSignerRegistry::set($lsvidSigner);
         fwrite(STDOUT, "[worker] LSVIDSignerRegistry initialized\n");
+
+        // 1b. LSVID validator for re-validating prior tokens before extend.
+        //     This gives SpiffeLsvidFilter defence-in-depth: even if the
+        //     LSVIDContext was populated from a compromised path, we re-run
+        //     full chain validation against the CA bundle before producing L2.
+        if ($lsvidValidator !== null) {
+            LSVIDValidatorRegistry::set($lsvidValidator);
+            fwrite(STDOUT, "[worker] LSVIDValidatorRegistry initialized\n");
+        }
 
         // 2. mTLS context.
         try {
