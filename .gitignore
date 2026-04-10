@@ -7,3 +7,7 @@
 /.env
 /.env.local
 /artifacts/
+.claude/
+.claude-logs/
+.claude-logs/*
+.phpunit.cache/
