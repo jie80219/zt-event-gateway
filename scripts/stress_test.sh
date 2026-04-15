@@ -18,7 +18,7 @@ set -euo pipefail
 
 URL="${STRESS_URL:-http://127.0.0.1:8080/api/orders}"
 HEALTH="${HEALTH_URL:-http://127.0.0.1:8080/api/health}"
-TOTAL_REQUESTS=${1:-50}
+TOTAL_REQUESTS=${1:-200}
 CONCURRENCY=${2:-1}
 # Informational label written into STRESS_JSON_OUT so the LSVID experiment
 # script can correlate each run with its LSVID config (baseline/on/fail-closed).

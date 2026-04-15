@@ -44,11 +44,14 @@ class SpiffeWorkloadAPIClient
 {
     private const DEFAULT_SOCKET_PATH = 'unix:/tmp/spire-agent/public/api.sock';
 
-    private const RPC_FETCH_X509_SVID    = '/spiffe.workload.SpiffeWorkloadAPI/FetchX509SVID';
-    private const RPC_FETCH_X509_BUNDLES = '/spiffe.workload.SpiffeWorkloadAPI/FetchX509Bundles';
-    private const RPC_FETCH_JWT_SVID     = '/spiffe.workload.SpiffeWorkloadAPI/FetchJWTSVID';
-    private const RPC_FETCH_JWT_BUNDLES  = '/spiffe.workload.SpiffeWorkloadAPI/FetchJWTBundles';
-    private const RPC_VALIDATE_JWT_SVID  = '/spiffe.workload.SpiffeWorkloadAPI/ValidateJWTSVID';
+    // SPIRE Agent v1.x registers the Workload API service WITHOUT the proto
+    // package prefix. The gRPC reflection endpoint confirms the service name
+    // is just "SpiffeWorkloadAPI", not "spiffe.workload.SpiffeWorkloadAPI".
+    private const RPC_FETCH_X509_SVID    = '/SpiffeWorkloadAPI/FetchX509SVID';
+    private const RPC_FETCH_X509_BUNDLES = '/SpiffeWorkloadAPI/FetchX509Bundles';
+    private const RPC_FETCH_JWT_SVID     = '/SpiffeWorkloadAPI/FetchJWTSVID';
+    private const RPC_FETCH_JWT_BUNDLES  = '/SpiffeWorkloadAPI/FetchJWTBundles';
+    private const RPC_VALIDATE_JWT_SVID  = '/SpiffeWorkloadAPI/ValidateJWTSVID';
 
     private const GRPC_HEADER_SIZE = 5;
 

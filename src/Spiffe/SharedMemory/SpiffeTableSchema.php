@@ -83,6 +83,13 @@ final class SpiffeTableSchema
         @rmdir($baseDir);
     }
 
+    /**
+     * Atomic replace: write→fsync→rename→dir-fsync.
+     *
+     * Guarantees: readers never see partial content, and once this call
+     * returns the data is durable against process crash (not power loss
+     * without journaling — that's the filesystem's job).
+     */
     public static function atomicWrite(string $path, string $content): void
     {
         $dir = dirname($path);
@@ -90,7 +97,39 @@ final class SpiffeTableSchema
         if ($tmp === false) {
             throw new \RuntimeException("Failed to create temp file in {$dir}");
         }
-        file_put_contents($tmp, $content);
-        rename($tmp, $path);
+
+        $fh = @fopen($tmp, 'wb');
+        if ($fh === false) {
+            @unlink($tmp);
+            throw new \RuntimeException("Failed to open temp file {$tmp}");
+        }
+
+        try {
+            $written = @fwrite($fh, $content);
+            if ($written === false || $written !== strlen($content)) {
+                throw new \RuntimeException("Short write to {$tmp}");
+            }
+            @fflush($fh);
+            if (function_exists('fsync')) {
+                @fsync($fh);
+            }
+        } finally {
+            @fclose($fh);
+        }
+
+        if (!@rename($tmp, $path)) {
+            @unlink($tmp);
+            throw new \RuntimeException("Rename {$tmp} → {$path} failed");
+        }
+
+        // Parent directory fsync — ensures the rename itself is durable
+        // against a crash. Best-effort; ignored on platforms without dir fsync.
+        if (function_exists('fsync')) {
+            $dh = @fopen($dir, 'r');
+            if ($dh !== false) {
+                @fsync($dh);
+                @fclose($dh);
+            }
+        }
     }
 }

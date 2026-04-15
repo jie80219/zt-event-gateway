@@ -54,6 +54,7 @@ final class X509Bundle
                 break;
             }
 
+            $bytesConsumed = 0;
             $length = self::readDerLength($der, $offset + 1, $bytesConsumed);
             $certLen = 1 + $bytesConsumed + $length;
             $certDer = substr($der, $offset, $certLen);

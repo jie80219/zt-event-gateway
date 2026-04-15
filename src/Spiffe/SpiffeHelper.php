@@ -15,7 +15,8 @@ use Spiffe\Runtime\Http2Frame;
  *   ✅ Daemon mode (persistent gRPC stream, auto-update on rotation)
  *   ✅ Renew signal (SIGHUP) to notify external processes
  *   ✅ Post-rotation command execution
- *
+ *sleep 15
+ 
  * Uses ext-sockets (NOT stream_socket) to avoid Swow hook conflicts.
  *
  * Usage:

@@ -6,7 +6,7 @@ namespace Spiffe\Runtime;
 
 use OpenSwoole\Coroutine;
 use OpenSwoole\Coroutine\Channel;
-use OpenSwoole\Coroutine\Scheduler;
+use OpenSwoole\Event;
 
 /**
  * Coroutine runtime backed by OpenSwoole.
@@ -25,24 +25,29 @@ final class OpenSwooleRuntime implements RuntimeInterface
 
     public function sleep(float $seconds): void
     {
-        // OpenSwoole 26.x Coroutine::sleep() only accepts int (seconds).
-        // For sub-second sleeps, use usleep via Coroutine context.
-        if ($seconds < 1.0) {
-            usleep((int) ($seconds * 1_000_000));
-        } else {
-            Coroutine::sleep((int) ceil($seconds));
-        }
+        // Must yield cooperatively — naked usleep() blocks the whole
+        // reactor and starves child coroutines (e.g. X509Source's
+        // watchLoop), leaving them stuck in their initial state
+        // because the parent's 0.1s poll never releases the runtime.
+        $us = (int) max(0, $seconds * 1_000_000);
+        Coroutine::usleep($us);
     }
 
     public function runBlocking(callable $fn): void
     {
         if (Coroutine::getCid() > 0) {
             $fn();
-        } else {
-            $scheduler = new Scheduler();
-            $scheduler->add($fn);
-            $scheduler->start();
+            return;
         }
+
+        // Spawn the entry coroutine via Coroutine::create + Event::wait,
+        // rather than Scheduler::start. Scheduler-based execution has
+        // subtle issues on OpenSwoole 22.x when the entry coroutine spawns
+        // additional child coroutines (e.g. X509Source->start()) — children
+        // can be silently starved of scheduling slots, leaving them in
+        // the initial state forever.
+        Coroutine::create($fn);
+        Event::wait();
     }
 
     public function name(): string

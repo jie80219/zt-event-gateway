@@ -137,7 +137,7 @@ services:
       LSVID_ENABLED: "1"
       LSVID_REQUIRED: "1"
       LSVID_TTL_SECONDS: "1800"
-      LSVID_LOG_PAYLOAD: "1"
+      LSVID_LOG_PAYLOAD: "0"
     volumes:
       - spire-agent-sockets:/run/spire/sockets:ro
       - spiffe-certs:/tmp/spiffe-certs:ro
@@ -184,7 +184,7 @@ services:
       LSVID_ENABLED: "1"
       LSVID_REQUIRED: "1"
       LSVID_TTL_SECONDS: "1800"
-      LSVID_LOG_PAYLOAD: "1"
+      LSVID_LOG_PAYLOAD: "0"
       # ── mTLS to downstream services ──
       SPIFFE_MTLS_ENABLED: "0"
       ORDER_SERVICE_HOST: "host.docker.internal"

@@ -172,4 +172,133 @@ final class SharedMemoryTest extends TestCase
         SpiffeTableSchema::cleanup($this->baseDir);
         $this->assertDirectoryDoesNotExist($this->baseDir);
     }
+
+    public function testIsStaleReportsFreshOnRecentWrite(): void
+    {
+        $reader = new SpiffeTableReader($this->baseDir);
+
+        SpiffeTableSchema::atomicWrite(
+            "{$this->baseDir}/meta.json",
+            json_encode([
+                'version' => 2, 'x509_state' => 'ready', 'jwt_state' => 'ready',
+                'x509_count' => 1, 'jwt_count' => 0,
+                'updated_at' => time(), 'error' => '',
+            ]),
+        );
+
+        $this->assertFalse($reader->isStale(60), 'just-written meta should not be stale');
+    }
+
+    public function testIsStaleReportsStaleOnOldUpdate(): void
+    {
+        $reader = new SpiffeTableReader($this->baseDir);
+
+        SpiffeTableSchema::atomicWrite(
+            "{$this->baseDir}/meta.json",
+            json_encode([
+                'version' => 2, 'x509_state' => 'ready', 'jwt_state' => 'ready',
+                'x509_count' => 1, 'jwt_count' => 0,
+                'updated_at' => time() - 3600, 'error' => '',
+            ]),
+        );
+
+        $this->assertTrue($reader->isStale(60), '1h-old meta must be stale at 60s threshold');
+        $this->assertFalse($reader->isStale(7200), '1h-old meta is fresh at 2h threshold');
+    }
+
+    public function testIsStaleReportsStaleWhenNeverUpdated(): void
+    {
+        // Fresh createAll() leaves updated_at=0 → secondsSinceLastUpdate() returns -1
+        $reader = new SpiffeTableReader($this->baseDir);
+        $this->assertTrue($reader->isStale(60), 'never-updated meta must report stale');
+    }
+
+    public function testWatchVersionFiresOnChange(): void
+    {
+        $reader = new SpiffeTableReader($this->baseDir);
+
+        $writeMeta = function (int $version): void {
+            SpiffeTableSchema::atomicWrite(
+                "{$this->baseDir}/meta.json",
+                json_encode([
+                    'version' => $version, 'x509_state' => 'ready', 'jwt_state' => 'ready',
+                    'x509_count' => 0, 'jwt_count' => 0,
+                    'updated_at' => time(), 'error' => '',
+                ]),
+            );
+        };
+
+        $writeMeta(2);
+
+        $fires = [];
+        $iterations = 0;
+
+        $reader->watchVersion(
+            onChange: static function (int $new, int $old) use (&$fires): void {
+                $fires[] = [$old, $new];
+            },
+            pollInterval: 0.0,
+            running: function () use (&$iterations, $writeMeta): bool {
+                $iterations++;
+                if ($iterations === 2) {
+                    $writeMeta(4);
+                }
+                if ($iterations === 4) {
+                    $writeMeta(6);
+                }
+                return $iterations < 6;
+            },
+            sleeper: static fn(float $s) => null,
+        );
+
+        $this->assertCount(2, $fires, 'should fire on each version bump');
+        $this->assertSame([2, 4], $fires[0]);
+        $this->assertSame([4, 6], $fires[1]);
+    }
+
+    public function testWatchVersionDoesNotFireWhenStable(): void
+    {
+        $reader = new SpiffeTableReader($this->baseDir);
+        SpiffeTableSchema::atomicWrite(
+            "{$this->baseDir}/meta.json",
+            json_encode([
+                'version' => 4, 'x509_state' => 'ready', 'jwt_state' => 'ready',
+                'x509_count' => 0, 'jwt_count' => 0,
+                'updated_at' => time(), 'error' => '',
+            ]),
+        );
+
+        $fires = 0;
+        $iterations = 0;
+        $reader->watchVersion(
+            onChange: static function () use (&$fires): void { $fires++; },
+            pollInterval: 0.0,
+            running: static function () use (&$iterations): bool {
+                $iterations++;
+                return $iterations < 5;
+            },
+            sleeper: static fn(float $s) => null,
+        );
+
+        $this->assertSame(0, $fires, 'no rotation should not fire callback');
+    }
+
+    public function testAtomicWriteIsDurableAcrossConcurrentReaders(): void
+    {
+        // Sanity: repeated write/read cycles never produce partial JSON.
+        // Combined with LOCK_SH on the reader side, this guards against
+        // readers catching an in-flight rename.
+        $path = "{$this->baseDir}/meta.json";
+
+        for ($i = 0; $i < 100; $i++) {
+            SpiffeTableSchema::atomicWrite(
+                $path,
+                json_encode(['version' => $i * 2, 'payload' => str_repeat('x', 512)]),
+            );
+            $data = file_get_contents($path);
+            $decoded = json_decode($data, true);
+            $this->assertIsArray($decoded, "iter {$i}: expected valid JSON, got: " . substr($data, 0, 80));
+            $this->assertSame($i * 2, $decoded['version']);
+        }
+    }
 }

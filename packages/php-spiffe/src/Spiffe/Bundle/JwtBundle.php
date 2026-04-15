@@ -145,8 +145,11 @@ final class JwtBundle
             return null;
         }
 
-        $pem = '';
-        openssl_pkey_export_public($key, $pem);
+        // PHP has no `openssl_pkey_export_public`; for a public key we pull
+        // the PEM out of the details array (which is populated when the key
+        // was built via openssl_pkey_get_public()).
+        $details = openssl_pkey_get_details($key);
+        $pem = is_array($details) ? (string) ($details['key'] ?? '') : '';
 
         return [
             'kty' => $kty,

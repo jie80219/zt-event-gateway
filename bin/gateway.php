@@ -17,11 +17,8 @@ declare(strict_types=1);
 use Swoole\Http\Server;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
-use SDPMlab\LSVID\LSVIDSigner;
-use SDPMlab\ZtEventGateway\Spiffe\LSVID\SpiffeTableSvidReader;
+use SDPMlab\ZtEventGateway\Spiffe\SpiffeBootstrap;
 use Spiffe\SharedMemory\SpiffeTableReader;
-use Spiffe\Source\SourceConfig;
-use Spiffe\Source\X509Source;
 use AnserGateway\AnserGateway;
 use AnserGateway\Router\Router;
 use AnserGateway\Router\RouteCollector;
@@ -68,7 +65,7 @@ $server->set([
 // ── Per-worker state ──────────────────────────────────────────────
 $workerState = new class {
     public ?Router $router = null;
-    public ?X509Source $x509Source = null;
+    public ?SpiffeTableReader $shmReader = null;
 };
 
 // ── Worker start: initialize framework + SPIFFE ───────────────────
@@ -84,87 +81,115 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
         fwrite(STDERR, sprintf("[gateway] Router init failed: %s\n", $e->getMessage()));
     }
 
-    // ── 2. SPIFFE / LSVID initialization ─────────────────────────
-    $spiffeId = $env('SPIFFE_ID', '');
+    // ── 2. SPIFFE / LSVID bootstrap (SHM-backed) ─────────────────
+    //
+    //   Single source of truth: the shared-memory store populated by the
+    //   spiffe-watcher daemon. We NO LONGER spawn our own X509Source here
+    //   — that would duplicate the watcher's gRPC stream and risk
+    //   two-sided disagreement on the "current" SVID. Instead we:
+    //
+    //     1. Read the primary SVID from SHM (seqlock-consistent).
+    //     2. Build LSVIDSigner via SpiffeTableSvidReader (adapter).
+    //     3. Launch a coroutine that polls meta.json.version and refreshes
+    //        the GatewaySpiffeState singleton whenever the watcher
+    //        publishes a new rotation.
     $downstreamSpiffeId = $env('WORKER_SPIFFE_ID', 'spiffe://zt.local/php-worker');
-
-    GatewaySpiffeState::setSpiffeId($spiffeId);
+    GatewaySpiffeState::setSpiffeId($env('SPIFFE_ID', ''));
     GatewaySpiffeState::setDownstreamSpiffeId($downstreamSpiffeId);
 
     if ($env('LSVID_ENABLED', '1') !== '0') {
+        $shmDir = $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared');
+        $awaitTimeout = (float) $env('SPIFFE_AWAIT_TIMEOUT', '30');
         try {
-            $shmDir = $env('SPIFFE_SHM_DIR', '');
-            $reader = $shmDir !== ''
-                ? new SpiffeTableReader($shmDir)
-                : new SpiffeTableReader();
+            $boot = SpiffeBootstrap::fromShm($shmDir, [
+                'trust_domain'                   => $env('SPIFFE_TRUST_DOMAIN', 'zt.local'),
+                'await_timeout'                  => $awaitTimeout,
+                'clock_skew_seconds'             => 30,
+                'require_audience_on_all_levels' => true,
+                'spiffe_id'                      => $env('SPIFFE_ID', ''),
+            ]);
 
-            $primary = $reader->readX509Primary();
-            if ($primary !== null && !empty($primary['key_pem']) && !empty($primary['cert_pem'])) {
-                $signer = new LSVIDSigner(new SpiffeTableSvidReader($reader));
-                GatewaySpiffeState::setLsvidSigner($signer);
-
-                if (!empty($primary['spiffe_id'])) {
-                    GatewaySpiffeState::setSpiffeId((string) $primary['spiffe_id']);
-                }
-                fwrite(STDOUT, sprintf(
-                    "[gateway] LSVID Step 1 enabled (iss=%s, aud=%s)\n",
-                    GatewaySpiffeState::getSpiffeId(),
-                    $downstreamSpiffeId,
-                ));
-            } else {
-                fwrite(STDERR, sprintf(
-                    "[gateway] LSVID DEGRADED — no primary X.509-SVID in SHM (dir=%s). "
-                    . "Ingress envelopes will be unsigned.\n",
-                    $shmDir !== '' ? $shmDir : '(default)',
-                ));
+            $workerState->shmReader = $boot->shmReader();
+            $primary = $boot->primary();
+            if ($primary === null) {
+                throw new \RuntimeException('SHM ready but primary SVID slot empty');
             }
-        } catch (\Throwable $e) {
-            fwrite(STDERR, sprintf("[gateway] LSVID signer init failed: %s\n", $e->getMessage()));
-        }
-    } else {
-        fwrite(STDOUT, "[gateway] LSVID disabled via LSVID_ENABLED=0\n");
-    }
 
-    // ── 3. X509Source (gRPC to SPIRE Agent) ──────────────────────
-    $spiffeSocket = $env('SPIFFE_ENDPOINT_SOCKET', '');
-    if ($spiffeSocket !== '') {
-        try {
-            $sourceConfig = new SourceConfig(
-                socketPath: $spiffeSocket,
-                maxRetries: 5,
-                initialBackoff: 1.0,
-                maxBackoff: 15.0,
-                connectTimeout: 5.0,
-                streamTimeout: 0.0,
-            );
-
-            $workerState->x509Source = new X509Source($sourceConfig);
-            $workerState->x509Source->onRotated(function (array $svids) {
-                if ($svids !== []) {
-                    GatewaySpiffeState::setSpiffeId((string) $svids[0]->spiffeId());
-                    fwrite(STDOUT, sprintf(
-                        "[gateway] SVID rotated: %s\n",
-                        GatewaySpiffeState::getSpiffeId(),
-                    ));
-                }
-            });
-            $workerState->x509Source->onError(function (\Throwable $e) {
-                fwrite(STDERR, sprintf("[gateway] X509Source error: %s\n", $e->getMessage()));
-            });
-            $workerState->x509Source->start();
+            GatewaySpiffeState::setLsvidSigner($boot->signer());
+            GatewaySpiffeState::setSpiffeId((string) $primary['spiffe_id']);
 
             fwrite(STDOUT, sprintf(
-                "[gateway] Worker #%d X509Source started (socket=%s)\n",
-                $workerId,
-                $spiffeSocket,
+                "[gateway] LSVID bootstrap OK (iss=%s, aud=%s, shm=%s, version=%d)\n",
+                $primary['spiffe_id'],
+                $downstreamSpiffeId,
+                $shmDir,
+                $boot->version(),
             ));
+
+            // ── Rotation watcher coroutine ──────────────────────
+            //   On every SHM version bump, rebuild the signer so the
+            //   new X.509 key is used for the next mint. watchVersion()
+            //   is cooperative — it usleep()s between polls and will
+            //   yield to other coroutines.
+            $pollSec = (float) max(0.1, (float) (getenv('SPIFFE_SHM_POLL_MS') ?: 500) / 1000.0);
+            $coSleep = static function (float $s): void {
+                if ($s < 1.0) {
+                    \OpenSwoole\Coroutine::usleep((int) ($s * 1_000_000));
+                } else {
+                    \OpenSwoole\Coroutine::sleep($s);
+                }
+            };
+
+            \go(static function () use ($boot, $workerId, $pollSec, $coSleep) {
+                $boot->shmReader()->watchVersion(
+                    static function (int $newV, int $oldV) use ($boot, $workerId) {
+                        $primary = $boot->primary();
+                        if ($primary === null) {
+                            return;
+                        }
+                        GatewaySpiffeState::setLsvidSigner($boot->signer());
+                        GatewaySpiffeState::setSpiffeId((string) $primary['spiffe_id']);
+                        fwrite(STDOUT, sprintf(
+                            "[gateway] Worker #%d SVID rotated v%d→v%d (iss=%s)\n",
+                            $workerId,
+                            $oldV,
+                            $newV,
+                            $primary['spiffe_id'],
+                        ));
+                    },
+                    pollInterval: $pollSec,
+                    sleeper: $coSleep,
+                );
+            });
+
+            // ── Staleness monitor coroutine (every 30s) ─────────
+            //   If the watcher wedges, updated_at stops advancing even
+            //   though files still exist. Threshold defaults to 2×
+            //   typical SVID TTL (3600s) but can be tuned.
+            $staleThreshold = (int) $env('SPIFFE_STALE_THRESHOLD_SECS', '7200');
+            \go(static function () use ($boot, $workerId, $staleThreshold) {
+                while (true) {
+                    if ($boot->shmReader()->isStale($staleThreshold)) {
+                        fwrite(STDERR, sprintf(
+                            "[gateway] Worker #%d WARN: SPIFFE SHM stale — "
+                            . "last update %ds ago (threshold %ds)\n",
+                            $workerId,
+                            $boot->shmReader()->secondsSinceLastUpdate(),
+                            $staleThreshold,
+                        ));
+                    }
+                    \OpenSwoole\Coroutine::sleep(30);
+                }
+            });
         } catch (\Throwable $e) {
             fwrite(STDERR, sprintf(
-                "[gateway] Worker #%d X509Source failed: %s\n",
-                $workerId,
+                "[gateway] LSVID bootstrap FAILED (shm=%s): %s\n",
+                $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared'),
                 $e->getMessage(),
             ));
         }
+    } else {
+        fwrite(STDOUT, "[gateway] LSVID disabled via LSVID_ENABLED=0\n");
     }
 
     fwrite(STDOUT, sprintf(

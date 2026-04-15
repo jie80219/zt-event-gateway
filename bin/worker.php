@@ -8,16 +8,11 @@ use SDPMlab\ZtEventGateway\EventBus;
 use SDPMlab\ZtEventGateway\HandlerScanner;
 use SDPMlab\ZtEventGateway\MessageQueue\MessageBus;
 use SDPMlab\ZtEventGateway\QueueTopology;
-use SDPMlab\LSVID\JtiReplayCache;
-use SDPMlab\LSVID\LSVIDSigner;
-use SDPMlab\LSVID\LSVIDValidator;
-use SDPMlab\ZtEventGateway\Spiffe\LSVID\SpiffeTableSvidReader;
 use SDPMlab\ZtEventGateway\Spiffe\LSVIDSignerRegistry;
 use SDPMlab\ZtEventGateway\Spiffe\LSVIDValidatorRegistry;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeAudienceRegistry;
+use SDPMlab\ZtEventGateway\Spiffe\SpiffeBootstrap;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeMtlsRegistry;
-use Spiffe\SharedMemory\SpiffeTableReader;
-use Spiffe\TLS\SpiffeTlsContext;
 use SDPMlab\Anser\Service\ActionFilter;
 use SDPMlab\ZtEventGateway\EventStore\EventStoreDB;
 use ZtEventGateway\Worker\EventConsumer;
@@ -48,44 +43,53 @@ try {
     $connection = new AMQPSocketConnection($host, $port, $user, $password);
     $channel = $connection->channel();
 
-    // ── LSVID wiring ─────────────────────────────────────────────
-    //   Probe the SHM SVID store at startup. If a primary X.509-SVID is
-    //   available, wire LSVIDSigner + LSVIDValidator into the bus and
-    //   consumers so every outbound event carries a nested JWS chain and
-    //   every inbound event is cryptographically verified. When SVID is
-    //   absent (e.g. local dev without spire-agent) we fall back to the
-    //   plain prefix-check path and log the degradation clearly.
+    // ── LSVID wiring (SHM-backed) ───────────────────────────────
+    //   Bootstrap both signer and validators from the shared-memory store
+    //   populated by the spiffe-watcher daemon. The table reader exposes
+    //   seqlock-consistent reads of meta.json / x509/*.json, so every call
+    //   to sign() or verify() fetches the freshest SVID automatically —
+    //   no background coroutine is needed for rotation awareness in the
+    //   Worker (unlike Gateway, Worker isn't coroutine-based).
     //
-    //   Opt-out: LSVID_ENABLED=0
-    //   SHM override: SPIFFE_SHM_DIR (default: package built-in /tmp/spiffe-shared)
-    $lsvidEnabled = $env('LSVID_ENABLED', '1') !== '0';
-    $lsvidSigner = null;
-    $lsvidValidator = null;
-    $lsvidRequired = $env('LSVID_REQUIRED', '1') === '1';
+    //   Opt-out:      LSVID_ENABLED=0
+    //   SHM location: SPIFFE_SHM_DIR (default /tmp/spiffe-shared)
+    //   Required:     LSVID_REQUIRED=1 → fail-closed if no SVID in SHM
+    $lsvidEnabled       = $env('LSVID_ENABLED', '1') !== '0';
+    $lsvidSigner        = null;
+    $lsvidValidator     = null;
+    $filterValidator    = null;
+    $lsvidRequired      = $env('LSVID_REQUIRED', '1') === '1';
     $downstreamAudience = $env('DOWNSTREAM_SPIFFE_ID', '');
-    $trustDomain = $env('SPIFFE_TRUST_DOMAIN', 'zt.local');
+    $trustDomain        = $env('SPIFFE_TRUST_DOMAIN', 'zt.local');
+    $shmDir             = $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared');
+    $staleThreshold     = (int) $env('SPIFFE_STALE_THRESHOLD_SECS', '7200');
 
     if ($lsvidEnabled) {
-        $shmDir = $env('SPIFFE_SHM_DIR', '');
-        $reader = $shmDir !== ''
-            ? new SpiffeTableReader($shmDir)
-            : new SpiffeTableReader();
+        try {
+            $boot = SpiffeBootstrap::fromShm($shmDir, [
+                'trust_domain'                   => $trustDomain,
+                'await_timeout'                  => (float) $env('SPIFFE_AWAIT_TIMEOUT', '30'),
+                'clock_skew_seconds'             => 30,
+                'require_audience_on_all_levels' => true,
+                'spiffe_id'                      => $env('SPIFFE_ID', ''),
+            ]);
 
-        $primary = $reader->readX509Primary();
-        if ($primary !== null && !empty($primary['key_pem']) && !empty($primary['bundle_pem'])) {
-            $svidReader = new SpiffeTableSvidReader($reader);
-            $jtiCache = new JtiReplayCache();
-            $lsvidSigner = new LSVIDSigner($svidReader);
-            $lsvidValidator = new LSVIDValidator(
-                $svidReader,
-                clockSkewSeconds: 30,
-                jtiCache: $jtiCache,
-                trustDomain: $trustDomain,
-                requireNbf: false,
-                requireAudienceOnAllLevels: true,
-            );
+            $primary = $boot->primary();
+            if ($primary === null || empty($primary['key_pem']) || empty($primary['bundle_pem'])) {
+                throw new \RuntimeException('SHM ready but primary SVID slot is empty or malformed');
+            }
 
-            // Validate downstream audience — required when LSVID is fully enabled.
+            $lsvidSigner = $boot->signer();
+            // One jtiCache per consumer pipeline — RequestConsumer records
+            // the L0 jti, and if EventConsumer shared the same cache it
+            // would false-positive on the nested L0 it sees during chain
+            // validation of L1 envelopes. Filter validator stays cache-less
+            // (SpiffeLsvidFilter re-validates tokens it's about to extend).
+            $requestValidator = $boot->validator(withJtiCache: true);
+            $eventValidator   = $boot->validator(withJtiCache: true);
+            $filterValidator  = $boot->validator(withJtiCache: false);
+            $lsvidValidator   = $requestValidator;  // kept for legacy call sites
+
             if ($downstreamAudience === '' && $lsvidRequired) {
                 fwrite(STDERR,
                     "[worker] FATAL: LSVID_REQUIRED=1 but DOWNSTREAM_SPIFFE_ID is empty. "
@@ -95,18 +99,34 @@ try {
             }
 
             fwrite(STDOUT, sprintf(
-                "[worker] LSVID enabled — signer+validator wired (spiffe_id=%s, bundle_certs=%d, downstream=%s, required=%s)\n",
-                (string) ($primary['spiffe_id'] ?? '(unknown)'),
+                "[worker] LSVID enabled — signer+validator wired via SHM "
+                . "(spiffe_id=%s, bundle_certs=%d, shm_version=%d, downstream=%s, required=%s)\n",
+                (string) $primary['spiffe_id'],
                 substr_count((string) $primary['bundle_pem'], 'BEGIN CERTIFICATE'),
+                $boot->version(),
                 $downstreamAudience !== '' ? $downstreamAudience : '(fallback to SPIFFE_ID)',
                 $lsvidRequired ? 'yes' : 'no',
             ));
-        } else {
+
+            if ($boot->shmReader()->isStale($staleThreshold)) {
+                fwrite(STDERR, sprintf(
+                    "[worker] WARN: SHM is already stale at boot — "
+                    . "last update %ds ago (threshold %ds). watcher may be down.\n",
+                    $boot->shmReader()->secondsSinceLastUpdate(),
+                    $staleThreshold,
+                ));
+            }
+        } catch (\Throwable $e) {
             fwrite(STDERR, sprintf(
-                "[worker] LSVID DEGRADED — no primary X.509-SVID in SHM store (dir=%s). "
-                . "Running with prefix-check only. Start spiffe-watcher/spiffe-helper to enable LSVID.\n",
-                $shmDir !== '' ? $shmDir : '/tmp/spiffe-shared',
+                "[worker] LSVID bootstrap FAILED (shm=%s): %s\n",
+                $shmDir,
+                $e->getMessage(),
             ));
+            if ($lsvidRequired) {
+                fwrite(STDERR, "[worker] FATAL: LSVID_REQUIRED=1 — exiting.\n");
+                exit(1);
+            }
+            fwrite(STDERR, "[worker] LSVID DEGRADED — running with prefix-check only.\n");
         }
     } else {
         fwrite(STDOUT, "[worker] LSVID disabled via LSVID_ENABLED=0\n");
@@ -126,25 +146,16 @@ try {
         LSVIDSignerRegistry::set($lsvidSigner);
         fwrite(STDOUT, "[worker] LSVIDSignerRegistry initialized\n");
 
-        // 1b. LSVID validator for re-validating prior tokens before extend.
-        //     This gives SpiffeLsvidFilter defence-in-depth: even if the
-        //     LSVIDContext was populated from a compromised path, we re-run
-        //     full chain validation against the CA bundle before producing L2.
-        if ($lsvidValidator !== null) {
-            LSVIDValidatorRegistry::set($lsvidValidator);
-            fwrite(STDOUT, "[worker] LSVIDValidatorRegistry initialized\n");
+        // 1b. Filter validator（不帶 jtiCache）for SpiffeLsvidFilter re-validate.
+        //     跟 consumer validator 分離，避免對同一個 token 報 jti replay。
+        if (isset($filterValidator)) {
+            LSVIDValidatorRegistry::set($filterValidator);
+            fwrite(STDOUT, "[worker] LSVIDValidatorRegistry initialized (no jtiCache)\n");
         }
 
-        // 2. mTLS context.
-        try {
-            $tlsContext = SpiffeTlsContext::fromReader($reader);
-            SpiffeMtlsRegistry::set($tlsContext);
-            fwrite(STDOUT, "[worker] mTLS registry initialized\n");
-        } catch (\Throwable $e) {
-            fwrite(STDERR, sprintf(
-                "[worker] mTLS registry init failed (degraded): %s\n",
-                $e->getMessage(),
-            ));
+        // 2. mTLS — 暫不支援（MVP 不啟用 mTLS，SPIFFE_MTLS_ENABLED=0）
+        if ($env('SPIFFE_MTLS_ENABLED', '0') === '1') {
+            fwrite(STDERR, "[worker] mTLS not yet supported in MVP mode (direct Workload API)\n");
         }
     }
 
@@ -214,8 +225,8 @@ try {
 
     $eventBus = new EventBus($messageBus, $eventStoreDB);
     $transportConsumer = new Consumer($channel);
-    $requestConsumer = new RequestConsumer($messageBus, $lsvidValidator, $lsvidRequired);
-    $eventConsumer = new EventConsumer($eventBus, $lsvidValidator, $lsvidRequired);
+    $requestConsumer = new RequestConsumer($messageBus, $requestValidator ?? $lsvidValidator, $lsvidRequired);
+    $eventConsumer = new EventConsumer($eventBus, $eventValidator ?? $lsvidValidator, $lsvidRequired);
     $scanner = new HandlerScanner();
     $eventQueues = $scanner->scanEventTypesFromFile($sagaFilePath);
 

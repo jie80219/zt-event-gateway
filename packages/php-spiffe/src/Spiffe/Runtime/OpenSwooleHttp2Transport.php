@@ -97,6 +97,16 @@ final class OpenSwooleHttp2Transport implements Http2TransportInterface
                 throw new \RuntimeException("Stream interrupted on {$method}");
             }
 
+            // RST_STREAM — server reset the stream (e.g. PermissionDenied before any data)
+            if ($frame['type'] === Http2Frame::RST_STREAM) {
+                $errorCode = $frame['payload'] !== '' ? unpack('N', $frame['payload'])[1] : 0;
+                throw new \RuntimeException(sprintf(
+                    'gRPC stream reset by server on %s (HTTP/2 RST_STREAM error_code=%d)',
+                    $method,
+                    $errorCode,
+                ));
+            }
+
             // WINDOW_UPDATE / SETTINGS / PING — handle silently
             if (in_array($frame['type'], [Http2Frame::WINDOW_UPDATE, Http2Frame::SETTINGS, Http2Frame::PING], true)) {
                 if ($frame['type'] === Http2Frame::PING && !($frame['flags'] & Http2Frame::FLAG_ACK)) {
@@ -262,6 +272,14 @@ final class OpenSwooleHttp2Transport implements Http2TransportInterface
             $frame = $this->readFrame();
             if ($frame === null) {
                 throw new \RuntimeException('Connection closed while reading gRPC response');
+            }
+
+            if ($frame['type'] === Http2Frame::RST_STREAM) {
+                $errorCode = $frame['payload'] !== '' ? unpack('N', $frame['payload'])[1] : 0;
+                throw new \RuntimeException(sprintf(
+                    'gRPC stream reset (RST_STREAM error_code=%d)',
+                    $errorCode,
+                ));
             }
 
             if (in_array($frame['type'], [Http2Frame::WINDOW_UPDATE, Http2Frame::SETTINGS, Http2Frame::PING], true)) {

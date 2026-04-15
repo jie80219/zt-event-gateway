@@ -97,6 +97,15 @@ final class RequestConsumer
                     $parsed->level(),
                     $parsed->issuer(),
                 ));
+                if (getenv('LSVID_LOG_PAYLOAD') === '1') {
+                    foreach ($parsed->chain() as $i => $lvl) {
+                        fwrite(STDOUT, sprintf(
+                            "[request-consumer] LSVID L%d payload=%s\n",
+                            $i,
+                            json_encode($lvl->payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                        ));
+                    }
+                }
             } catch (LSVIDException $e) {
                 throw new UnrecoverableMessageException('Invalid inbound LSVID: ' . $e->getMessage());
             }

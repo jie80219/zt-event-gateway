@@ -132,6 +132,52 @@ final class SpiffeTableReader
     }
 
     /**
+     * Has the SHM store gone longer than `$maxAgeSeconds` without a refresh?
+     *
+     * Useful for staleness alarms — if the watcher is wedged (e.g. gRPC
+     * stream silently stuck), updated_at stops advancing even though the
+     * files still exist. A sensible threshold is 2× SVID TTL.
+     */
+    public function isStale(int $maxAgeSeconds): bool
+    {
+        $elapsed = $this->secondsSinceLastUpdate();
+        return $elapsed < 0 || $elapsed > $maxAgeSeconds;
+    }
+
+    /**
+     * Block-poll the meta.json version counter and invoke $onChange whenever
+     * it advances. Meant to be called inside a coroutine — by default it
+     * blocks on usleep(); pass a $sleeper to yield cooperatively (e.g.
+     * `Swoole\Coroutine::sleep`).
+     *
+     * @param callable(int $newVersion, int $oldVersion): void $onChange
+     * @param callable(): bool|null                            $running   optional predicate; return false to break the loop
+     * @param callable(float): void|null                       $sleeper   optional sleep function (seconds)
+     */
+    public function watchVersion(
+        callable $onChange,
+        float $pollInterval = 0.5,
+        ?callable $running = null,
+        ?callable $sleeper = null,
+    ): void {
+        $last = $this->version();
+        $sleep = $sleeper ?? static fn(float $s) => usleep((int) max(1_000, $s * 1_000_000));
+
+        while ($running === null || $running() !== false) {
+            $current = $this->version();
+            if ($current !== $last && $current > 0) {
+                try {
+                    $onChange($current, $last);
+                } catch (\Throwable) {
+                    // observer failure must not kill the watch loop
+                }
+                $last = $current;
+            }
+            $sleep($pollInterval);
+        }
+    }
+
+    /**
      * Block until credentials are available.
      *
      * @param float $timeout Seconds (0 = indefinite)
@@ -161,31 +207,56 @@ final class SpiffeTableReader
 
     private function readMetaRaw(): array
     {
-        $path = "{$this->baseDir}/meta.json";
-        if (!file_exists($path)) {
-            return [
-                'version' => 0, 'x509_state' => 'idle', 'jwt_state' => 'idle',
-                'x509_count' => 0, 'jwt_count' => 0, 'updated_at' => 0, 'error' => '',
-            ];
+        $defaults = [
+            'version' => 0, 'x509_state' => 'idle', 'jwt_state' => 'idle',
+            'x509_count' => 0, 'jwt_count' => 0, 'updated_at' => 0, 'error' => '',
+        ];
+
+        $data = $this->readLocked("{$this->baseDir}/meta.json");
+        if ($data === null) {
+            return $defaults;
         }
-        $data = @file_get_contents($path);
-        if ($data === false) {
-            return ['version' => 0, 'x509_state' => 'idle', 'jwt_state' => 'idle',
-                'x509_count' => 0, 'jwt_count' => 0, 'updated_at' => 0, 'error' => ''];
-        }
-        return json_decode($data, true, 8) ?? ['version' => 0];
+
+        $decoded = json_decode($data, true, 8);
+        return is_array($decoded) ? $decoded + $defaults : $defaults;
     }
 
     private function readJsonFile(string $path): ?array
     {
-        if (!file_exists($path)) {
-            return null;
-        }
-        $data = @file_get_contents($path);
-        if ($data === false) {
+        $data = $this->readLocked($path);
+        if ($data === null) {
             return null;
         }
         return json_decode($data, true, 16) ?: null;
+    }
+
+    /**
+     * Read a whole file under LOCK_SH. Returns null on missing file or any
+     * IO failure; callers decide the fallback. Shared locks cooperate with
+     * writers that take LOCK_EX, but note the seqlock protocol is still the
+     * primary cross-file consistency mechanism — flock alone only protects
+     * a single fd.
+     */
+    private function readLocked(string $path): ?string
+    {
+        if (!file_exists($path)) {
+            return null;
+        }
+
+        $fh = @fopen($path, 'rb');
+        if ($fh === false) {
+            return null;
+        }
+
+        try {
+            @flock($fh, LOCK_SH);
+            $data = @stream_get_contents($fh);
+            @flock($fh, LOCK_UN);
+        } finally {
+            @fclose($fh);
+        }
+
+        return $data === false ? null : $data;
     }
 
     /**
