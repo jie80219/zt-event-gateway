@@ -5,6 +5,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management
+    restart: unless-stopped
     container_name: zt-rabbitmq
     ports:
       - "5672:5672"
@@ -24,6 +25,7 @@ services:
   eventstoredb:
     container_name: eventstoredb
     image: eventstore/eventstore:latest
+    restart: unless-stopped
     environment:
         EVENTSTORE_CLUSTER_SIZE: 1
         EVENTSTORE_RUN_PROJECTIONS: All
@@ -33,6 +35,12 @@ services:
     ports:
         - '1113:1113' # TCP 客戶端通信
         - '2113:2113' # HTTP API 接口
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:2113/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     networks:
         - anser_project_network
 
@@ -40,6 +48,7 @@ services:
 
   spire-server:
     image: ghcr.io/spiffe/spire-server:1.12.0
+    restart: unless-stopped
     container_name: zt-spire-server
     command:
       - -config
@@ -47,6 +56,7 @@ services:
     volumes:
       - ./spiffe/spire-server-e2e/server.conf:/opt/spire/conf/server/server.conf:ro
       - ./spiffe/certs/agent-ca.crt.pem:/opt/spire/conf/server/agent-ca.crt.pem:ro
+      - spire-server-socket:/tmp/spire-server/private
     healthcheck:
       test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
       interval: 5s
@@ -58,6 +68,7 @@ services:
 
   spire-agent:
     image: ghcr.io/spiffe/spire-agent:1.12.0
+    restart: unless-stopped
     container_name: zt-spire-agent
     command:
       - -config
@@ -79,10 +90,37 @@ services:
     networks:
       - anser_project_network
 
+  workload-registrar:
+    build:
+      context: .
+      dockerfile: docker/workload-registrar/Dockerfile
+    restart: unless-stopped
+    container_name: zt-workload-registrar
+    command: ["/bin/sh", "/opt/spire/conf/scripts/register-workloads-internal.sh"]
+    environment:
+      REGISTER_INTERVAL: "60"
+    volumes:
+      - ./spiffe/scripts/register-workloads-internal.sh:/opt/spire/conf/scripts/register-workloads-internal.sh:ro
+      - spire-server-socket:/tmp/spire-server/private:ro
+    depends_on:
+      spire-server:
+        condition: service_healthy
+      spire-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/registrar-ready"]
+      interval: 3s
+      timeout: 2s
+      retries: 40
+      start_period: 5s
+    networks:
+      - anser_project_network
+
   # ── Application (OpenSwoole) ────────────────────────────────────
 
   spiffe-watcher:
     pid: "service:spire-agent"
+    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
@@ -100,10 +138,12 @@ services:
     depends_on:
       spire-agent:
         condition: service_healthy
+      workload-registrar:
+        condition: service_healthy
     healthcheck:
       # Check SHM state directly — avoids depending on the coroutine HTTP
       # endpoint which isn't available in every OpenSwoole flavor.
-      test: ["CMD-SHELL", "php -r 'exit((json_decode(@file_get_contents(\"/tmp/spiffe-shared/meta.json\"),true)[\"x509_state\"]??\"\")===\"ready\"?0:1);'"]
+      test: ["CMD-SHELL", "php -r '$m=json_decode(@file_get_contents(\"/tmp/spiffe-shared/meta.json\"),true);$ok=($m[\"x509_state\"]??\"\")===\"ready\"&&(time()-($m[\"updated_at\"]??0))<3600;exit($ok?0:1);'"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -113,6 +153,7 @@ services:
 
   gateway:
     pid: "service:spire-agent"
+    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
@@ -160,6 +201,7 @@ services:
 
   php-worker:
     pid: "service:spire-agent"
+    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
@@ -222,6 +264,7 @@ volumes:
   rabbitmq_data:
   eventstoredb_data:
   spire-agent-sockets:
+  spire-server-socket:
   spiffe-certs:
   spiffe-shared:
 

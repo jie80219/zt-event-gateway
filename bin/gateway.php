@@ -171,7 +171,7 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
                 while (true) {
                     if ($boot->shmReader()->isStale($staleThreshold)) {
                         fwrite(STDERR, sprintf(
-                            "[gateway] Worker #%d WARN: SPIFFE SHM stale — "
+                            "[gateway] Worker #%d ERROR: SPIFFE SHM stale — "
                             . "last update %ds ago (threshold %ds)\n",
                             $workerId,
                             $boot->shmReader()->secondsSinceLastUpdate(),
@@ -226,6 +226,14 @@ $server->on('request', function (Request $req, Response $res) use ($workerState)
             $res->header($name, (string) $value);
         }
         $res->end($workermanResponse->rawBody());
+    } catch (\SDPMlab\LSVID\LSVIDException $e) {
+        fwrite(STDERR, "[gateway] LSVID error (cert may be expired): {$e->getMessage()}\n");
+        $res->status(503);
+        $res->header('Content-Type', 'application/json; charset=utf-8');
+        $res->end(json_encode([
+            'status' => 503,
+            'message' => 'SPIFFE credentials unavailable — please retry later',
+        ]));
     } catch (\Throwable $e) {
         fwrite(STDERR, "[gateway] Error: {$e->getMessage()}\n");
         $res->status(500);

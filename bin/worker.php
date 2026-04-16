@@ -109,12 +109,16 @@ try {
             ));
 
             if ($boot->shmReader()->isStale($staleThreshold)) {
-                fwrite(STDERR, sprintf(
-                    "[worker] WARN: SHM is already stale at boot — "
-                    . "last update %ds ago (threshold %ds). watcher may be down.\n",
+                $msg = sprintf(
+                    "SHM is already stale at boot — last update %ds ago (threshold %ds). Watcher may be down.\n",
                     $boot->shmReader()->secondsSinceLastUpdate(),
                     $staleThreshold,
-                ));
+                );
+                if ($lsvidRequired) {
+                    fwrite(STDERR, "[worker] FATAL: " . $msg);
+                    exit(1);
+                }
+                fwrite(STDERR, "[worker] WARN: " . $msg);
             }
         } catch (\Throwable $e) {
             fwrite(STDERR, sprintf(

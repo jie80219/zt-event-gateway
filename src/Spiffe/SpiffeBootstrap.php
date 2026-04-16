@@ -130,7 +130,13 @@ final class SpiffeBootstrap
         $ttl = ($ttlEnv !== false && ctype_digit($ttlEnv) && (int) $ttlEnv > 0)
             ? (int) $ttlEnv
             : 1800;
-        return new LSVIDSigner($this->svidReader, $ttl);
+
+        $graceEnv = getenv('LSVID_CERT_GRACE_SECONDS');
+        $grace = ($graceEnv !== false && ctype_digit($graceEnv) && (int) $graceEnv >= 0)
+            ? (int) $graceEnv
+            : 60;
+
+        return new LSVIDSigner($this->svidReader, $ttl, $grace);
     }
 
     /**
