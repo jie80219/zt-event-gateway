@@ -111,12 +111,32 @@ composer spiffe:e2e
 # stress tests
 bash scripts/stress_test.sh
 
-# Gateway E2E tests
+# Gateway E2E (lightweight — no SPIRE stack)
 bash scripts/e2e-gateway.sh
 
-# CI verification (unit + E2E)
-bash scripts/ci-verify.sh
+# Full-architecture E2E — 7 phases: SPIRE + LSVID + Saga + security + perf
+COMPOSE_PROFILES=zt bash scripts/e2e-full-architecture.sh
+
+# Standalone SPIRE trust-plane integrity probe
+COMPOSE_PROFILES=zt composer spiffe:verify
+
+# CI wrappers
+composer ci:baseline    # SPIFFE_ENABLED=0 (no SPIRE, no LSVID)
+composer ci:zt          # COMPOSE_PROFILES=zt full-architecture E2E
+composer ci:verify      # default: gateway-only E2E loop
 ```
+
+## CI/CD Topology
+
+Pipeline in `.github/workflows/ci.yml` fans out into three jobs:
+
+| Job | Mode | Script | What it verifies |
+|---|---|---|---|
+| `unit-tests` | — | `vendor/bin/phpunit` | Envelope, consumers, Saga, LSVID, SHM unit suite |
+| `e2e-baseline` | `SPIFFE_ENABLED=0` | `scripts/e2e-gateway.sh` | Canonical envelope + Saga without any SPIFFE layer |
+| `e2e-full-zt` | `COMPOSE_PROFILES=zt` | `verify-spire-integrity.sh` → `e2e-full-architecture.sh` | SPIRE server/agent/registrar/watcher integrity, LSVID chain, Saga lifecycle, security, resilience |
+
+`scripts/ci-verify.sh` is the local driver — select a scenario via `CI_MODE={gateway|full|baseline}`. In `full` mode it auto-sets `COMPOSE_PROFILES=zt` so the SPIRE stack comes up.
 
 ## File Structure
 
@@ -182,6 +202,7 @@ docker compose -f docker-compose.spiffe.yml up -d
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `SPIFFE_ENABLED` | `1` | 主開關：設為 `0` 時整體關閉 SPIFFE/LSVID/mTLS 並跳過 SPIRE 基礎設施（搭配 compose profile `zt`）。覆蓋下方三個子開關 |
 | `SPIFFE_ID` | `''` | 本服務的 SPIFFE ID |
 | `SPIFFE_ENDPOINT_SOCKET` | `''` | SPIRE Agent UDS socket |
 | `SPIFFE_SHM_DIR` | `/tmp/spiffe-shared` | SHM 目錄 |

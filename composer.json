@@ -66,7 +66,6 @@
     "gateway": "php -S 0.0.0.0:8081 -t public",
     "worker": "php bin/worker.php",
     "app:init": "php init.php",
-    "mq:init": "php initialization.php",
     "consumer": "php consumer.php OrderCreateRequestedEvent",
     "publish": "php publisher.php",
     "spiffe:watch": "php bin/spiffe-watcher.php",
@@ -76,7 +75,11 @@
     "spiffe:e2e": "bash spiffe/e2e/run-e2e.sh",
     "lsvid:e2e": "bash spiffe/e2e/test-lsvid-chain.sh",
     "gateway:e2e": "bash scripts/e2e-gateway.sh",
+    "arch:e2e": "bash scripts/e2e-full-architecture.sh",
     "ci:verify": "bash scripts/ci-verify.sh",
+    "ci:zt": "CI_MODE=full CI_PROFILE=zt COMPOSE_PROFILES=zt bash scripts/ci-verify.sh",
+    "ci:baseline": "CI_MODE=baseline SPIFFE_ENABLED=0 bash scripts/ci-verify.sh",
+    "spiffe:verify": "bash scripts/verify-spire-integrity.sh",
     "spiffe:split": "bash packages/php-spiffe/split.sh"
   }
 }

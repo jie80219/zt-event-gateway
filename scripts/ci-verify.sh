@@ -7,22 +7,56 @@
 #
 # Environment overrides:
 #   COMPOSE_FILE          (default: docker-compose.yml)
+#   CI_MODE               (default: gateway) — gateway | full | baseline
+#                           gateway  → scripts/e2e-gateway.sh (light, no SPIRE)
+#                           full     → scripts/e2e-full-architecture.sh (SPIRE + LSVID + Saga)
+#                           baseline → scripts/e2e-gateway.sh with SPIFFE_ENABLED=0
+#   CI_PROFILE            (default: auto — "zt" when CI_MODE=full, empty otherwise)
+#                           Forwarded as COMPOSE_PROFILES so the SPIRE stack
+#                           profile is honored by docker compose.
 #   E2E_RUNS              (default: 3) — number of full E2E cycles
 #   E2E_DIAG_LEVEL        (default: full)
 #   CI_PREBUILD_IMAGES    (default: 1) — prebuild Docker images once
 #   CI_ARTIFACT_DIR       (default: artifacts/ci)
 #   CI_SKIP_UNIT          (default: 0) — skip unit tests
+#   CI_SKIP_SPIRE_PROBE   (default: 0) — skip standalone SPIRE integrity probe
 # ============================================================================
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
-E2E_SCRIPT="${PROJECT_DIR}/scripts/e2e-gateway.sh"
+CI_MODE="${CI_MODE:-gateway}"
 E2E_RUNS="${E2E_RUNS:-3}"
 E2E_DIAG_LEVEL="${E2E_DIAG_LEVEL:-full}"
 ARTIFACT_DIR="${CI_ARTIFACT_DIR:-artifacts/ci}"
 PREBUILD_IMAGES="${CI_PREBUILD_IMAGES:-1}"
 SKIP_UNIT="${CI_SKIP_UNIT:-0}"
+SKIP_SPIRE_PROBE="${CI_SKIP_SPIRE_PROBE:-0}"
+
+case "$CI_MODE" in
+    gateway)
+        E2E_SCRIPT="${PROJECT_DIR}/scripts/e2e-gateway.sh"
+        ;;
+    full)
+        E2E_SCRIPT="${PROJECT_DIR}/scripts/e2e-full-architecture.sh"
+        # Activate the zt profile so the SPIRE stack (server/agent/registrar/
+        # watcher) comes up. docker-compose.yml guards them behind this profile
+        # so Baseline ablation runs stay minimal.
+        : "${CI_PROFILE:=zt}"
+        ;;
+    baseline)
+        E2E_SCRIPT="${PROJECT_DIR}/scripts/e2e-gateway.sh"
+        export SPIFFE_ENABLED="${SPIFFE_ENABLED:-0}"
+        ;;
+    *)
+        printf '\033[31m[ci] FAIL: invalid CI_MODE=%s (want gateway|full|baseline)\033[0m\n' "$CI_MODE" >&2
+        exit 2
+        ;;
+esac
+
+if [[ -n "${CI_PROFILE:-}" ]]; then
+    export COMPOSE_PROFILES="$CI_PROFILE"
+fi
 
 cd "$PROJECT_DIR"
 
@@ -74,8 +108,16 @@ fi
 # ── Step 2: Prebuild Docker images ──────────────────────────────────────────
 
 if [[ "$PREBUILD_IMAGES" == "1" ]]; then
-    log "prebuilding Docker images"
-    if ! docker compose -f "$COMPOSE_FILE" build gateway php-worker >"$ARTIFACT_DIR/prebuild.log" 2>&1; then
+    log "prebuilding Docker images (mode=${CI_MODE}, profiles=${COMPOSE_PROFILES:-<none>})"
+    # In full mode the zt profile exposes additional services that need
+    # their images built (spiffe-watcher shares the php-openswoole Dockerfile
+    # but workload-registrar has its own). Pass services explicitly so
+    # profile-gated builds are selected correctly.
+    build_targets=(gateway php-worker)
+    if [[ "$CI_MODE" == "full" ]]; then
+        build_targets+=(spiffe-watcher workload-registrar)
+    fi
+    if ! docker compose -f "$COMPOSE_FILE" build "${build_targets[@]}" >"$ARTIFACT_DIR/prebuild.log" 2>&1; then
         fail "Docker prebuild failed; see ${ARTIFACT_DIR}/prebuild.log"
         exit 1
     fi
@@ -123,4 +165,4 @@ done
 
 elapsed=$(( $(date +%s) - start_time ))
 
-log "all checks passed: unit + E2E ${success_count}/${E2E_RUNS} (${elapsed}s)"
+log "all checks passed: mode=${CI_MODE} unit+E2E ${success_count}/${E2E_RUNS} (${elapsed}s)"

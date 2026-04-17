@@ -153,7 +153,15 @@
       "Bash(xargs -I '{}' sh -c 'echo \"=== {} ===\"; docker inspect {} --format \"{{\"{{\"}}range \\\\$k,\\\\$v := .NetworkSettings.Networks{{\"}}\"}}{{\"{{\"}}$k{{\"}}\"}} {{\"{{\"}}end{{\"}}\"}}\"')",
       "Bash(sed -n '55,85p' Services/ProductionService.php)",
       "Bash(sed -n '80,120p' Services/OrderService.php)",
-      "Bash(rm -f /tmp/_svid.pem)"
+      "Bash(rm -f /tmp/_svid.pem)",
+      "Bash(awk '{print $9, \"\\(\" $5 \"\\)\"}')",
+      "Bash(docker create *)",
+      "Bash(docker export *)",
+      "Bash(tar -t)",
+      "Bash(cp \"/Users/jiezhiyang/.claude/plans/專案健檢報告.md\" \"/Users/jiezhiyang/zt-event-gateway/.claude/plans/專案健檢報告.md\")",
+      "Bash(rm \"/Users/jiezhiyang/.claude/plans/專案健檢報告.md\")",
+      "Bash(rm -f docker-compose.yml.bak composer.phar composer.bat initialization.php scripts/run_all_events.bat \"Event-Driven/Events/InventoryDeductRequestedEvent.php\" \"Event-Driven/Events/PaymentProcessRequestedEvent.php\" spiffe/image.png architecture.mmd)",
+      "Bash(rm -rf docker/envoy docker/php spiffe/spire-server spiffe/spire-agent)"
     ]
   }
 }

@@ -15,10 +15,10 @@ Client POST /api/orders
 ┌─────────────────────────────────────────────────────────────────┐
 │  Phase 1: Gateway (Order Controller)                            │
 │  ① 正規化 Request Body → CanonicalOrderRequest                  │
-│  ② 鑄造 LSVID L0 (iss=gateway, aud=worker)                     │
+│  ② 鑄造 LSVID L0 (iss=gateway, aud=worker)                      │
 │  ③ 組裝 Request Envelope                                        │
 │  ④ 發佈到 RabbitMQ: exchange=events, routing_key=request.new    │
-│  ⑤ 回傳 HTTP 202 Accepted                                      │
+│  ⑤ 回傳 HTTP 202 Accepted                                       │
 └──────────────────────────────┬──────────────────────────────────┘
                                │ AMQP (order_queue)
                                ▼
@@ -199,16 +199,52 @@ RollbackOrderEvent ─[onRollbackOrder]─→ HTTP 呼叫下游服務
 
 **來源**: `src/Worker/EventConsumer.php:58-187`
 
-**接收的 Envelope**: 即上方 3.2 的 Event Envelope
+**接收的 Envelope 結構** (即 MessageBus 在 Phase 2 發佈的 Event Envelope):
+```json
+{
+  "type": "App\\Events\\OrderCreateRequestedEvent",
+  "data": {
+    "userKey": "user123",
+    "productList": [
+      { "p_key": 1, "amount": 5 },
+      { "p_key": 2, "amount": 10 }
+    ],
+    "total": 500,
+    "traceId": "txn_680005e3a1b2c.1234567890"
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": [
+    "spiffe://zt.local/php-gateway",
+    "spiffe://zt.local/php-worker"
+  ],
+  "timestamp": "2026-04-16T10:30:45+08:00",
+  "lsvid": "<L1 raw JWT token (nested=L0)>"
+}
+```
 
 **處理步驟**:
-1. JSON 解析 → 檢查 `type` (string) 和 `data` (array)
-2. SPIFFE 驗證 → `spiffe_id` 前綴白名單 `spiffe://zt.local/`
-3. LSVID 驗證 → `validate($rawLsvid, expectedAudience=worker_spiffe_id)`
-4. `buildEventInstance()` — 反射建構事件物件
-5. `LSVIDContext::set($rawLsvid)` — 儲存到 coroutine-local
-6. `EventBus::dispatch($event)` — 分派到 Saga handler
-7. `LSVIDContext::clear()` — 清除 context
+
+```
+① JSON 解析 → 檢查 type (string) 和 data (array)
+② SPIFFE 驗證 → spiffe_id 前綴白名單 spiffe://zt.local/
+③ LSVID 驗證:
+   $parsed = $lsvidValidator->validate($rawLsvid, expectedAudience=worker_spiffe_id)
+   → 驗證 L1 的簽章 + 過期 + audience
+   → 遞迴驗證 nested claim 中的 L0
+   → log: "[event-consumer] LSVID chain L0..L1 verified: gateway → worker"
+④ buildEventInstance():
+   - OrderCreateRequestedEvent: new $class($payload, $traceId)  ← 特殊處理
+   - 其他事件: Reflection 逐一對應 constructor 參數名稱 → payload key
+⑤ LSVIDContext::set($rawLsvid)  ← 存入 L1 raw token (coroutine-local)
+⑥ EventBus::dispatch($event)   ← 分派到 Saga handler
+⑦ LSVIDContext::clear()         ← finally 區塊，無論成功或失敗都清除
+```
+
+**LSVID Chain 驗證 Log 輸出** (LSVID_LOG_PAYLOAD=1 時):
+```
+[event-consumer] LSVID L0 payload={"iss":"spiffe://zt.local/php-gateway","aud":"spiffe://zt.local/php-worker","traceId":"txn_...","route":"OrderCreateRequestedEvent","level":"L0"}
+[event-consumer] LSVID L1 payload={"iss":"spiffe://zt.local/php-worker","aud":"spiffe://zt.local/php-worker","eventType":"App\\Events\\OrderCreateRequestedEvent","traceId":"txn_...","level":"L1"}
+```
 
 ---
 
@@ -219,28 +255,84 @@ RollbackOrderEvent ─[onRollbackOrder]─→ HTTP 呼叫下游服務
 ```
 Saga.publish(EventClass, payload)
   → EventBus.publish(eventType, eventData, streamName='Streams', spiffePath=[])
-    → LSVIDContext::current()  // 取得當前 LSVID (Ln)
-    → EventStoreDB.appendEvent() // 可選，寫入 EventStore
-    → MessageBus.publishEvent(eventType, eventData, exchange=null, spiffePath, priorLsvid=Ln)
-      → lsvidSigner.extend(priorLsvid=Ln, audience, extraClaims) // LSVID L(n+1)
+    → $priorLsvid = LSVIDContext::current()  // 取得當前 LSVID (Ln)
+    → EventStoreDB.appendEvent()             // 可選，寫入 EventStore
+    → MessageBus.publishEvent(eventType, eventData, exchange=null, spiffePath=[], priorLsvid=Ln)
+      → spiffePath[] = $this->spiffeId       // append worker SPIFFE ID → ["spiffe://zt.local/php-worker"]
+      → $currentLevel = LSVID::parse($priorLsvid)->level() + 1
+      → lsvidSigner.extend(priorLsvid=Ln, audience, extraClaims={level: "L(n+1)"})
       → 組裝 Envelope → AMQP basic_publish
 ```
+
+> **注意**: `EventBus.publish()` 呼叫 `MessageBus.publishEvent()` 時 `spiffePath=[]`（硬編碼），
+> MessageBus 再 append 自身 SPIFFE ID，因此所有 Saga 發佈的事件 `spiffe_path` 都是 `["spiffe://zt.local/php-worker"]`。
+
+#### SpiffeLsvidFilter: HTTP 下游呼叫的 LSVID 擴展
+
+每次 Saga handler 透過 Anser Service 呼叫下游 HTTP 服務時，全域 Filter `SpiffeLsvidFilter` 會自動注入身份：
+
+```
+SpiffeLsvidFilter.beforeCallService($action):
+  ① $rawLsvid = LSVIDContext::current()         // 取得當前 LSVID (Ln)
+  ② $validator->validate($rawLsvid, aud=worker)  // 防禦性重新驗證
+  ③ $targetAudience = SpiffeAudienceRegistry::resolve($action->url)
+     // 例: http://host.docker.internal:8082 → spiffe://zt.local/order-service
+  ④ $extended = $signer->extend(
+       priorRawToken: $rawLsvid,                  // Ln
+       audience: $targetAudience,                  // 目標服務 SPIFFE ID
+       extraClaims: ['level' => 'http-call']       // 標記為 HTTP 呼叫層
+     )
+  ⑤ 注入 Header: X-LSVID: $extended->raw
+  ⑥ 注入 mTLS: cert/ssl_key/verify (若 SpiffeMtlsRegistry 有設定)
+```
+
+**SPIFFE Audience 對應表** (bin/worker.php:166-196):
+| Service URL | SPIFFE ID |
+|-------------|-----------|
+| `http://host.docker.internal:8082` | `spiffe://zt.local/order-service` |
+| `http://host.docker.internal:8081` | `spiffe://zt.local/production-service` |
+| `http://host.docker.internal:8083` | `spiffe://zt.local/user-service` |
 
 ---
 
 #### Step 1: `onOrderCreateRequested` → 發佈 `OrderCreatedEvent`
 
-**HTTP 下游呼叫**:
-| 服務 | Method | Path | Headers | Body/Params |
-|------|--------|------|---------|-------------|
-| ProductionService | GET | `/api/v1/products/{p_key}` | — | — |
-| OrderService | POST | `/api/v1/order` | `X-User-Key: {userKey}` | `{"o_key": "{orderId}", "product_detail": [{"p_key":1,"price":100,"amount":5}]}` |
+**① EventConsumer 接收的 Envelope** (LSVID=L1):
+```json
+{
+  "type": "App\\Events\\OrderCreateRequestedEvent",
+  "data": {
+    "userKey": "user123",
+    "productList": [
+      { "p_key": 1, "amount": 5 },
+      { "p_key": 2, "amount": 10 }
+    ],
+    "total": 500,
+    "traceId": "txn_680005e3a1b2c.1234567890"
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": [
+    "spiffe://zt.local/php-gateway",
+    "spiffe://zt.local/php-worker"
+  ],
+  "timestamp": "2026-04-16T10:30:45+08:00",
+  "lsvid": "<L1 token (nested=L0)>"
+}
+```
+- LSVID 驗證: chain L0→L1 OK
+- `LSVIDContext::set(L1)`
+- `buildEventInstance()`: `new OrderCreateRequestedEvent($payload, $traceId)`
 
-**下游 HTTP 呼叫的 LSVID 注入** (SpiffeLsvidFilter):
-- Header: `X-LSVID: <L2 token>` (extend L1, aud=target-service SPIFFE ID)
-- mTLS: cert/key from SVID (via SpiffeMtlsRegistry)
+**② HTTP 下游呼叫** (SpiffeLsvidFilter extend L1 → L_http):
+| 服務 | Method | Path | Headers | Body/Params | X-LSVID |
+|------|--------|------|---------|-------------|---------|
+| ProductionService | GET | `/api/v1/products/{p_key}` | — | — | extend(L1, aud=`spiffe://zt.local/production-service`, level="http-call") |
+| OrderService | POST | `/api/v1/order` | `X-User-Key: 1` | `{"o_key": "{orderId}", "product_detail": [{"p_key":1,"price":100,"amount":5}]}` | extend(L1, aud=`spiffe://zt.local/order-service`, level="http-call") |
 
-**publish payload**:
+> **注意**: `userKey` 在 OrderSaga 中硬編碼為 `'1'`（`private string $userKey = '1'`），
+> 未從 event 的 `orderData['userKey']` 提取。
+
+**③ Saga.publish() 的 payload** (OrderSaga:60-65):
 ```json
 {
   "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
@@ -253,36 +345,62 @@ Saga.publish(EventClass, payload)
 }
 ```
 
-**RabbitMQ Envelope** (由 MessageBus 組裝):
+> 注: `productList` 元素已被 `generateProductList()` 轉為 `OrderProductDetail` 物件，
+> JSON 序列化後會包含 `p_key`, `price`, `amount` 三個欄位。
+> `total` 來自 OrderService 回傳的 `$info['total']`，若無則預設 `1000`。
+
+**④ MessageBus 發佈的完整 RabbitMQ Envelope** (LSVID=L2):
 ```json
 {
   "type": "App\\Events\\OrderCreatedEvent",
   "data": {
     "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
     "userKey": "1",
-    "productList": [...],
+    "productList": [
+      { "p_key": 1, "price": 100, "amount": 5 },
+      { "p_key": 2, "price": 200, "amount": 10 }
+    ],
     "total": 1000
   },
   "spiffe_id": "spiffe://zt.local/php-worker",
   "spiffe_path": ["spiffe://zt.local/php-worker"],
   "timestamp": "2026-04-16T10:30:46+08:00",
-  "lsvid": "<L(n+1) token>"
+  "lsvid": "<L2 token (nested=L1(nested=L0))>"
 }
 ```
 
+**LSVID L2 Extra Claims** (MessageBus extend):
+```json
+{
+  "eventType": "App\\Events\\OrderCreatedEvent",
+  "traceId": null,
+  "level": "L2"
+}
+```
+- `iss` = `spiffe://zt.local/php-worker`
+- `aud` = `DOWNSTREAM_SPIFFE_ID`
+- `nested` = L1 token
+- `traceId` = null (publish payload 中無 `traceId` key)
+
 **Routing Key**: `OrderCreatedEvent`
 **Queue**: `OrderCreatedEvent`
+**AMQP Properties**: `delivery_mode=2` (PERSISTENT)
 
 **EventStore metadata** (若啟用):
 ```json
 {
   "eventId": "event_680005e3a1b2c.9876543210",
   "eventType": "OrderCreatedEvent",
-  "data": { "orderId": "...", "userKey": "1", "productList": [...], "total": 1000 },
+  "data": {
+    "orderId": "a1b2c3d4-...",
+    "userKey": "1",
+    "productList": [...],
+    "total": 1000
+  },
   "metadata": {
     "spiffe_id": "spiffe://zt.local/php-worker",
     "spiffe_path": [],
-    "lsvid_prior": "<current LSVID from LSVIDContext>"
+    "lsvid_prior": "<L1 raw token (from LSVIDContext)>"
   }
 }
 ```
@@ -291,12 +409,35 @@ Saga.publish(EventClass, payload)
 
 #### Step 2: `onOrderCreated` → 發佈 `InventoryDeductedEvent`
 
-**HTTP 下游呼叫** (ConcurrentAction 並發):
-| 服務 | Method | Path | Headers | Form Params |
-|------|--------|------|---------|-------------|
-| ProductionService | POST | `/api/v1/inventory/reduceInventory` | — | `p_key={p_key}&o_key={orderId}&reduceAmount={amount}` |
+**① EventConsumer 接收的 Envelope** (LSVID=L2):
+```json
+{
+  "type": "App\\Events\\OrderCreatedEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "userKey": "1",
+    "productList": [
+      { "p_key": 1, "price": 100, "amount": 5 },
+      { "p_key": 2, "price": 200, "amount": 10 }
+    ],
+    "total": 1000
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:46+08:00",
+  "lsvid": "<L2 token (nested=L1(nested=L0))>"
+}
+```
+- LSVID 驗證: chain L0→L1→L2 OK
+- `LSVIDContext::set(L2)`
+- `buildEventInstance()`: Reflection → `new OrderCreatedEvent($orderId, $userKey, $productList, $total)`
 
-**publish payload**:
+**② HTTP 下游呼叫** (ConcurrentAction 並發, SpiffeLsvidFilter extend L2 → L_http):
+| 服務 | Method | Path | Headers | Form Params | X-LSVID |
+|------|--------|------|---------|-------------|---------|
+| ProductionService (x N) | POST | `/api/v1/inventory/reduceInventory` | — | `p_key={p_key}&o_key={orderId}&reduceAmount={amount}` | extend(L2, aud=`spiffe://zt.local/production-service`, level="http-call") |
+
+**③ Saga.publish() 的 payload** (OrderSaga:107-112):
 ```json
 {
   "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
@@ -306,21 +447,82 @@ Saga.publish(EventClass, payload)
 }
 ```
 
-> **注意**: 目前 `successfulDeductions` 的追蹤邏輯被註解，`productList` 傳入為空陣列。
+> **注意**: `productList` 為空陣列 `[]`。原因：`$successfulDeductions` 初始化為 `[]`，
+> 而追蹤每筆扣減結果的邏輯（OrderSaga:85-106）已被註解，所以直接傳入空陣列。
+
+**④ MessageBus 發佈的完整 RabbitMQ Envelope** (LSVID=L3):
+```json
+{
+  "type": "App\\Events\\InventoryDeductedEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "userKey": "1",
+    "productList": [],
+    "total": 1000
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:47+08:00",
+  "lsvid": "<L3 token (nested=L2(nested=L1(nested=L0)))>"
+}
+```
+
+**LSVID L3 Extra Claims**:
+```json
+{
+  "eventType": "App\\Events\\InventoryDeductedEvent",
+  "traceId": null,
+  "level": "L3"
+}
+```
 
 **Routing Key**: `InventoryDeductedEvent`
 **Queue**: `InventoryDeductedEvent`
+
+**EventStore metadata** (若啟用):
+```json
+{
+  "eventId": "event_680005e4b2c3d.1234567890",
+  "eventType": "InventoryDeductedEvent",
+  "data": { "orderId": "...", "userKey": "1", "productList": [], "total": 1000 },
+  "metadata": {
+    "spiffe_id": "spiffe://zt.local/php-worker",
+    "spiffe_path": [],
+    "lsvid_prior": "<L2 raw token (from LSVIDContext)>"
+  }
+}
+```
 
 ---
 
 #### Step 3: `onInventoryDeducted` → 發佈 `PaymentProcessedEvent` 或 `RollbackInventoryEvent`
 
-**HTTP 下游呼叫**:
-| 服務 | Method | Path | Headers | Form Params |
-|------|--------|------|---------|-------------|
-| UserService | POST | `/api/v1/wallet/charge` | `X-User-Key: {userKey}` | `o_key={orderId}&total={total}` |
+**① EventConsumer 接收的 Envelope** (LSVID=L3):
+```json
+{
+  "type": "App\\Events\\InventoryDeductedEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "userKey": "1",
+    "productList": [],
+    "total": 1000
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:47+08:00",
+  "lsvid": "<L3 token (nested=L2(nested=L1(nested=L0)))>"
+}
+```
+- LSVID 驗證: chain L0→L1→L2→L3 OK
+- `LSVIDContext::set(L3)`
+- `buildEventInstance()`: Reflection → `new InventoryDeductedEvent($orderId, $userKey, $productList, $total)`
 
-**成功 → publish payload**:
+**② HTTP 下游呼叫** (SpiffeLsvidFilter extend L3 → L_http):
+| 服務 | Method | Path | Headers | Form Params | X-LSVID |
+|------|--------|------|---------|-------------|---------|
+| UserService | POST | `/api/v1/wallet/charge` | `X-User-Key: {userKey}` | `o_key={orderId}&total={total}` | extend(L3, aud=`spiffe://zt.local/user-service`, level="http-call") |
+
+**③-A 成功路徑 → Saga.publish() payload** (OrderSaga:135-141):
 ```json
 {
   "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
@@ -330,9 +532,38 @@ Saga.publish(EventClass, payload)
   "productList": []
 }
 ```
-**Routing Key**: `PaymentProcessedEvent`
 
-**失敗 → compensate payload**:
+**③-A MessageBus 發佈的完整 RabbitMQ Envelope** (LSVID=L4):
+```json
+{
+  "type": "App\\Events\\PaymentProcessedEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "success": true,
+    "userKey": "1",
+    "total": 1000,
+    "productList": []
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:48+08:00",
+  "lsvid": "<L4 token (nested=L3(...))>"
+}
+```
+
+**LSVID L4 Extra Claims**:
+```json
+{
+  "eventType": "App\\Events\\PaymentProcessedEvent",
+  "traceId": null,
+  "level": "L4"
+}
+```
+
+**Routing Key**: `PaymentProcessedEvent`
+**Queue**: `PaymentProcessedEvent`
+
+**③-B 失敗路徑 → Saga.compensate() payload** (OrderSaga:125-131):
 ```json
 {
   "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
@@ -342,18 +573,74 @@ Saga.publish(EventClass, payload)
   "total": 0
 }
 ```
+
+> `successfulDeductions` 來自 `$event->productList`，此處為 `[]`（Step 2 傳入的空陣列）。
+> `total` 為 `0`（失敗時不需扣款資訊）。
+
+**③-B MessageBus 發佈的完整 RabbitMQ Envelope** (LSVID=L4):
+```json
+{
+  "type": "App\\Events\\RollbackInventoryEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "userKey": "1",
+    "successfulDeductions": [],
+    "paymentCompleted": false,
+    "total": 0
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:48+08:00",
+  "lsvid": "<L4 token (nested=L3(...))>"
+}
+```
+
+**LSVID L4 Extra Claims** (compensate 路徑):
+```json
+{
+  "eventType": "App\\Events\\RollbackInventoryEvent",
+  "traceId": null,
+  "level": "L4"
+}
+```
+
 **Routing Key**: `RollbackInventoryEvent`
+**Queue**: `RollbackInventoryEvent`
 
 ---
 
 #### Step 4: `onPaymentProcessed` → 發佈 `OrderSagaCompletedEvent` 或 `RollbackInventoryEvent`
 
-**HTTP 下游呼叫**:
-| 服務 | Method | Path | Headers | Body |
-|------|--------|------|---------|------|
-| OrderService | PUT | `/api/v1/order/{orderId}` | `X-User-Key: {userKey}` | — |
+**① EventConsumer 接收的 Envelope** (LSVID=L4):
+```json
+{
+  "type": "App\\Events\\PaymentProcessedEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "success": true,
+    "userKey": "1",
+    "total": 1000,
+    "productList": []
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:48+08:00",
+  "lsvid": "<L4 token (nested=L3(nested=L2(nested=L1(nested=L0))))>"
+}
+```
+- LSVID 驗證: chain L0→L1→L2→L3→L4 OK
+- `LSVIDContext::set(L4)`
+- `buildEventInstance()`: Reflection → `new PaymentProcessedEvent($orderId, $success, $userKey, $total, $productList)`
 
-**成功 → publish payload**:
+**② HTTP 下游呼叫** (SpiffeLsvidFilter extend L4 → L_http):
+| 服務 | Method | Path | Headers | Body | X-LSVID |
+|------|--------|------|---------|------|---------|
+| OrderService | PUT | `/api/v1/order/{orderId}` | `X-User-Key: {userKey}` | — | extend(L4, aud=`spiffe://zt.local/order-service`, level="http-call") |
+
+> 注: 只有 `$event->success === true` 時才會呼叫 confirmOrderAction。
+> 若 `success === false`，直接走 compensate 路徑，不做 HTTP 呼叫。
+
+**③-A 成功路徑 → Saga.publish() payload** (OrderSaga:174-179):
 ```json
 {
   "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
@@ -362,9 +649,50 @@ Saga.publish(EventClass, payload)
   "status": "completed"
 }
 ```
-**Routing Key**: `OrderSagaCompletedEvent`
 
-**失敗 → compensate payload** (paymentCompleted=true):
+**③-A MessageBus 發佈的完整 RabbitMQ Envelope** (LSVID=L5):
+```json
+{
+  "type": "App\\Events\\OrderSagaCompletedEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "userKey": "1",
+    "total": 1000,
+    "status": "completed"
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:49+08:00",
+  "lsvid": "<L5 token (nested=L4(...))>"
+}
+```
+
+**LSVID L5 Extra Claims**:
+```json
+{
+  "eventType": "App\\Events\\OrderSagaCompletedEvent",
+  "traceId": null,
+  "level": "L5"
+}
+```
+
+**Routing Key**: `OrderSagaCompletedEvent`
+**Queue**: `OrderSagaCompletedEvent`
+
+**③-B 失敗路徑 (success=false 或 confirmOrder 失敗) → Saga.compensate() payload**:
+
+當 `$event->success === false` 時 (OrderSaga:148-155):
+```json
+{
+  "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+  "userKey": "1",
+  "successfulDeductions": [],
+  "paymentCompleted": false,
+  "total": 0
+}
+```
+
+當 confirmOrder 失敗時 (OrderSaga:163-170):
 ```json
 {
   "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
@@ -374,81 +702,286 @@ Saga.publish(EventClass, payload)
   "total": 1000
 }
 ```
+
+**③-B MessageBus 發佈的完整 RabbitMQ Envelope** (LSVID=L5):
+```json
+{
+  "type": "App\\Events\\RollbackInventoryEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "userKey": "1",
+    "successfulDeductions": [],
+    "paymentCompleted": true,
+    "total": 1000
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:49+08:00",
+  "lsvid": "<L5 token (nested=L4(...))>"
+}
+```
+
+**LSVID L5 Extra Claims** (compensate 路徑):
+```json
+{
+  "eventType": "App\\Events\\RollbackInventoryEvent",
+  "traceId": null,
+  "level": "L5"
+}
+```
+
 **Routing Key**: `RollbackInventoryEvent`
+**Queue**: `RollbackInventoryEvent`
 
 ---
 
 #### Step 5: `onOrderSagaCompleted` → 僅 log，不發佈事件
 
+**① EventConsumer 接收的 Envelope** (LSVID=L5):
+```json
+{
+  "type": "App\\Events\\OrderSagaCompletedEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "userKey": "1",
+    "total": 1000,
+    "status": "completed"
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:49+08:00",
+  "lsvid": "<L5 token (nested=L4(nested=L3(nested=L2(nested=L1(nested=L0)))))>"
+}
 ```
-log("Saga 完成: orderId={orderId}")
+- LSVID 驗證: chain L0→L1→L2→L3→L4→L5 OK
+- `LSVIDContext::set(L5)`
+
+**② 處理**: 僅 log，不呼叫下游服務，不發佈事件
+```
+log("Saga 完成: orderId=a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
 ```
 
 ---
 
 #### Compensation Step 1: `onRollbackInventory` → 發佈 `RollbackOrderEvent`
 
-**HTTP 下游呼叫**:
-| 服務 | Method | Path | Headers | Form Params |
-|------|--------|------|---------|-------------|
-| UserService (if paymentCompleted) | POST | `/api/v1/wallet/compensate` | `X-User-Key: {userKey}` | `o_key={orderId}&addAmount={total}` |
-| ProductionService (foreach product) | POST | `/api/v1/inventory/addInventory` | — | `p_key={p_key}&o_key={orderId}&addAmount={amount}&type=compensate` |
+**① EventConsumer 接收的 Envelope** (LSVID=L4 或 L5，依觸發來源):
 
-**publish payload**:
+從 Step 3 失敗觸發時 (LSVID=L4):
+```json
+{
+  "type": "App\\Events\\RollbackInventoryEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "userKey": "1",
+    "successfulDeductions": [],
+    "paymentCompleted": false,
+    "total": 0
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:48+08:00",
+  "lsvid": "<L4 token>"
+}
+```
+
+從 Step 4 失敗觸發時 (LSVID=L5):
+```json
+{
+  "type": "App\\Events\\RollbackInventoryEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "userKey": "1",
+    "successfulDeductions": [],
+    "paymentCompleted": true,
+    "total": 1000
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:49+08:00",
+  "lsvid": "<L5 token>"
+}
+```
+- LSVID 驗證: chain OK
+- `LSVIDContext::set(L4 或 L5)`
+- `buildEventInstance()`: Reflection → `new RollbackInventoryEvent($orderId, $userKey, $successfulDeductions, $paymentCompleted, $total)`
+
+**② HTTP 下游呼叫** (SpiffeLsvidFilter extend Ln → L_http):
+| 條件 | 服務 | Method | Path | Headers | Form Params | X-LSVID |
+|------|------|--------|------|---------|-------------|---------|
+| if paymentCompleted | UserService | POST | `/api/v1/wallet/compensate` | `X-User-Key: {userKey}` | `o_key={orderId}&addAmount={total}` | extend(Ln, aud=`spiffe://zt.local/user-service`, level="http-call") |
+| foreach product | ProductionService | POST | `/api/v1/inventory/addInventory` | — | `p_key={p_key}&o_key={orderId}&addAmount={amount}&type=compensate` | extend(Ln, aud=`spiffe://zt.local/production-service`, level="http-call") |
+
+> 注: 目前 `successfulDeductions` 為空陣列 `[]`（因 Step 2 追蹤邏輯被註解），
+> 所以 foreach 迴圈實際上不會執行任何庫存回補。
+
+**③ Saga.publish() payload** (OrderSaga:205-208):
 ```json
 {
   "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
   "userKey": "1"
 }
 ```
+
+**④ MessageBus 發佈的完整 RabbitMQ Envelope** (LSVID=L5 或 L6):
+```json
+{
+  "type": "App\\Events\\RollbackOrderEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "userKey": "1"
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:50+08:00",
+  "lsvid": "<L(n+1) token>"
+}
+```
+
+**LSVID L(n+1) Extra Claims**:
+```json
+{
+  "eventType": "App\\Events\\RollbackOrderEvent",
+  "traceId": null,
+  "level": "L5 或 L6"
+}
+```
+
 **Routing Key**: `RollbackOrderEvent`
+**Queue**: `RollbackOrderEvent`
 
 ---
 
 #### Compensation Step 2: `onRollbackOrder` → 僅 HTTP 呼叫，不發佈事件
 
-**HTTP 下游呼叫**:
-| 服務 | Method | Path | Headers |
-|------|--------|------|---------|
-| OrderService | DELETE | `/api/v1/order/{orderId}` | `X-User-Key: {userKey}` |
+**① EventConsumer 接收的 Envelope** (LSVID=L5 或 L6):
+```json
+{
+  "type": "App\\Events\\RollbackOrderEvent",
+  "data": {
+    "orderId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "userKey": "1"
+  },
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"],
+  "timestamp": "2026-04-16T10:30:50+08:00",
+  "lsvid": "<L(n) token>"
+}
+```
+- LSVID 驗證: chain OK
+- `LSVIDContext::set(Ln)`
+- `buildEventInstance()`: Reflection → `new RollbackOrderEvent($orderId, $userKey)`
+
+**② HTTP 下游呼叫** (SpiffeLsvidFilter extend Ln → L_http):
+| 服務 | Method | Path | Headers | X-LSVID |
+|------|--------|------|---------|---------|
+| OrderService | DELETE | `/api/v1/order/{orderId}` | `X-User-Key: {userKey}` | extend(Ln, aud=`spiffe://zt.local/order-service`, level="http-call") |
+
+**③ 不發佈事件** — Saga 流程結束
 
 ---
 
 ## 四、LSVID 巢狀簽章鏈演化
 
+### 4.1 完整 LSVID 鏈 (Happy Path: L0 → L5)
+
 ```
-Gateway 鑄造 L0:
-  iss = spiffe://zt.local/php-gateway
-  aud = spiffe://zt.local/php-worker
-  claims = { traceId, route, level: "L0" }
-                    │
-                    ▼
-RequestConsumer 驗證 L0 → MessageBus 擴展為 L1:
-  iss = spiffe://zt.local/php-worker
-  aud = spiffe://zt.local/php-worker (self, 事件佇列內部)
-  claims = { eventType, traceId, level: "L1" }
-  nested = L0
-                    │
-                    ▼
-EventConsumer 驗證 L1 → 設定 LSVIDContext
-  → Saga handler 呼叫 publish()
-  → EventBus.publish() → LSVIDContext::current() = L1
-  → MessageBus 擴展為 L2:
-    iss = spiffe://zt.local/php-worker
-    aud = spiffe://zt.local/php-worker
-    claims = { eventType, traceId, level: "L2" }
-    nested = L1 (內含 L0)
-                    │
-                    ▼
-SpiffeLsvidFilter 擴展為 L(http-call):
-  (下游 HTTP 呼叫時)
-  iss = spiffe://zt.local/php-worker
-  aud = spiffe://zt.local/order-service (依目標服務決定)
-  claims = { level: "http-call" }
-  nested = 當前 LSVID (Ln)
-                    │
-                    ▼
-下游服務驗證完整鏈: L0 → L1 → ... → Ln
+L0 ─ Gateway 鑄造 (Order.php:82-90)
+│  iss = spiffe://zt.local/php-gateway
+│  aud = spiffe://zt.local/php-worker
+│  claims = { traceId: "txn_...", route: "OrderCreateRequestedEvent", level: "L0" }
+│  nested = null
+│
+▼ RequestConsumer 驗證 L0 (aud=worker, sub=gateway)
+│
+L1 ─ MessageBus extend (RequestConsumer → OrderCreateRequestedEvent queue)
+│  iss = spiffe://zt.local/php-worker
+│  aud = spiffe://zt.local/php-worker
+│  claims = { eventType: "App\\Events\\OrderCreateRequestedEvent", traceId: "txn_...", level: "L1" }
+│  nested = L0
+│
+▼ EventConsumer 驗證 L1 chain (L0→L1) → LSVIDContext::set(L1) → Saga Step 1
+│  ├─ HTTP calls: SpiffeLsvidFilter.extend(L1, aud=service, level="http-call")
+│  └─ Saga.publish(OrderCreatedEvent)
+│
+L2 ─ MessageBus extend (Step 1 → OrderCreatedEvent queue)
+│  iss = spiffe://zt.local/php-worker
+│  aud = spiffe://zt.local/php-worker
+│  claims = { eventType: "App\\Events\\OrderCreatedEvent", traceId: null, level: "L2" }
+│  nested = L1 (nested = L0)
+│
+▼ EventConsumer 驗證 L2 chain (L0→L1→L2) → LSVIDContext::set(L2) → Saga Step 2
+│  ├─ HTTP calls: SpiffeLsvidFilter.extend(L2, aud=production-service, level="http-call")
+│  └─ Saga.publish(InventoryDeductedEvent)
+│
+L3 ─ MessageBus extend (Step 2 → InventoryDeductedEvent queue)
+│  iss = spiffe://zt.local/php-worker
+│  aud = spiffe://zt.local/php-worker
+│  claims = { eventType: "App\\Events\\InventoryDeductedEvent", traceId: null, level: "L3" }
+│  nested = L2 (nested = L1 (nested = L0))
+│
+▼ EventConsumer 驗證 L3 chain (L0→L1→L2→L3) → LSVIDContext::set(L3) → Saga Step 3
+│  ├─ HTTP call: SpiffeLsvidFilter.extend(L3, aud=user-service, level="http-call")
+│  └─ Saga.publish(PaymentProcessedEvent)
+│
+L4 ─ MessageBus extend (Step 3 → PaymentProcessedEvent queue)
+│  iss = spiffe://zt.local/php-worker
+│  aud = spiffe://zt.local/php-worker
+│  claims = { eventType: "App\\Events\\PaymentProcessedEvent", traceId: null, level: "L4" }
+│  nested = L3 (nested = L2 (nested = L1 (nested = L0)))
+│
+▼ EventConsumer 驗證 L4 chain (L0→L1→L2→L3→L4) → LSVIDContext::set(L4) → Saga Step 4
+│  ├─ HTTP call: SpiffeLsvidFilter.extend(L4, aud=order-service, level="http-call")
+│  └─ Saga.publish(OrderSagaCompletedEvent)
+│
+L5 ─ MessageBus extend (Step 4 → OrderSagaCompletedEvent queue)
+   iss = spiffe://zt.local/php-worker
+   aud = spiffe://zt.local/php-worker
+   claims = { eventType: "App\\Events\\OrderSagaCompletedEvent", traceId: null, level: "L5" }
+   nested = L4 (nested = L3 (nested = L2 (nested = L1 (nested = L0))))
+   │
+   ▼ EventConsumer 驗證 L5 chain (L0→L1→L2→L3→L4→L5) → log 完成
+```
+
+### 4.2 HTTP 下游呼叫的 LSVID 分支 (SpiffeLsvidFilter)
+
+```
+每個 Saga Step 的 HTTP 呼叫都會從當前 LSVIDContext 產生一個「分支」LSVID：
+
+                   L1 (LSVIDContext)
+                   ├── extend(aud=production-service) → L_http  ← GET /products/{id}
+                   ├── extend(aud=order-service)      → L_http  ← POST /order
+                   │
+                   L2 (LSVIDContext)
+                   ├── extend(aud=production-service) → L_http  ← POST /reduceInventory (x N)
+                   │
+                   L3 (LSVIDContext)
+                   ├── extend(aud=user-service)       → L_http  ← POST /wallet/charge
+                   │
+                   L4 (LSVIDContext)
+                   ├── extend(aud=order-service)      → L_http  ← PUT /order/{id}
+
+注意: HTTP 分支的 LSVID 不會回寫到 LSVIDContext，不影響主鏈的層級遞增。
+      HTTP LSVID 的 extraClaims 中 level="http-call"（非數字），
+      而主鏈的 level 為 "L0", "L1", "L2"...
+```
+
+### 4.3 補償路徑的 LSVID 鏈
+
+```
+補償路徑從主鏈的某一層分叉，繼續遞增：
+
+從 Step 3 失敗觸發:
+  L3 (LSVIDContext) → compensate(RollbackInventoryEvent) → L4
+  L4 → EventConsumer → LSVIDContext::set(L4) → onRollbackInventory
+  L4 → publish(RollbackOrderEvent) → L5
+  L5 → EventConsumer → LSVIDContext::set(L5) → onRollbackOrder → HTTP(extend L5)
+
+從 Step 4 失敗觸發:
+  L4 (LSVIDContext) → compensate(RollbackInventoryEvent) → L5
+  L5 → EventConsumer → LSVIDContext::set(L5) → onRollbackInventory
+  L5 → publish(RollbackOrderEvent) → L6
+  L6 → EventConsumer → LSVIDContext::set(L6) → onRollbackOrder → HTTP(extend L6)
 ```
 
 ---

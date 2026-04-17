@@ -44,6 +44,7 @@ final class EventConsumer
         private readonly EventBus $eventBus,
         private readonly ?LSVIDValidator $lsvidValidator = null,
         private readonly bool $lsvidRequired = false,
+        private readonly bool $requireSpiffeIdentity = true,
     ) {
     }
 
@@ -78,25 +79,28 @@ final class EventConsumer
         //     - spiffe_id   : 發送此事件的「當前」workload ID
         //     - spiffe_path : 累積的身份鏈（明文 trace；真正的密碼學驗證交給 LSVID）
         //   這裡只做 trust domain 前綴檢查，過濾掉非 zt.local 域的流量。
+        //   當 requireSpiffeIdentity=false（SPIFFE_ENABLED=0）時整段跳過。
         $sourceSpiffeId = $payload['spiffe_id'] ?? '';
         $spiffePath = $payload['spiffe_path'] ?? [];
 
-        if ($sourceSpiffeId !== '') {
-            // 有帶 SPIFFE ID：必須通過 ALLOWED_SOURCES 前綴白名單。
-            $this->verifySpiffeSource($sourceSpiffeId);
-            fwrite(STDOUT, sprintf(
-                "[event-consumer] source=%s path=[%s] event=%s\n",
-                $sourceSpiffeId,
-                implode(' → ', $spiffePath),
-                substr(strrchr($eventType, '\\') ?: $eventType, 1),
-            ));
-        } else {
-            // 沒帶 SPIFFE ID：不阻斷，但要留下告警紀錄，
-            // 方便在 log 中追蹤舊版或未接入 SPIFFE 的上游。
-            fwrite(STDOUT, sprintf(
-                "[event-consumer] WARNING: no SPIFFE identity on event=%s\n",
-                $eventType,
-            ));
+        if ($this->requireSpiffeIdentity) {
+            if ($sourceSpiffeId !== '') {
+                // 有帶 SPIFFE ID：必須通過 ALLOWED_SOURCES 前綴白名單。
+                $this->verifySpiffeSource($sourceSpiffeId);
+                fwrite(STDOUT, sprintf(
+                    "[event-consumer] source=%s path=[%s] event=%s\n",
+                    $sourceSpiffeId,
+                    implode(' → ', $spiffePath),
+                    substr(strrchr($eventType, '\\') ?: $eventType, 1),
+                ));
+            } else {
+                // 沒帶 SPIFFE ID：不阻斷，但要留下告警紀錄，
+                // 方便在 log 中追蹤舊版或未接入 SPIFFE 的上游。
+                fwrite(STDOUT, sprintf(
+                    "[event-consumer] WARNING: no SPIFFE identity on event=%s\n",
+                    $eventType,
+                ));
+            }
         }
 
         // ── 巢狀 LSVID 驗證 ─────────────────────────────────
@@ -111,7 +115,13 @@ final class EventConsumer
         //   整個身份鏈就能一路延續下去。
         $rawLsvid = is_string($payload['lsvid'] ?? null) ? (string) $payload['lsvid'] : null;
 
-        if ($rawLsvid !== null) {
+        if (!$this->requireSpiffeIdentity) {
+            // Master SPIFFE toggle off — skip LSVID chain validation.
+            // rawLsvid (if any) is intentionally ignored; LSVIDContext is
+            // not populated so MessageBus downstream publishes will also
+            // skip extension (the signer itself is null in this mode).
+            $rawLsvid = null;
+        } elseif ($rawLsvid !== null) {
             // envelope 帶 lsvid → validator 必須已設定。
             // 如果 envelope 有 lsvid 卻沒有 validator，代表 worker 的 wiring
             // 出錯（例如 SVID 不可用卻仍有上游簽章），一律 fail-closed。

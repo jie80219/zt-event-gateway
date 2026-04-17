@@ -63,6 +63,15 @@ $env = static function (string $key, string $default): string {
     return is_string($value) && $value !== '' ? $value : $default;
 };
 
+// Master toggle guard — the primary control is the docker-compose `zt`
+// profile which simply doesn't start this container; this check is a
+// belt-and-suspenders safety net for direct invocations (e.g. manual
+// `php bin/spiffe-watcher.php` in a dev shell with SPIFFE_ENABLED=0).
+if ($env('SPIFFE_ENABLED', '1') === '0') {
+    fwrite(STDERR, "[spiffe-watcher] SPIFFE_ENABLED=0 — exiting immediately.\n");
+    exit(0);
+}
+
 $config = new SourceConfig(
     socketPath:         $env('SPIFFE_ENDPOINT_SOCKET', 'unix:/run/spire/sockets/agent.sock'),
     maxRetries:         (int) $env('SPIFFE_MAX_RETRIES', '0'),

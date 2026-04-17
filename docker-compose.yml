@@ -5,7 +5,6 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management
-    restart: unless-stopped
     container_name: zt-rabbitmq
     ports:
       - "5672:5672"
@@ -25,7 +24,6 @@ services:
   eventstoredb:
     container_name: eventstoredb
     image: eventstore/eventstore:latest
-    restart: unless-stopped
     environment:
         EVENTSTORE_CLUSTER_SIZE: 1
         EVENTSTORE_RUN_PROJECTIONS: All
@@ -35,12 +33,6 @@ services:
     ports:
         - '1113:1113' # TCP 客戶端通信
         - '2113:2113' # HTTP API 接口
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:2113/health/live || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 10s
     networks:
         - anser_project_network
 
@@ -48,7 +40,6 @@ services:
 
   spire-server:
     image: ghcr.io/spiffe/spire-server:1.12.0
-    restart: unless-stopped
     container_name: zt-spire-server
     command:
       - -config
@@ -68,7 +59,6 @@ services:
 
   spire-agent:
     image: ghcr.io/spiffe/spire-agent:1.12.0
-    restart: unless-stopped
     container_name: zt-spire-agent
     command:
       - -config
@@ -94,7 +84,6 @@ services:
     build:
       context: .
       dockerfile: docker/workload-registrar/Dockerfile
-    restart: unless-stopped
     container_name: zt-workload-registrar
     command: ["/bin/sh", "/opt/spire/conf/scripts/register-workloads-internal.sh"]
     environment:
@@ -120,7 +109,6 @@ services:
 
   spiffe-watcher:
     pid: "service:spire-agent"
-    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
@@ -143,7 +131,7 @@ services:
     healthcheck:
       # Check SHM state directly — avoids depending on the coroutine HTTP
       # endpoint which isn't available in every OpenSwoole flavor.
-      test: ["CMD-SHELL", "php -r '$m=json_decode(@file_get_contents(\"/tmp/spiffe-shared/meta.json\"),true);$ok=($m[\"x509_state\"]??\"\")===\"ready\"&&(time()-($m[\"updated_at\"]??0))<3600;exit($ok?0:1);'"]
+      test: ["CMD-SHELL", "php -r 'exit((json_decode(@file_get_contents(\"/tmp/spiffe-shared/meta.json\"),true)[\"x509_state\"]??\"\")===\"ready\"?0:1);'"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -153,7 +141,6 @@ services:
 
   gateway:
     pid: "service:spire-agent"
-    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
@@ -178,7 +165,7 @@ services:
       LSVID_ENABLED: "1"
       LSVID_REQUIRED: "1"
       LSVID_TTL_SECONDS: "1800"
-      LSVID_LOG_PAYLOAD: "1"
+      LSVID_LOG_PAYLOAD: "0"
     volumes:
       - spire-agent-sockets:/run/spire/sockets:ro
       - spiffe-certs:/tmp/spiffe-certs:ro
@@ -201,7 +188,6 @@ services:
 
   php-worker:
     pid: "service:spire-agent"
-    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
@@ -226,7 +212,7 @@ services:
       LSVID_ENABLED: "1"
       LSVID_REQUIRED: "1"
       LSVID_TTL_SECONDS: "1800"
-      LSVID_LOG_PAYLOAD: "1"
+      LSVID_LOG_PAYLOAD: "0"
       # ── mTLS to downstream services ──
       SPIFFE_MTLS_ENABLED: "0"
       ORDER_SERVICE_HOST: "host.docker.internal"

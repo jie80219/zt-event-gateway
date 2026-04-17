@@ -54,11 +54,19 @@ try {
     //   Opt-out:      LSVID_ENABLED=0
     //   SHM location: SPIFFE_SHM_DIR (default /tmp/spiffe-shared)
     //   Required:     LSVID_REQUIRED=1 → fail-closed if no SVID in SHM
-    $lsvidEnabled       = $env('LSVID_ENABLED', '1') !== '0';
+    // Master toggle: when SPIFFE_ENABLED=0 the entire SPIFFE/LSVID/mTLS
+    // layer is skipped — no bootstrap, no audience registry, no global
+    // filter, no identity checks in the consumers. The three sub-flags
+    // below are force-disabled so operators can flip a single switch
+    // rather than keeping them in lockstep manually.
+    $spiffeEnabled      = $env('SPIFFE_ENABLED', '1') !== '0';
+    $lsvidEnabled       = $spiffeEnabled && $env('LSVID_ENABLED', '1') !== '0';
     $lsvidSigner        = null;
     $lsvidValidator     = null;
+    $requestValidator   = null;
+    $eventValidator     = null;
     $filterValidator    = null;
-    $lsvidRequired      = $env('LSVID_REQUIRED', '1') === '1';
+    $lsvidRequired      = $spiffeEnabled && $env('LSVID_REQUIRED', '1') === '1';
     $downstreamAudience = $env('DOWNSTREAM_SPIFFE_ID', '');
     $trustDomain        = $env('SPIFFE_TRUST_DOMAIN', 'zt.local');
     $shmDir             = $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared');
@@ -132,6 +140,8 @@ try {
             }
             fwrite(STDERR, "[worker] LSVID DEGRADED — running with prefix-check only.\n");
         }
+    } elseif (!$spiffeEnabled) {
+        fwrite(STDOUT, "[worker] SPIFFE disabled via SPIFFE_ENABLED=0 — bypassing LSVID/mTLS/identity checks\n");
     } else {
         fwrite(STDOUT, "[worker] LSVID disabled via LSVID_ENABLED=0\n");
     }
@@ -169,43 +179,50 @@ try {
     //    container names on port 8443 (RoadRunner mTLS).
     //    When mTLS is off, services are on host.docker.internal with
     //    their original host-mapped ports (8081/8082/8083).
-    $isMtls = ($env('SPIFFE_MTLS_ENABLED', '0')) === '1';
-    $scheme = $isMtls ? 'https' : 'http';
-    $defaultHost = $env('SERVICE_HOST', 'host.docker.internal');
-    $mtlsPort = $env('MTLS_PORT', '8443');
+    //    When SPIFFE_ENABLED=0 the whole registry + global filter are
+    //    skipped: downstream SimpleService calls go over plain HTTP
+    //    without the X-LSVID header or mTLS material.
+    if ($spiffeEnabled) {
+        $isMtls = ($env('SPIFFE_MTLS_ENABLED', '0')) === '1';
+        $scheme = $isMtls ? 'https' : 'http';
+        $defaultHost = $env('SERVICE_HOST', 'host.docker.internal');
+        $mtlsPort = $env('MTLS_PORT', '8443');
 
-    $orderHost = $env('ORDER_SERVICE_HOST', $defaultHost);
-    $orderPort = $isMtls ? $mtlsPort : $env('ORDER_SERVICE_PORT', '8082');
-    SpiffeAudienceRegistry::register(
-        "{$scheme}://{$orderHost}:{$orderPort}",
-        $env('ORDER_SPIFFE_ID', 'spiffe://zt.local/order-service'),
-    );
+        $orderHost = $env('ORDER_SERVICE_HOST', $defaultHost);
+        $orderPort = $isMtls ? $mtlsPort : $env('ORDER_SERVICE_PORT', '8082');
+        SpiffeAudienceRegistry::register(
+            "{$scheme}://{$orderHost}:{$orderPort}",
+            $env('ORDER_SPIFFE_ID', 'spiffe://zt.local/order-service'),
+        );
 
-    $productionHost = $env('PRODUCTION_SERVICE_HOST', $defaultHost);
-    $productionPort = $isMtls ? $mtlsPort : $env('PRODUCTION_SERVICE_PORT', '8081');
-    SpiffeAudienceRegistry::register(
-        "{$scheme}://{$productionHost}:{$productionPort}",
-        $env('PRODUCTION_SPIFFE_ID', 'spiffe://zt.local/production-service'),
-    );
+        $productionHost = $env('PRODUCTION_SERVICE_HOST', $defaultHost);
+        $productionPort = $isMtls ? $mtlsPort : $env('PRODUCTION_SERVICE_PORT', '8081');
+        SpiffeAudienceRegistry::register(
+            "{$scheme}://{$productionHost}:{$productionPort}",
+            $env('PRODUCTION_SPIFFE_ID', 'spiffe://zt.local/production-service'),
+        );
 
-    $userHost = $env('USER_SERVICE_HOST', $defaultHost);
-    $userPort = $isMtls ? $mtlsPort : $env('USER_SERVICE_PORT', '8083');
-    SpiffeAudienceRegistry::register(
-        "{$scheme}://{$userHost}:{$userPort}",
-        $env('USER_SPIFFE_ID', 'spiffe://zt.local/user-service'),
-    );
+        $userHost = $env('USER_SERVICE_HOST', $defaultHost);
+        $userPort = $isMtls ? $mtlsPort : $env('USER_SERVICE_PORT', '8083');
+        SpiffeAudienceRegistry::register(
+            "{$scheme}://{$userHost}:{$userPort}",
+            $env('USER_SPIFFE_ID', 'spiffe://zt.local/user-service'),
+        );
 
-    fwrite(STDOUT, sprintf(
-        "[worker] SpiffeAudienceRegistry: order=%s:%s, production=%s:%s, user=%s:%s (scheme=%s)\n",
-        $orderHost, $orderPort,
-        $productionHost, $productionPort,
-        $userHost, $userPort,
-        $scheme,
-    ));
+        fwrite(STDOUT, sprintf(
+            "[worker] SpiffeAudienceRegistry: order=%s:%s, production=%s:%s, user=%s:%s (scheme=%s)\n",
+            $orderHost, $orderPort,
+            $productionHost, $productionPort,
+            $userHost, $userPort,
+            $scheme,
+        ));
 
-    // Register Anser global filter — extends LSVID chain + injects mTLS
-    // into all outgoing SimpleService HTTP calls.
-    ActionFilter::setGlobalFilter(\Filters\SpiffeLsvidFilter::class);
+        // Register Anser global filter — extends LSVID chain + injects mTLS
+        // into all outgoing SimpleService HTTP calls.
+        ActionFilter::setGlobalFilter(\Filters\SpiffeLsvidFilter::class);
+    } else {
+        fwrite(STDOUT, "[worker] SpiffeAudienceRegistry + SpiffeLsvidFilter skipped (SPIFFE_ENABLED=0)\n");
+    }
 
     $messageBus = new MessageBus(
         $channel,
@@ -229,8 +246,18 @@ try {
 
     $eventBus = new EventBus($messageBus, $eventStoreDB);
     $transportConsumer = new Consumer($channel);
-    $requestConsumer = new RequestConsumer($messageBus, $requestValidator ?? $lsvidValidator, $lsvidRequired);
-    $eventConsumer = new EventConsumer($eventBus, $eventValidator ?? $lsvidValidator, $lsvidRequired);
+    $requestConsumer = new RequestConsumer(
+        $messageBus,
+        $requestValidator ?? $lsvidValidator,
+        $lsvidRequired,
+        $spiffeEnabled,
+    );
+    $eventConsumer = new EventConsumer(
+        $eventBus,
+        $eventValidator ?? $lsvidValidator,
+        $lsvidRequired,
+        $spiffeEnabled,
+    );
     $scanner = new HandlerScanner();
     $eventQueues = $scanner->scanEventTypesFromFile($sagaFilePath);
 

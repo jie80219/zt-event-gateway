@@ -22,6 +22,7 @@ final class RequestConsumer
         private readonly MessageBus $messageBus,
         private readonly ?LSVIDValidator $lsvidValidator = null,
         private readonly bool $lsvidRequired = false,
+        private readonly bool $requireSpiffeIdentity = true,
     ) {
     }
 
@@ -33,7 +34,7 @@ final class RequestConsumer
         }
 
         try {
-            $envelope = CanonicalOrderRequest::validateEnvelope($payload);
+            $envelope = CanonicalOrderRequest::validateEnvelope($payload, $this->requireSpiffeIdentity);
         } catch (\InvalidArgumentException $exception) {
             throw new UnrecoverableMessageException($exception->getMessage());
         }
@@ -43,12 +44,14 @@ final class RequestConsumer
         $route = $envelope['route'];
         $eventData = $envelope['eventData'];
 
-        $this->verifySpiffeSource($sourceSpiffeId);
-        fwrite(STDOUT, sprintf(
-            "[request-consumer] verified source=%s path=[%s]\n",
-            $sourceSpiffeId,
-            implode(' -> ', $spiffePath),
-        ));
+        if ($this->requireSpiffeIdentity) {
+            $this->verifySpiffeSource($sourceSpiffeId);
+            fwrite(STDOUT, sprintf(
+                "[request-consumer] verified source=%s path=[%s]\n",
+                $sourceSpiffeId,
+                implode(' -> ', $spiffePath),
+            ));
+        }
 
         // ── Nested LSVID: validate any prior-level token on the inbound
         //    envelope, then forward it as the `nested` claim of the next
@@ -58,7 +61,10 @@ final class RequestConsumer
         $priorLsvid = null;
         $inboundLsvid = is_string($payload['lsvid'] ?? null) ? (string) $payload['lsvid'] : null;
 
-        if ($inboundLsvid !== null) {
+        if (!$this->requireSpiffeIdentity) {
+            // Master SPIFFE toggle off — bypass prefix + LSVID validation entirely.
+            // Envelope structure was still checked above.
+        } elseif ($inboundLsvid !== null) {
             // LSVID present — validator MUST be configured. A wiring error
             // where the validator is null but the envelope carries an lsvid
             // is treated as unrecoverable (fail-closed).

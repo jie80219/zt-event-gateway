@@ -93,11 +93,14 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
     //     3. Launch a coroutine that polls meta.json.version and refreshes
     //        the GatewaySpiffeState singleton whenever the watcher
     //        publishes a new rotation.
+    $spiffeEnabled = $env('SPIFFE_ENABLED', '1') !== '0';
     $downstreamSpiffeId = $env('WORKER_SPIFFE_ID', 'spiffe://zt.local/php-worker');
-    GatewaySpiffeState::setSpiffeId($env('SPIFFE_ID', ''));
-    GatewaySpiffeState::setDownstreamSpiffeId($downstreamSpiffeId);
+    GatewaySpiffeState::setSpiffeId($spiffeEnabled ? $env('SPIFFE_ID', '') : '');
+    GatewaySpiffeState::setDownstreamSpiffeId($spiffeEnabled ? $downstreamSpiffeId : '');
 
-    if ($env('LSVID_ENABLED', '1') !== '0') {
+    if (!$spiffeEnabled) {
+        fwrite(STDOUT, "[gateway] SPIFFE disabled via SPIFFE_ENABLED=0 — skipping LSVID bootstrap\n");
+    } elseif ($env('LSVID_ENABLED', '1') !== '0') {
         $shmDir = $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared');
         $awaitTimeout = (float) $env('SPIFFE_AWAIT_TIMEOUT', '30');
         try {
