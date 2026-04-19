@@ -161,7 +161,12 @@
       "Bash(cp \"/Users/jiezhiyang/.claude/plans/專案健檢報告.md\" \"/Users/jiezhiyang/zt-event-gateway/.claude/plans/專案健檢報告.md\")",
       "Bash(rm \"/Users/jiezhiyang/.claude/plans/專案健檢報告.md\")",
       "Bash(rm -f docker-compose.yml.bak composer.phar composer.bat initialization.php scripts/run_all_events.bat \"Event-Driven/Events/InventoryDeductRequestedEvent.php\" \"Event-Driven/Events/PaymentProcessRequestedEvent.php\" spiffe/image.png architecture.mmd)",
-      "Bash(rm -rf docker/envoy docker/php spiffe/spire-server spiffe/spire-agent)"
+      "Bash(rm -rf docker/envoy docker/php spiffe/spire-server spiffe/spire-agent)",
+      "Bash(./restart-agent-helper.sh)",
+      "Bash(./restart-agent-helper.sh --clean)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(python3 *)",
+      "Bash(xxd /Users/jiezhiyang/zt-event-gateway/artifacts/experiment-20260417-223524/ablation-summary.json)"
     ]
   }
 }
