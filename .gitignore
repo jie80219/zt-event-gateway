@@ -21,6 +21,13 @@
 .claude-logs/
 .phpunit.cache/
 
+# Runtime artifacts
+*.pid
+supervisord.pid
+
+# Go sidecar build output
+spiffe-sidecar/bin/
+
 # Submodules / symlinks managed outside this repo
 Services/
 packages/php-lsvid/

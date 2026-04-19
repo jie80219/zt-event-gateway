@@ -59,7 +59,7 @@
       "Filters\\": "anser-gateway/Filters/",
       "Services\\": "Services/",
       "Spiffe\\": "src/Spiffe/",
-      "GPBMetadata\\": "src/GPBMetadata/"
+      "GPBMetadata\\": "packages/php-spiffe/src/GPBMetadata/"
     }
   },
   "scripts": {
