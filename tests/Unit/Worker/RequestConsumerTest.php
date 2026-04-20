@@ -131,4 +131,130 @@ final class RequestConsumerTest extends TestCase
             ],
         ], JSON_THROW_ON_ERROR)));
     }
+
+    // ── Additional Edge Cases ───────────────────────────────
+
+    public function testProcessRejectsInvalidJson(): void
+    {
+        $messageBus = $this->createMock(MessageBus::class);
+        $messageBus->expects($this->never())->method('publishEvent');
+
+        $consumer = new RequestConsumer($messageBus);
+
+        $this->expectException(UnrecoverableMessageException::class);
+        $this->expectExceptionMessage('Invalid request payload');
+
+        $consumer->process(new AMQPMessage('not-json'));
+    }
+
+    public function testProcessRejectsUnknownRoute(): void
+    {
+        $messageBus = $this->createMock(MessageBus::class);
+        $messageBus->expects($this->never())->method('publishEvent');
+
+        $consumer = new RequestConsumer($messageBus, null, false, false);
+
+        $this->expectException(UnrecoverableMessageException::class);
+        $this->expectExceptionMessage('Unknown request route');
+
+        $consumer->process(new AMQPMessage(json_encode([
+            'schema_version' => 1,
+            'type' => 'gateway.request',
+            'route' => 'NonExistentEvent',
+            'id' => 'trace-unknown',
+            'spiffe_id' => '',
+            'spiffe_path' => [],
+            'data' => [
+                'userKey' => '1',
+                'productList' => [['p_key' => 1, 'amount' => 1]],
+            ],
+        ], JSON_THROW_ON_ERROR)));
+    }
+
+    public function testProcessRejectsLsvidPresentButNoValidator(): void
+    {
+        $messageBus = $this->createMock(MessageBus::class);
+        $messageBus->expects($this->never())->method('publishEvent');
+
+        $consumer = new RequestConsumer(
+            $messageBus,
+            null,           // no validator
+            false,
+            true,           // requireSpiffeIdentity
+        );
+
+        $this->expectException(UnrecoverableMessageException::class);
+        $this->expectExceptionMessage('no LSVIDValidator is configured');
+
+        $consumer->process(new AMQPMessage(json_encode([
+            'schema_version' => 1,
+            'type' => 'gateway.request',
+            'route' => 'OrderCreateRequestedEvent',
+            'id' => 'trace-lsvid-no-validator',
+            'spiffe_id' => 'spiffe://zt.local/gateway',
+            'spiffe_path' => ['spiffe://zt.local/gateway'],
+            'lsvid' => 'some.jwt.token',
+            'data' => [
+                'userKey' => '1',
+                'productList' => [['p_key' => 1, 'amount' => 1]],
+            ],
+        ], JSON_THROW_ON_ERROR)));
+    }
+
+    public function testProcessRejectsLsvidRequiredButMissing(): void
+    {
+        $messageBus = $this->createMock(MessageBus::class);
+        $messageBus->expects($this->never())->method('publishEvent');
+
+        $consumer = new RequestConsumer(
+            $messageBus,
+            null,
+            true,           // lsvidRequired
+            true,           // requireSpiffeIdentity
+        );
+
+        $this->expectException(UnrecoverableMessageException::class);
+        $this->expectExceptionMessage('LSVID required');
+
+        $consumer->process(new AMQPMessage(json_encode([
+            'schema_version' => 1,
+            'type' => 'gateway.request',
+            'route' => 'OrderCreateRequestedEvent',
+            'id' => 'trace-lsvid-required',
+            'spiffe_id' => 'spiffe://zt.local/gateway',
+            'spiffe_path' => ['spiffe://zt.local/gateway'],
+            'data' => [
+                'userKey' => '1',
+                'productList' => [['p_key' => 1, 'amount' => 1]],
+            ],
+        ], JSON_THROW_ON_ERROR)));
+    }
+
+    public function testProcessResolvesFullyQualifiedRoute(): void
+    {
+        $messageBus = $this->createMock(MessageBus::class);
+        $messageBus->expects($this->once())
+            ->method('publishEvent')
+            ->with(
+                'App\\Events\\OrderCreateRequestedEvent',
+                $this->anything(),
+                null,
+                $this->anything(),
+            );
+
+        $consumer = new RequestConsumer($messageBus, null, false, false);
+
+        $consumer->process(new AMQPMessage(json_encode([
+            'schema_version' => 1,
+            'type' => 'gateway.request',
+            'route' => 'App\\Events\\OrderCreateRequestedEvent',
+            'id' => 'trace-fq',
+            'spiffe_id' => '',
+            'spiffe_path' => [],
+            'data' => [
+                'userKey' => '1',
+                'productList' => [['p_key' => 1, 'amount' => 1]],
+            ],
+        ], JSON_THROW_ON_ERROR)));
+    }
 }

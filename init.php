@@ -18,14 +18,14 @@ $httpPort  = 8080;  // RoadRunner internal HTTP port
 ServiceList::addLocalService(
     name: "ProductionService",
     address: $env('PRODUCTION_SERVICE_HOST', $defaultHost),
-    port: $isHttps ? $mtlsPort : (int) $env('PRODUCTION_SERVICE_PORT', '8081'),
+    port: $isHttps ? $mtlsPort : (int) $env('PRODUCTION_SERVICE_PORT', '8083'),
     isHttps: $isHttps
 );
 
 ServiceList::addLocalService(
     name: "UserService",
     address: $env('USER_SERVICE_HOST', $defaultHost),
-    port: $isHttps ? $mtlsPort : (int) $env('USER_SERVICE_PORT', '8083'),
+    port: $isHttps ? $mtlsPort : (int) $env('USER_SERVICE_PORT', '8084'),
     isHttps: $isHttps
 );
 

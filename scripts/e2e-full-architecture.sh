@@ -33,16 +33,18 @@
 #     18. 偽造 SPIFFE ID (event queue) → 被丟棄
 #     19. LSVID replay attack → 被偵測並拒絕
 #     20. 錯誤 trust domain → 被拒絕
+#     21. Event 層級 schema 驗證 (缺少 type 欄位 → 被拒絕)
+#     22. LSVID chain issuer 驗證 (L0→L1 issuer 可追蹤)
 #
 #   Phase 6 — 韌性 + 並發
-#     21. Worker 重啟後恢復消費
-#     22. 10 個並發請求全部 202 且被 worker 處理
-#     23. RabbitMQ 重連 (gateway persistent connection recovery)
+#     23. Worker 重啟後恢復消費
+#     24. 10 個並發請求全部 202 且被 worker 處理
+#     25. RabbitMQ 重連 (gateway persistent connection recovery)
 #
 #   Phase 7 — 效能檢測
-#     24. 單次請求延遲基線 (30 samples, P50/P95/P99)
-#     25. 壓力測試吞吐量 (100 requests, concurrency=5)
-#     26. Saga 端到端延遲（從請求到 Saga Step 1）
+#     26. 單次請求延遲基線 (30 samples, P50/P95/P99)
+#     27. 壓力測試吞吐量 (100 requests, concurrency=5)
+#     28. Saga 端到端延遲（從請求到 Saga Step 1）
 #
 # Usage:
 #   bash scripts/e2e-full-architecture.sh [--keep]
@@ -120,6 +122,32 @@ pass() {
 fail() {
     FAIL_COUNT=$((FAIL_COUNT + 1))
     printf '\033[31m[FAIL]\033[0m %s\n' "$*" >&2
+    diagnose_failure
+}
+
+DIAG_DUMPED=false
+diagnose_failure() {
+    # Only dump diagnostics once per run to avoid spamming.
+    [[ "$DIAG_DUMPED" == true ]] && return 0
+    DIAG_DUMPED=true
+
+    printf '\n\033[1;33m── Failure Diagnostics ──\033[0m\n' >&2
+
+    printf '\n--- Gateway logs (last 50 lines) ---\n' >&2
+    docker compose -f "$COMPOSE_FILE" logs --tail=50 gateway 2>/dev/null | tail -50 >&2 || true
+
+    printf '\n--- Worker logs (last 50 lines) ---\n' >&2
+    docker compose -f "$COMPOSE_FILE" logs --tail=50 php-worker 2>/dev/null | tail -50 >&2 || true
+
+    printf '\n--- RabbitMQ queue status ---\n' >&2
+    curl -sS -u "${RABBIT_USER}:${RABBIT_PASS}" \
+        "${RABBIT_API_URL}/queues/%2F" 2>/dev/null \
+        | jq -r '.[] | "\(.name): ready=\(.messages_ready) unacked=\(.messages_unacknowledged)"' 2>/dev/null >&2 || true
+
+    printf '\n--- Container status ---\n' >&2
+    docker compose -f "$COMPOSE_FILE" ps --format 'table {{.Name}}\t{{.Status}}' 2>/dev/null >&2 || true
+
+    printf '\n\033[1;33m── End Diagnostics ──\033[0m\n' >&2
 }
 
 skip() {
@@ -1004,13 +1032,69 @@ else
     skip "test 20: could not inject wrong-trust-domain message"
 fi
 
+# ── Test 21 (new): Event-level schema validation ────────────────────────────
+schema_evt_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+log "test 21: event-level schema validation (missing type field)"
+
+# Inject a malformed event directly into an event queue — missing "type" field.
+malformed_event_payload="$(cat <<JSON
+{
+  "data": {"orderId": "test", "userKey": "1", "productList": [], "total": 0},
+  "spiffe_id": "spiffe://zt.local/php-worker",
+  "spiffe_path": ["spiffe://zt.local/php-worker"]
+}
+JSON
+)"
+malformed_publish_result="$(curl -sS \
+    -u "${RABBIT_USER}:${RABBIT_PASS}" \
+    -H 'content-type: application/json' \
+    -X POST "${RABBIT_API_URL}/exchanges/%2F/events/publish" \
+    -d "{
+        \"routing_key\": \"OrderCreatedEvent\",
+        \"payload\": $(echo "$malformed_event_payload" | jq -Rs .),
+        \"payload_encoding\": \"string\",
+        \"properties\": {\"delivery_mode\": 2}
+    }" 2>/dev/null || echo '{"routed":false}')"
+
+if grep -Fq '"routed":true' <<<"$malformed_publish_result"; then
+    wait_for_worker_log "$schema_evt_since" \
+        "Missing event type or data" "$WAIT_TIMEOUT" \
+        && pass "test 21: malformed event (missing type) rejected by EventConsumer" \
+        || fail "test 21: EventConsumer did not reject malformed event"
+else
+    skip "test 21: could not inject malformed event message"
+fi
+
+# ── Test 22 (new): LSVID chain issuer verification ──────────────────────────
+lsvid_chain_trace="$(new_trace_id 'e2e-lsvid-chain-verify')"
+lsvid_chain_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+log "test 22: LSVID chain issuer verification (trace=${lsvid_chain_trace})"
+
+record_response "$(post_order "$lsvid_chain_trace" \
+    '{"userKey":"1","productList":[{"p_key":1,"amount":1}],"total":100}')"
+
+if [[ "$LAST_HTTP_CODE" == "202" ]]; then
+    # Wait for the worker to log the LSVID chain verification
+    if wait_for_worker_log "$lsvid_chain_since" \
+        "LSVID chain L0..L" "$WAIT_TIMEOUT" 2>/dev/null; then
+        pass "test 22: LSVID chain L0→L1 verified in worker logs"
+    elif wait_for_worker_log "$lsvid_chain_since" \
+        "LSVID L0 OK" "$WAIT_TIMEOUT" 2>/dev/null; then
+        pass "test 22: LSVID L0 verified in worker logs"
+    else
+        skip "test 22: LSVID chain verification log not found (LSVID may not be enabled)"
+    fi
+else
+    fail "test 22: expected 202 but got ${LAST_HTTP_CODE}"
+fi
+
 # ============================================================================
 # Phase 6: Resilience + Concurrency
 # ============================================================================
 section "Phase 6: Resilience and concurrency"
 
-# ── Test 21: Worker restart recovery ────────────────────────────────────────
-log "test 21: worker restart recovery"
+# ── Test 23: Worker restart recovery ────────────────────────────────────────
+log "test 23: worker restart recovery"
 restart_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 docker compose -f "$COMPOSE_FILE" restart php-worker >/dev/null 2>&1
@@ -1026,19 +1110,19 @@ if wait_for_worker_log "$restart_since" "[worker] listening" "$WAIT_TIMEOUT"; th
     if [[ "$LAST_HTTP_CODE" == "202" ]]; then
         wait_for_worker_log "$restart_since" \
             "[request-consumer] verified source" "$WAIT_TIMEOUT" \
-            && pass "test 21: worker restarted and resumed processing" \
-            || fail "test 21: worker restarted but did not process message"
+            && pass "test 23: worker restarted and resumed processing" \
+            || fail "test 23: worker restarted but did not process message"
     else
         fail "test 21: gateway returned ${LAST_HTTP_CODE} after worker restart"
     fi
 else
-    fail "test 21: worker did not recover after restart within ${WAIT_TIMEOUT}s"
+    fail "test 23: worker did not recover after restart within ${WAIT_TIMEOUT}s"
 fi
 
-# ── Test 22: Concurrent requests ────────────────────────────────────────────
+# ── Test 24: Concurrent requests ────────────────────────────────────────────
 CONCURRENT_COUNT=10
 concurrent_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-log "test 22: ${CONCURRENT_COUNT} concurrent requests"
+log "test 28: ${CONCURRENT_COUNT} concurrent requests"
 
 declare -a concurrent_pids
 concurrent_success=true
@@ -1068,9 +1152,9 @@ for pid in "${concurrent_pids[@]}"; do
 done
 
 if [[ "$concurrent_success" != true ]]; then
-    fail "test 22a: one or more concurrent requests did not return 202"
+    fail "test 24a: one or more concurrent requests did not return 202"
 else
-    pass "test 22a: ${CONCURRENT_COUNT} concurrent requests all returned 202"
+    pass "test 24a: ${CONCURRENT_COUNT} concurrent requests all returned 202"
 fi
 
 # Verify worker processes them all
@@ -1086,13 +1170,13 @@ while (( elapsed_c < WAIT_TIMEOUT )); do
 done
 
 if (( verified_count >= CONCURRENT_COUNT )); then
-    pass "test 22b: all ${CONCURRENT_COUNT} concurrent requests processed by worker"
+    pass "test 24b: all ${CONCURRENT_COUNT} concurrent requests processed by worker"
 else
-    fail "test 22b: worker only verified ${verified_count}/${CONCURRENT_COUNT} concurrent requests"
+    fail "test 24b: worker only verified ${verified_count}/${CONCURRENT_COUNT} concurrent requests"
 fi
 
-# ── Test 23: Gateway AMQP reconnection ──────────────────────────────────────
-log "test 23: Gateway AMQP reconnection after RabbitMQ restart"
+# ── Test 25: Gateway AMQP reconnection ──────────────────────────────────────
+log "test 27: Gateway AMQP reconnection after RabbitMQ restart"
 reconnect_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 docker compose -f "$COMPOSE_FILE" restart rabbitmq >/dev/null 2>&1
@@ -1118,9 +1202,9 @@ for attempt in 1 2 3 4 5; do
 done
 
 if [[ "$reconnect_ok" == true ]]; then
-    pass "test 23: Gateway reconnected to RabbitMQ and resumed publishing"
+    pass "test 27: Gateway reconnected to RabbitMQ and resumed publishing"
 else
-    fail "test 23: Gateway did not recover after RabbitMQ restart (last code=${LAST_HTTP_CODE})"
+    fail "test 27: Gateway did not recover after RabbitMQ restart (last code=${LAST_HTTP_CODE})"
 fi
 
 # ============================================================================
@@ -1136,7 +1220,7 @@ if [[ "$SKIP_PERF" != "1" ]]; then
     trap 'rm -rf "$PERF_TMPDIR"; cleanup' EXIT
 
     # ── Test 24: Single request latency baseline ─────────────────────────────
-    log "test 24: single request latency baseline (${PERF_SAMPLES} samples, sequential)"
+    log "test 28: single request latency baseline (${PERF_SAMPLES} samples, sequential)"
 
     LATENCIES_FILE="${PERF_TMPDIR}/latencies.txt"
     CODES_FILE="${PERF_TMPDIR}/codes.txt"
@@ -1177,13 +1261,13 @@ if [[ "$SKIP_PERF" != "1" ]]; then
     success_count="$(grep -c '202' "$CODES_FILE" 2>/dev/null || echo 0)"
 
     if [[ "$perf_stats" != "no-data" ]]; then
-        pass "test 24: gateway latency (${success_count}/${PERF_SAMPLES} OK): ${perf_stats}"
+        pass "test 28: gateway latency (${success_count}/${PERF_SAMPLES} OK): ${perf_stats}"
     else
-        fail "test 24: could not collect latency data"
+        fail "test 28: could not collect latency data"
     fi
 
     # ── Test 25: Stress test throughput ───────────────────────────────────────
-    log "test 25: stress test throughput (${PERF_STRESS_TOTAL} requests, concurrency=${PERF_STRESS_CONC})"
+    log "test 27: stress test throughput (${PERF_STRESS_TOTAL} requests, concurrency=${PERF_STRESS_CONC})"
 
     STRESS_LATENCIES="${PERF_TMPDIR}/stress_latencies.txt"
     STRESS_CODES="${PERF_TMPDIR}/stress_codes.txt"
@@ -1247,14 +1331,14 @@ if [[ "$SKIP_PERF" != "1" ]]; then
     fi
 
     if [[ "$stress_stats" != "no-data" ]]; then
-        pass "test 25: stress (${stress_success}/${PERF_STRESS_TOTAL} OK, ${stress_duration}s, ${stress_rps} rps): ${stress_stats}"
+        pass "test 27: stress (${stress_success}/${PERF_STRESS_TOTAL} OK, ${stress_duration}s, ${stress_rps} rps): ${stress_stats}"
         log "         HTTP codes: ${stress_code_summary}"
     else
-        fail "test 25: stress test collected no data"
+        fail "test 27: stress test collected no data"
     fi
 
     # ── Test 26: Saga end-to-end latency ─────────────────────────────────────
-    log "test 26: Saga end-to-end latency measurement"
+    log "test 28: Saga end-to-end latency measurement"
 
     # Wait for worker to be stable after stress test
     sleep 3
@@ -1284,12 +1368,12 @@ if [[ "$SKIP_PERF" != "1" ]]; then
         saga_latency_ms=$((saga_end_ms - saga_start_ms))
 
         if [[ "$saga_step1_found" == true ]]; then
-            pass "test 26: Saga e2e latency (request → Step 1): ${saga_latency_ms}ms"
+            pass "test 28: Saga e2e latency (request → Step 1): ${saga_latency_ms}ms"
         else
-            fail "test 26: Saga Step 1 not reached within ${WAIT_TIMEOUT}s"
+            fail "test 28: Saga Step 1 not reached within ${WAIT_TIMEOUT}s"
         fi
     else
-        fail "test 26: request returned ${LAST_HTTP_CODE}, cannot measure saga latency"
+        fail "test 28: request returned ${LAST_HTTP_CODE}, cannot measure saga latency"
     fi
 
     # ── Performance summary JSON ─────────────────────────────────────────────

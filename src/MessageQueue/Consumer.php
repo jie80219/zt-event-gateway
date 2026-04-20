@@ -10,6 +10,8 @@ use PhpAmqpLib\Message\AMQPMessage;
 
 final class Consumer
 {
+    private const MAX_RETRIES = 3;
+
     private AMQPChannel $channel;
 
     public function __construct(AMQPChannel $channel)
@@ -37,14 +39,65 @@ final class Consumer
                     );
                     $message->reject(false);
                 } catch (\Throwable $exception) {
-                    fwrite(
-                        STDERR,
-                        sprintf("[consumer] requeue queue=%s error=%s\n", $queue, $exception->getMessage()),
-                    );
-                    $message->nack(false, true);
+                    $deliveryCount = $this->getDeliveryCount($message);
+
+                    if ($deliveryCount >= self::MAX_RETRIES) {
+                        fwrite(
+                            STDERR,
+                            sprintf(
+                                "[consumer] exhausted retries (%d/%d) queue=%s error=%s\n",
+                                $deliveryCount,
+                                self::MAX_RETRIES,
+                                $queue,
+                                $exception->getMessage(),
+                            ),
+                        );
+                        $message->reject(false);
+                    } else {
+                        fwrite(
+                            STDERR,
+                            sprintf(
+                                "[consumer] requeue (%d/%d) queue=%s error=%s\n",
+                                $deliveryCount,
+                                self::MAX_RETRIES,
+                                $queue,
+                                $exception->getMessage(),
+                            ),
+                        );
+                        $message->nack(false, true);
+                    }
                 }
             },
         );
+    }
+
+    private function getDeliveryCount(AMQPMessage $message): int
+    {
+        $headers = $message->has('application_headers')
+            ? $message->get('application_headers')
+            : null;
+
+        if ($headers === null) {
+            return 1;
+        }
+
+        $nativeData = $headers->getNativeData();
+
+        // RabbitMQ 3.10+ quorum queues provide x-delivery-count automatically.
+        if (isset($nativeData['x-delivery-count'])) {
+            return (int) $nativeData['x-delivery-count'];
+        }
+
+        // Classic queues track redelivery via x-death header entries.
+        if (isset($nativeData['x-death']) && is_array($nativeData['x-death'])) {
+            $totalCount = 0;
+            foreach ($nativeData['x-death'] as $death) {
+                $totalCount += (int) ($death['count'] ?? 0);
+            }
+            return $totalCount > 0 ? $totalCount : 1;
+        }
+
+        return 1;
     }
 
     public function run(): void

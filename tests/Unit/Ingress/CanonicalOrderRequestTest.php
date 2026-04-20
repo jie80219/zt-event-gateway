@@ -101,4 +101,224 @@ final class CanonicalOrderRequestTest extends TestCase
             ],
         ], requireSpiffeIdentity: false);
     }
+
+    // ── normalizeOrderData: field alias coverage ────────────
+
+    public function testAcceptsCustomerIdAlias(): void
+    {
+        $result = CanonicalOrderRequest::normalizeOrderData([
+            'customer_id' => 42,
+            'productList' => [['p_key' => 1, 'amount' => 1]],
+        ]);
+
+        $this->assertSame('42', $result['userKey']);
+    }
+
+    public function testAcceptsCustomerIdCamelAlias(): void
+    {
+        $result = CanonicalOrderRequest::normalizeOrderData([
+            'customerId' => '99',
+            'productList' => [['p_key' => 1, 'amount' => 1]],
+        ]);
+
+        $this->assertSame('99', $result['userKey']);
+    }
+
+    public function testThrowsOnMissingUserKey(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('userKey');
+
+        CanonicalOrderRequest::normalizeOrderData([
+            'productList' => [['p_key' => 1, 'amount' => 1]],
+        ]);
+    }
+
+    public function testThrowsOnEmptyProductList(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('productList');
+
+        CanonicalOrderRequest::normalizeOrderData([
+            'userKey' => '1',
+            'productList' => [],
+        ]);
+    }
+
+    public function testThrowsOnNonArrayProductItem(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('productList item');
+
+        CanonicalOrderRequest::normalizeOrderData([
+            'userKey' => '1',
+            'productList' => ['not-an-array'],
+        ]);
+    }
+
+    public function testThrowsOnNegativeAmount(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('amount');
+
+        CanonicalOrderRequest::normalizeOrderData([
+            'userKey' => '1',
+            'productList' => [['p_key' => 1, 'amount' => -1]],
+        ]);
+    }
+
+    public function testThrowsOnZeroPKey(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('p_key');
+
+        CanonicalOrderRequest::normalizeOrderData([
+            'userKey' => '1',
+            'productList' => [['p_key' => 0, 'amount' => 1]],
+        ]);
+    }
+
+    public function testCoercesStringIntegers(): void
+    {
+        $result = CanonicalOrderRequest::normalizeOrderData([
+            'userKey' => '1',
+            'productList' => [['p_key' => '3', 'amount' => '5']],
+            'total' => '100',
+        ]);
+
+        $this->assertSame(3, $result['productList'][0]['p_key']);
+        $this->assertSame(5, $result['productList'][0]['amount']);
+        $this->assertSame(100, $result['total']);
+    }
+
+    public function testDefaultsTotalToZero(): void
+    {
+        $result = CanonicalOrderRequest::normalizeOrderData([
+            'userKey' => '1',
+            'productList' => [['p_key' => 1, 'amount' => 1]],
+        ]);
+
+        $this->assertSame(0, $result['total']);
+    }
+
+    public function testAcceptsQtyAlias(): void
+    {
+        $result = CanonicalOrderRequest::normalizeOrderData([
+            'userKey' => '1',
+            'product_list' => [['product_id' => 7, 'qty' => 3]],
+        ]);
+
+        $this->assertSame(7, $result['productList'][0]['p_key']);
+        $this->assertSame(3, $result['productList'][0]['amount']);
+    }
+
+    // ── validateEnvelope: additional edge cases ─────────────
+
+    public function testAcceptsSchemaVersionAsString(): void
+    {
+        $result = CanonicalOrderRequest::validateEnvelope([
+            'schema_version' => '1',
+            'type' => CanonicalOrderRequest::ENVELOPE_TYPE,
+            'route' => 'OrderCreateRequestedEvent',
+            'id' => 'trace-id',
+            'spiffe_id' => 'spiffe://zt.local/gateway',
+            'spiffe_path' => ['spiffe://zt.local/gateway'],
+            'data' => [
+                'userKey' => '1',
+                'productList' => [['p_key' => 1, 'amount' => 1]],
+            ],
+        ]);
+
+        $this->assertSame('OrderCreateRequestedEvent', $result['route']);
+    }
+
+    public function testRejectsUnsupportedSchemaVersion(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Unsupported schema_version');
+
+        CanonicalOrderRequest::validateEnvelope([
+            'schema_version' => 99,
+            'type' => CanonicalOrderRequest::ENVELOPE_TYPE,
+            'route' => 'OrderCreateRequestedEvent',
+            'id' => 'trace-id',
+            'spiffe_id' => 'spiffe://zt.local/gateway',
+            'spiffe_path' => ['spiffe://zt.local/gateway'],
+            'data' => [
+                'userKey' => '1',
+                'productList' => [['p_key' => 1, 'amount' => 1]],
+            ],
+        ]);
+    }
+
+    public function testRejectsInvalidType(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid envelope type');
+
+        CanonicalOrderRequest::validateEnvelope([
+            'schema_version' => 1,
+            'type' => 'invalid.type',
+            'route' => 'OrderCreateRequestedEvent',
+            'id' => 'trace-id',
+            'spiffe_id' => 'spiffe://zt.local/gateway',
+            'spiffe_path' => ['spiffe://zt.local/gateway'],
+            'data' => [
+                'userKey' => '1',
+                'productList' => [['p_key' => 1, 'amount' => 1]],
+            ],
+        ]);
+    }
+
+    public function testRejectsMissingRoute(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Missing request route');
+
+        CanonicalOrderRequest::validateEnvelope([
+            'schema_version' => 1,
+            'type' => CanonicalOrderRequest::ENVELOPE_TYPE,
+            'id' => 'trace-id',
+            'spiffe_id' => 'spiffe://zt.local/gateway',
+            'spiffe_path' => ['spiffe://zt.local/gateway'],
+            'data' => [
+                'userKey' => '1',
+                'productList' => [['p_key' => 1, 'amount' => 1]],
+            ],
+        ]);
+    }
+
+    public function testRejectsMissingId(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Missing request id');
+
+        CanonicalOrderRequest::validateEnvelope([
+            'schema_version' => 1,
+            'type' => CanonicalOrderRequest::ENVELOPE_TYPE,
+            'route' => 'OrderCreateRequestedEvent',
+            'spiffe_id' => 'spiffe://zt.local/gateway',
+            'spiffe_path' => ['spiffe://zt.local/gateway'],
+            'data' => [
+                'userKey' => '1',
+                'productList' => [['p_key' => 1, 'amount' => 1]],
+            ],
+        ]);
+    }
+
+    public function testRejectsNonArrayData(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid request data');
+
+        CanonicalOrderRequest::validateEnvelope([
+            'schema_version' => 1,
+            'type' => CanonicalOrderRequest::ENVELOPE_TYPE,
+            'route' => 'OrderCreateRequestedEvent',
+            'id' => 'trace-id',
+            'spiffe_id' => 'spiffe://zt.local/gateway',
+            'spiffe_path' => ['spiffe://zt.local/gateway'],
+            'data' => 'not-an-array',
+        ]);
+    }
 }

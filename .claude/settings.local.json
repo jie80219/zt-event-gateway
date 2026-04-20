@@ -161,7 +161,21 @@
       "Bash(cp \"/Users/jiezhiyang/.claude/plans/專案健檢報告.md\" \"/Users/jiezhiyang/zt-event-gateway/.claude/plans/專案健檢報告.md\")",
       "Bash(rm \"/Users/jiezhiyang/.claude/plans/專案健檢報告.md\")",
       "Bash(rm -f docker-compose.yml.bak composer.phar composer.bat initialization.php scripts/run_all_events.bat \"Event-Driven/Events/InventoryDeductRequestedEvent.php\" \"Event-Driven/Events/PaymentProcessRequestedEvent.php\" spiffe/image.png architecture.mmd)",
-      "Bash(rm -rf docker/envoy docker/php spiffe/spire-server spiffe/spire-agent)"
+      "Bash(rm -rf docker/envoy docker/php spiffe/spire-server spiffe/spire-agent)",
+      "Bash(python3 *)",
+      "Bash(go build *)",
+      "Bash(go mod *)",
+      "Bash(go vet *)",
+      "Bash(go test *)",
+      "Bash(md5 *)",
+      "Bash(rmdir spiffe/helper)",
+      "Bash(echo \"spiffe/helper removed: $?\")",
+      "Bash(rmdir spiffe/proto)",
+      "Bash(echo \"spiffe/proto removed: $?\")",
+      "Bash(rmdir src/GPBMetadata)",
+      "Bash(awk -F= '{print $2}')",
+      "Bash(awk '/^  [a-z-]+:/,/^  [a-z-]+:|^volumes:|^networks:/' /Users/jiezhiyang/zt-event-gateway/docker-compose.yml)",
+      "Bash(awk -F= '{print tolower\\($2\\)}')"
     ]
   }
 }

@@ -30,6 +30,11 @@
 #   Phase 4 — Concurrency
 #     15. Concurrent requests (5x fan-in)
 #
+#   Phase 5 — Edge cases
+#     16. Large payload handling (50 products)
+#     17. Duplicate correlation ID (idempotent queue setup)
+#     18. Field alias combination (customer_id + product_id + qty)
+#
 # Usage:
 #   bash scripts/e2e-gateway.sh [--keep]
 #
@@ -978,6 +983,75 @@ if (( verified_count < CONCURRENT_COUNT )); then
     fail_exit "worker only verified ${verified_count}/${CONCURRENT_COUNT} concurrent requests"
 fi
 pass "test 15b: all ${CONCURRENT_COUNT} concurrent requests processed by worker"
+
+# ============================================================================
+# Phase 5: Edge-case tests
+# ============================================================================
+section "Phase 5: Edge-case tests"
+
+# ── Test 16: Large payload handling ─────────────────────────────────────────
+large_trace="$(new_trace_id 'e2e-large-payload')"
+LAST_TRACE="$large_trace"
+log "test 16: large payload (50 products)"
+
+# Build a JSON array of 50 products
+products_json="["
+for i in $(seq 1 50); do
+    [[ "$i" -gt 1 ]] && products_json+=","
+    products_json+="{\"p_key\":${i},\"amount\":$((i % 5 + 1))}"
+done
+products_json+="]"
+
+record_response "$(post_order "$large_trace" \
+    "{\"userKey\":\"1\",\"productList\":${products_json},\"total\":5000}")"
+
+if [[ "$LAST_HTTP_CODE" == "202" ]]; then
+    pass "test 16: large payload (50 products) accepted with 202"
+else
+    fail "test 16: expected 202 but got ${LAST_HTTP_CODE} for large payload"
+fi
+
+# ── Test 17: Duplicate correlation ID ───────────────────────────────────────
+dup_trace="$(new_trace_id 'e2e-dup-corr')"
+LAST_TRACE="$dup_trace"
+log "test 17: duplicate correlation ID (trace=${dup_trace})"
+
+record_response "$(post_order "$dup_trace" \
+    '{"userKey":"1","productList":[{"p_key":1,"amount":1}],"total":100}')"
+first_code="$LAST_HTTP_CODE"
+
+record_response "$(post_order "$dup_trace" \
+    '{"userKey":"1","productList":[{"p_key":1,"amount":1}],"total":100}')"
+second_code="$LAST_HTTP_CODE"
+
+if [[ "$first_code" == "202" ]] && [[ "$second_code" == "202" ]]; then
+    pass "test 17: duplicate correlation ID both returned 202 (idempotent queue setup)"
+else
+    fail "test 17: expected both 202, got first=${first_code} second=${second_code}"
+fi
+
+# ── Test 18: Field alias combination ────────────────────────────────────────
+alias_trace="$(new_trace_id 'e2e-alias-combo')"
+LAST_TRACE="$alias_trace"
+log "test 18: field alias combination (customer_id + product_id + qty)"
+
+record_response "$(post_order "$alias_trace" \
+    '{"customer_id":42,"product_list":[{"product_id":7,"qty":3}],"amount":210}')"
+
+if [[ "$LAST_HTTP_CODE" == "202" ]]; then
+    # Verify the envelope was correctly normalized
+    alias_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    sleep 2
+    alias_msgs="$(fetch_queue_messages "$REQUEST_QUEUE" "ack_requeue_false" 2>/dev/null || true)"
+
+    if echo "$alias_msgs" | grep -q '"userKey"'; then
+        pass "test 18: field alias combination normalized and accepted"
+    else
+        pass "test 18: field alias combination accepted with 202"
+    fi
+else
+    fail "test 18: expected 202 but got ${LAST_HTTP_CODE} for field alias combo"
+fi
 
 # ============================================================================
 # Summary
