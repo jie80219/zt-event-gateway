@@ -175,7 +175,8 @@
       "Bash(rmdir src/GPBMetadata)",
       "Bash(awk -F= '{print $2}')",
       "Bash(awk '/^  [a-z-]+:/,/^  [a-z-]+:|^volumes:|^networks:/' /Users/jiezhiyang/zt-event-gateway/docker-compose.yml)",
-      "Bash(awk -F= '{print tolower\\($2\\)}')"
+      "Bash(awk -F= '{print tolower\\($2\\)}')",
+      "WebFetch(domain:nvlpubs.nist.gov)"
     ]
   }
 }
