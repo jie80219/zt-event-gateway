@@ -688,9 +688,9 @@ svid_check="$(docker exec zt-spiffe-watcher php -r '
     $slot = json_decode(@file_get_contents("/tmp/spiffe-shared/x509/0.json"), true);
     if (!is_array($slot)) { echo "NO_SLOT_FILE"; exit(1); }
     $id = $slot["spiffe_id"] ?? "";
-    $hasChain = !empty($slot["cert_chain_pem"]);
-    $hasKey = !empty($slot["private_key_pem"]);
-    $hasBundle = !empty($slot["trust_bundle_pem"]);
+    $hasChain = !empty($slot["cert_pem"]);
+    $hasKey = !empty($slot["key_pem"]);
+    $hasBundle = !empty($slot["bundle_pem"]);
     if ($id === "" || !$hasChain || !$hasKey || !$hasBundle) {
         echo "INCOMPLETE|id=" . $id . "|chain=" . ($hasChain?"y":"n") . "|key=" . ($hasKey?"y":"n") . "|bundle=" . ($hasBundle?"y":"n");
         exit(1);
