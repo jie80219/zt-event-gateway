@@ -166,7 +166,10 @@
       "Bash(./restart-agent-helper.sh --clean)",
       "Bash(echo \"exit=$?\")",
       "Bash(python3 *)",
-      "Bash(xxd /Users/jiezhiyang/zt-event-gateway/artifacts/experiment-20260417-223524/ablation-summary.json)"
+      "Bash(xxd /Users/jiezhiyang/zt-event-gateway/artifacts/experiment-20260417-223524/ablation-summary.json)",
+      "WebFetch(domain:ieeexplore.ieee.org)",
+      "WebFetch(domain:www.researchgate.net)",
+      "WebFetch(domain:www.computer.org)"
     ]
   }
 }

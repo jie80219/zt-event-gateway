@@ -553,6 +553,223 @@ else
 fi
 
 # ============================================================================
+# Stage 5b: Real L0 → L1 → L2 Chain Capture
+# ============================================================================
+# Captures actual raw LSVID tokens from RabbitMQ queues and downstream service
+# receive log, to validate the synthesized L0/L1/L2 sizes produced in Stage 1.
+#
+# Layout:
+#   L0 — gateway mints at ingress, lives in envelope.lsvid on `order_queue`
+#   L1 — worker RequestConsumer extends, lives on event queue
+#        (`OrderCreateRequestedEvent`)
+#   L2 — anser-gateway Filter extends on outgoing HTTP, captured by downstream
+#        SpiffeLsvidFilter when LSVID_CAPTURE_DEBUG=1
+# ============================================================================
+section "Stage 5b: Real L0→L1→L2 Chain Capture"
+
+REAL_CHAIN_OUT="${OUT_DIR}/lsvid-real-chain.json"
+ORDER_CONTAINER_PATTERN="${ORDER_SERVICE_CONTAINER:-order-service}"
+
+real_chain_order_container="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "${ORDER_CONTAINER_PATTERN}" | head -1 || true)"
+
+if [[ -z "$real_chain_order_container" ]]; then
+    fail "order-service container not found (pattern=${ORDER_CONTAINER_PATTERN}); skipping real chain capture"
+    printf '{"captured": false, "reason": "order-service container not running"}\n' > "$REAL_CHAIN_OUT"
+else
+    log "order-service container: ${real_chain_order_container}"
+
+    # Enable capture + reset log on order-service (no container restart needed:
+    # the filter reads getenv() each request, but webdevops/php keeps a master
+    # php-fpm process. Use setenv via a helper file that the filter can source,
+    # OR append to the container's env. Simplest: rely on filter reading the
+    # env each time — so we set it via docker exec env persistence.)
+    # We instead switch to a runtime signal: a marker file + filter env check.
+    # Here we require LSVID_CAPTURE_DEBUG=1 already set in the service env.
+    docker exec "$real_chain_order_container" sh -c \
+        'rm -f /tmp/lsvid-capture.log 2>/dev/null; : > /tmp/lsvid-capture.log' 2>/dev/null || true
+
+    # Declare thesis probe queues (auto-delete on disconnect) bound to the
+    # request routing key and first event routing key, BEFORE sending the
+    # request, so we can capture the raw tokens after workers consume.
+    PROBE_L0_QUEUE="thesis_probe_L0_$$"
+    PROBE_L1_QUEUE="thesis_probe_L1_$$"
+    EXCHANGE_NAME="${AMQP_EXCHANGE:-events}"
+    REQUEST_RK="${REQUEST_ROUTING_KEY:-request.new}"
+    L1_EVENT_RK="OrderCreateRequestedEvent"
+
+    declare_queue() {
+        curl -sS -o /dev/null -u "${RABBIT_USER}:${RABBIT_PASS}" \
+            -H 'content-type: application/json' \
+            -X PUT "${RABBIT_API}/queues/%2F/$1" \
+            -d '{"durable":false,"auto_delete":false,"arguments":{"x-message-ttl":60000}}' 2>/dev/null || true
+    }
+    bind_queue() {
+        local queue="$1" rk="$2"
+        curl -sS -o /dev/null -u "${RABBIT_USER}:${RABBIT_PASS}" \
+            -H 'content-type: application/json' \
+            -X POST "${RABBIT_API}/bindings/%2F/e/${EXCHANGE_NAME}/q/${queue}" \
+            -d "{\"routing_key\":\"${rk}\",\"arguments\":{}}" 2>/dev/null || true
+    }
+
+    declare_queue "$PROBE_L0_QUEUE"
+    declare_queue "$PROBE_L1_QUEUE"
+    bind_queue "$PROBE_L0_QUEUE" "$REQUEST_RK"
+    bind_queue "$PROBE_L1_QUEUE" "$L1_EVENT_RK"
+
+    sleep 1
+
+    trace_chain="thesis-chain-$(date +%s)-$$"
+    log "dispatching order request (trace=${trace_chain})"
+    curl -sS -o /dev/null \
+        -X POST "$REQUEST_URL" \
+        -H 'Content-Type: application/json' \
+        -H "X-Correlation-Id: ${trace_chain}" \
+        -d '{"userKey":"42","productList":[{"p_key":1,"amount":2}],"total":250}' \
+        2>/dev/null || true
+
+    # Wait for Saga to complete (Saga usually finishes within a few seconds)
+    sleep 6
+
+    probe_l0_json="$(fetch_queue_messages "$PROBE_L0_QUEUE" "ack_requeue_false")"
+    probe_l1_json="$(fetch_queue_messages "$PROBE_L1_QUEUE" "ack_requeue_false")"
+    l2_log_raw="$(docker exec "$real_chain_order_container" cat /tmp/lsvid-capture.log 2>/dev/null || true)"
+
+    # Cleanup probe queues
+    curl -sS -o /dev/null -u "${RABBIT_USER}:${RABBIT_PASS}" \
+        -X DELETE "${RABBIT_API}/queues/%2F/${PROBE_L0_QUEUE}" 2>/dev/null || true
+    curl -sS -o /dev/null -u "${RABBIT_USER}:${RABBIT_PASS}" \
+        -X DELETE "${RABBIT_API}/queues/%2F/${PROBE_L1_QUEUE}" 2>/dev/null || true
+
+    PROBE_L0_JSON="$probe_l0_json" PROBE_L1_JSON="$probe_l1_json" \
+    L2_LOG="$l2_log_raw" TRACE="$trace_chain" \
+    php -n -r '
+        $l0Rows = json_decode(getenv("PROBE_L0_JSON") ?: "[]", true) ?: [];
+        $l1Rows = json_decode(getenv("PROBE_L1_JSON") ?: "[]", true) ?: [];
+        $l2Log  = getenv("L2_LOG") ?: "";
+        $trace  = getenv("TRACE") ?: "";
+
+        $extractRawLsvid = function (array $rows, ?string $matchTrace = null): ?string {
+            foreach ($rows as $row) {
+                $payload = $row["payload"] ?? null;
+                if (!is_string($payload)) continue;
+                $env = json_decode($payload, true);
+                if (!is_array($env)) continue;
+                if ($matchTrace !== null && ($env["id"] ?? ($env["data"]["id"] ?? "")) !== $matchTrace) {
+                    continue;
+                }
+                $raw = $env["lsvid"] ?? null;
+                if (is_string($raw) && $raw !== "") return $raw;
+            }
+            foreach ($rows as $row) {
+                $payload = $row["payload"] ?? null;
+                if (!is_string($payload)) continue;
+                $env = json_decode($payload, true);
+                $raw = $env["lsvid"] ?? null;
+                if (is_string($raw) && $raw !== "") return $raw;
+            }
+            return null;
+        };
+
+        $l0Raw = $extractRawLsvid($l0Rows, $trace);
+        $l1Raw = $extractRawLsvid($l1Rows, $trace);
+
+        $l2Raw = null;
+        if ($l2Log !== "") {
+            $lines = array_values(array_filter(explode("\n", trim($l2Log))));
+            if (!empty($lines)) {
+                $lastFields = explode("\t", end($lines));
+                if (count($lastFields) >= 3) {
+                    $l2Raw = $lastFields[2];
+                }
+            }
+        }
+
+        $segLens = function (?string $raw): array {
+            if (!is_string($raw) || $raw === "") return ["bytes" => 0, "header" => 0, "payload" => 0, "signature" => 0];
+            $parts = explode(".", $raw);
+            return [
+                "bytes"     => strlen($raw),
+                "header"    => strlen($parts[0] ?? ""),
+                "payload"   => strlen($parts[1] ?? ""),
+                "signature" => strlen($parts[2] ?? ""),
+            ];
+        };
+
+        $l0 = $segLens($l0Raw);
+        $l1 = $segLens($l1Raw);
+        $l2 = $segLens($l2Raw);
+
+        $out = [
+            "trace_id" => $trace,
+            "captured" => [
+                "L0" => $l0Raw !== null,
+                "L1" => $l1Raw !== null,
+                "L2" => $l2Raw !== null,
+            ],
+            "sizes" => [
+                "L0" => $l0,
+                "L1" => $l1,
+                "L2" => $l2,
+            ],
+            "growth" => [
+                "L0_to_L1_bytes" => $l1["bytes"] && $l0["bytes"] ? $l1["bytes"] - $l0["bytes"] : null,
+                "L1_to_L2_bytes" => $l2["bytes"] && $l1["bytes"] ? $l2["bytes"] - $l1["bytes"] : null,
+                "ratio_L1_L0"    => $l0["bytes"] ? round($l1["bytes"] / max(1,$l0["bytes"]), 3) : null,
+                "ratio_L2_L0"    => $l0["bytes"] ? round($l2["bytes"] / max(1,$l0["bytes"]), 3) : null,
+            ],
+            "nested_chain_intact" => null,
+        ];
+
+        // Verify nested chain: L1.payload.nested == L0 raw (decoded)
+        $b64urlDecode = function (string $s): string {
+            $s = strtr($s, "-_", "+/");
+            $pad = strlen($s) % 4;
+            if ($pad) $s .= str_repeat("=", 4 - $pad);
+            return base64_decode($s) ?: "";
+        };
+        if ($l0Raw && $l1Raw) {
+            $parts = explode(".", $l1Raw);
+            $payload = json_decode($b64urlDecode($parts[1] ?? ""), true);
+            $out["nested_chain_intact"] = [
+                "L1_nested_equals_L0" => is_array($payload) && ($payload["nested"] ?? null) === $l0Raw,
+            ];
+            if ($l2Raw) {
+                $parts2 = explode(".", $l2Raw);
+                $payload2 = json_decode($b64urlDecode($parts2[1] ?? ""), true);
+                $out["nested_chain_intact"]["L2_nested_equals_L1"] =
+                    is_array($payload2) && ($payload2["nested"] ?? null) === $l1Raw;
+            }
+        }
+
+        // Preview (first 40 chars) — helps manual diagnosis without leaking
+        $out["token_previews"] = [
+            "L0" => $l0Raw ? substr($l0Raw, 0, 40) . "..." : null,
+            "L1" => $l1Raw ? substr($l1Raw, 0, 40) . "..." : null,
+            "L2" => $l2Raw ? substr($l2Raw, 0, 40) . "..." : null,
+        ];
+
+        echo json_encode($out, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    ' > "$REAL_CHAIN_OUT" 2>/dev/null
+
+    captured_count="$(php -n -r '
+        $d = json_decode(file_get_contents($argv[1]), true);
+        $c = $d["captured"] ?? [];
+        echo (int)(($c["L0"] ?? false)) + (int)(($c["L1"] ?? false)) + (int)(($c["L2"] ?? false));
+    ' "$REAL_CHAIN_OUT" 2>/dev/null)"
+
+    if [[ "$captured_count" == "3" ]]; then
+        l0b="$(php -n -r 'echo json_decode(file_get_contents($argv[1]),true)["sizes"]["L0"]["bytes"] ?? 0;' "$REAL_CHAIN_OUT")"
+        l1b="$(php -n -r 'echo json_decode(file_get_contents($argv[1]),true)["sizes"]["L1"]["bytes"] ?? 0;' "$REAL_CHAIN_OUT")"
+        l2b="$(php -n -r 'echo json_decode(file_get_contents($argv[1]),true)["sizes"]["L2"]["bytes"] ?? 0;' "$REAL_CHAIN_OUT")"
+        pass "real chain captured: L0=${l0b}B  L1=${l1b}B  L2=${l2b}B → lsvid-real-chain.json"
+    elif [[ -n "$captured_count" && "$captured_count" != "0" ]]; then
+        log "partial real chain captured (${captured_count}/3) → lsvid-real-chain.json"
+    else
+        fail "real chain capture failed (0/3) — check LSVID_CAPTURE_DEBUG in order-service"
+    fi
+fi
+
+# ============================================================================
 # Stage 6: Summary Report
 # ============================================================================
 section "Stage 6: Summary Report"
@@ -604,6 +821,12 @@ php -n -r '
     $f = "${dir}/envelope-size.json";
     if (file_exists($f)) {
         $summary["stages"]["envelope_size"] = json_decode(file_get_contents($f), true);
+    }
+
+    // Stage 5b: Real chain
+    $f = "${dir}/lsvid-real-chain.json";
+    if (file_exists($f)) {
+        $summary["stages"]["lsvid_real_chain"] = json_decode(file_get_contents($f), true);
     }
 
     file_put_contents("${dir}/experiment-summary.json",

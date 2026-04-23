@@ -82,6 +82,9 @@
     "ci:zt": "CI_MODE=full CI_PROFILE=zt COMPOSE_PROFILES=zt bash scripts/ci-verify.sh",
     "ci:baseline": "CI_MODE=baseline SPIFFE_ENABLED=0 bash scripts/ci-verify.sh",
     "spiffe:verify": "bash scripts/verify-spire-integrity.sh",
-    "spiffe:split": "bash packages/php-spiffe/split.sh"
+    "spiffe:split": "bash packages/php-spiffe/split.sh",
+    "security:suite": "bash scripts/security-suite/run-security-suite.sh",
+    "security:unit": "SEC_SKIP_HTTP=1 SEC_SKIP_AMQP=1 SEC_SKIP_ROTATE=1 SEC_SKIP_DOCKER=1 bash scripts/security-suite/run-security-suite.sh",
+    "security:plot": "bash -c 'LATEST=$(ls -dt artifacts/security-* 2>/dev/null | head -1); [[ -z \"$LATEST\" ]] && echo \"no artifacts/security-* found\" && exit 1; python3 scripts/security-suite/plot/plot_security.py \"$LATEST\"'"
   }
 }

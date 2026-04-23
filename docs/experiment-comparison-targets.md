@@ -12,12 +12,12 @@
 
 利用本專案已有的環境變數開關，做 4 組對照：
 
-| 組別 | LSVID_ENABLED | SPIFFE_MTLS_ENABLED | 意義 |
-|------|:---:|:---:|------|
-| **Baseline** | 0 | 0 | 純 Saga 效能（無安全層） |
-| **mTLS only** | 0 | 1 | 量化 X.509-SVID mTLS 握手 + 加密傳輸成本 |
-| **LSVID only** | 1 | 0 | 量化 LSVID 鑄造(L0→L1→L2) + 驗證 + token 傳輸成本 |
-| **Full ZT** | 1 | 1 | 完整零信任模式（論文主張的架構） |
+| 組別           | LSVID_ENABLED | SPIFFE_MTLS_ENABLED | 意義                                                  |
+|----------------|:-------------:|:-------------------:|-------------------------------------------------------|
+| **Baseline**   |       0       |          0          | 純 Saga 效能（無安全層）                              |
+| **mTLS only**  |       0       |          1          | 量化 X.509-SVID mTLS 握手 + 加密傳輸成本             |
+| **LSVID only** |       1       |          0          | 量化 LSVID 鑄造(L0→L1→L2) + 驗證 + token 傳輸成本   |
+| **Full ZT**    |       1       |          1          | 完整零信任模式（論文主張的架構）                      |
 
 **量測指標：**
 - 端到端 Saga 完成延遲（P50 / P95 / P99）
@@ -86,17 +86,17 @@
 
 ## 定性比較表（論文適用）
 
-| 特性 | zt-event-gateway | Istio+SPIFFE | Linkerd | HPE-USP (Go) | Eventuate Tram |
-|------|:---:|:---:|:---:|:---:|:---:|
-| mTLS (X.509-SVID) | ✅ App-level | ✅ Sidecar | ✅ Sidecar | ✅ | ❌ |
-| LSVID 巢狀簽章 | ✅ L0→L1→L2 | ❌ | ❌ | ✅ | ❌ |
-| Delegation (委派) | ✅ | ❌ | ❌ | ✅ | ❌ |
-| Path tracing | ✅ | ❌ (需 tracing sidecar) | ❌ | ✅ | ❌ |
-| Attenuation (權限衰減) | ✅ audience/hop | ❌ | ❌ | ✅ | ❌ |
-| SVID auto-rotation | ✅ SHM seqlock | ✅ SDS | ✅ auto | ✅ | N/A |
-| Saga 分散式交易 | ✅ Orchestration | ❌ | ❌ | ❌ | ✅ Orchestration |
-| Event Sourcing | ✅ Prooph | ❌ | ❌ | ❌ | ✅ Eventuate |
-| 語言 | PHP 8.3 | Go (control) + C++ (Envoy) | Go + Rust | Go | Java |
+| 特性                       |  zt-event-gateway  |       Istio+SPIFFE        |  Linkerd   | HPE-USP (Go) | Eventuate Tram  | 
+|----------------------------|:------------------:|:-------------------------:|:----------:|:------------:|:---------------:|
+| mTLS (X.509-SVID)         |    ✅ App-level    |       ✅ Sidecar          | ✅ Sidecar |      ✅      |       ❌        |
+| LSVID 巢狀簽章            |   ✅ L0→L1→L2     |            ❌             |     ❌     |      ✅      |       ❌        |
+| Delegation (委派)          |        ✅          |            ❌             |     ❌     |      ✅      |       ❌        |
+| Path tracing               |        ✅          |  ❌ (需 tracing sidecar)  |     ❌     |      ✅      |       ㄦ        |
+| Attenuation (權限衰減)     | ✅ audience/hop    |            ❌             |     ❌     |      ✅      |       ❌        |
+| SVID auto-rotation         |  ✅ SHM seqlock   |          ✅ SDS           |  ✅ auto   |      ✅      |      N/A        |
+| Saga 分散式交易            | ✅ Orchestration   |            ❌             |     ❌     |      ❌      | ✅ Orchestration |
+| Event Sourcing             |    ✅ Prooph       |            ❌             |     ❌     |      ❌      |  ✅ Eventuate   |
+| 語言                       |     PHP 8.3        | Go (control) + C++ (Envoy)|  Go + Rust |      Go      |      Java       |
 
 ---
 
