@@ -36,7 +36,7 @@ CATEGORY_ORDER = [
     "time-attack", "replay", "mtls", "amqp-inject", "shm-tamper", "baseline",
 ]
 
-PROFILE_ORDER = ["A-baseline", "B-mtls-only", "C-lsvid-only", "D-full-zt"]
+PROFILE_ORDER = ["A-baseline", "B-mtls-only", "C-lsvid-only", "D-full-zt", "E-oauth2-bearer"]
 
 
 def load_summary(path: Path) -> dict[str, Any]:
@@ -352,6 +352,65 @@ def _empty(out: Path, reason: str) -> None:
     plt.close(fig)
 
 
+# ── S09: D-vs-E cross-architecture defense coverage heatmap ─────────────────
+
+def plot_d_vs_e_coverage(df: pd.DataFrame, out: Path) -> None:
+    """Figure 9 — side-by-side D/E heatmap quantifying the workload-identity
+    vs OAuth2-Bearer defense gap. See docs/experiment-comparison-targets.md §2.6.
+
+    The outcome code mirrors plot_attack_matrix but adds a new reason hint:
+    Profile-E structural_gap rows are shown as "accepted violation" (red) so
+    reviewers can see exactly which attack classes OAuth2 Bearer cannot cover.
+    """
+    df = df.copy()
+    df["code"] = df.apply(outcome_code, axis=1)
+
+    wanted = ["D-full-zt", "E-oauth2-bearer"]
+    present = [p for p in wanted if p in df["profile"].unique()]
+    if len(present) < 2:
+        _empty(out, f"need both D-full-zt and E-oauth2-bearer, have {present}")
+        return
+
+    pivot = df[df["profile"].isin(present)].pivot_table(
+        index="case_id", columns="profile", values="code", aggfunc="min"
+    )
+    case_order = [c for c in df["case_id"].drop_duplicates().tolist() if c in pivot.index]
+    pivot = pivot.reindex(index=case_order, columns=present)
+
+    cmap = matplotlib.colors.ListedColormap(["#2ca02c", "#d62728", "#1f77b4", "#7f7f7f"])
+    fig, ax = plt.subplots(figsize=(5.5, max(6, 0.32 * len(pivot))))
+    sns.heatmap(
+        pivot.fillna(3), cmap=cmap, vmin=0, vmax=3,
+        cbar_kws={"ticks": [0.4, 1.2, 2.0, 2.8], "label": ""},
+        linewidths=0.6, linecolor="white", ax=ax, annot=False,
+    )
+    cbar = ax.collections[0].colorbar
+    cbar.set_ticklabels(["rejected (good)", "accepted violation", "accepted (baseline)", "n/a"])
+    ax.set_title("Workload-identity vs OAuth2-Bearer: defense gap per case")
+    ax.set_xlabel("Profile")
+    ax.set_ylabel("Attack case")
+
+    # Coverage summary footer
+    def coverage(p: str) -> float:
+        sub = df[(df["profile"] == p) & (df["category"] != "baseline")]
+        sub = sub[sub["status"].isin(["accepted", "rejected"])]
+        if sub.empty:
+            return 0.0
+        good = ((sub["status"] == "rejected") & sub["is_expected"]).sum()
+        return good / len(sub) * 100
+    d_pct = coverage("D-full-zt")
+    e_pct = coverage("E-oauth2-bearer")
+    ax.text(
+        1.08, -0.06,
+        f"coverage — D: {d_pct:.0f}% · E: {e_pct:.0f}% · gap: {d_pct - e_pct:+.0f}pp",
+        transform=ax.transAxes, ha="right", va="top", fontsize=9, style="italic",
+    )
+
+    plt.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -381,8 +440,9 @@ def main() -> int:
     plot_rotation_timeline(summary.get("cases", []), out_dir / "06-rotation-race-timeline.png")
     plot_amqp_bypass(df, out_dir / "07-amqp-bypass-outcome.png")
     plot_security_vs_perf(summary, ablation, out_dir / "08-security-vs-perf-tradeoff.png")
+    plot_d_vs_e_coverage(df, out_dir / "09-profile-d-vs-e-coverage.png")
 
-    print(f"[plot] wrote 8 figures to {out_dir}")
+    print(f"[plot] wrote 9 figures to {out_dir}")
     return 0
 
 
