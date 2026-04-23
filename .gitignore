@@ -8,13 +8,12 @@
 /.env.local
 /artifacts/
 
-# LSVID experiment raw data — keep the summary and latest-bench, ignore
-# per-run timestamped JSON dumps and the docker-compose override file.
-/docs/data/lsvid-bench-20*.json
-/docs/data/stress-A-*.json
-/docs/data/stress-B-*.json
-/docs/data/stress-C-*.json
-/docs/data/stress-D-*.json
+# Thesis-related artifacts — raw data files and draft chapters are not
+# tracked (regeneratable via scripts/run-thesis-experiment.sh).
+# Previously tracked files remain tracked; new files are ignored.
+/docs/data/
+/docs/thesis/
+/docs/
 /.lsvid-experiment.override.yml
 
 .claude/
