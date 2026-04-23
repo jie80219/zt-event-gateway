@@ -8,11 +8,8 @@ use SDPMlab\ZtEventGateway\EventBus;
 use SDPMlab\ZtEventGateway\HandlerScanner;
 use SDPMlab\ZtEventGateway\MessageQueue\MessageBus;
 use SDPMlab\ZtEventGateway\QueueTopology;
-use SDPMlab\ZtEventGateway\Spiffe\LSVIDSignerRegistry;
-use SDPMlab\ZtEventGateway\Spiffe\LSVIDValidatorRegistry;
-use SDPMlab\ZtEventGateway\Spiffe\SpiffeAudienceRegistry;
-use SDPMlab\ZtEventGateway\Spiffe\SpiffeBootstrap;
-use SDPMlab\ZtEventGateway\Spiffe\SpiffeMtlsRegistry;
+use Keycloak\AudienceRegistry;
+use Keycloak\KeycloakBootstrap;
 use SDPMlab\Anser\Service\ActionFilter;
 use SDPMlab\ZtEventGateway\EventStore\EventStoreDB;
 use ZtEventGateway\Worker\EventConsumer;
@@ -43,194 +40,97 @@ try {
     $connection = new AMQPSocketConnection($host, $port, $user, $password);
     $channel = $connection->channel();
 
-    // ── LSVID wiring (SHM-backed) ───────────────────────────────
-    //   Bootstrap both signer and validators from the shared-memory store
-    //   populated by the spiffe-watcher daemon. The table reader exposes
-    //   seqlock-consistent reads of meta.json / x509/*.json, so every call
-    //   to sign() or verify() fetches the freshest SVID automatically —
-    //   no background coroutine is needed for rotation awareness in the
-    //   Worker (unlike Gateway, Worker isn't coroutine-based).
+    // ── Keycloak wiring (SHM-backed) ───────────────────────────────
+    //   Bootstrap the TokenProvider + JwtValidator from the shared-memory
+    //   store populated by the keycloak-watcher daemon. Every publishEvent()
+    //   re-reads the current access token from SHM (seqlock-consistent) so
+    //   the Worker automatically follows rotations without its own timer.
     //
-    //   Opt-out:      LSVID_ENABLED=0
-    //   SHM location: SPIFFE_SHM_DIR (default /tmp/spiffe-shared)
-    //   Required:     LSVID_REQUIRED=1 → fail-closed if no SVID in SHM
-    // Master toggle: when SPIFFE_ENABLED=0 the entire SPIFFE/LSVID/mTLS
-    // layer is skipped — no bootstrap, no audience registry, no global
-    // filter, no identity checks in the consumers. The three sub-flags
-    // below are force-disabled so operators can flip a single switch
-    // rather than keeping them in lockstep manually.
-    $spiffeEnabled      = $env('SPIFFE_ENABLED', '1') !== '0';
-    $lsvidEnabled       = $spiffeEnabled && $env('LSVID_ENABLED', '1') !== '0';
-    $lsvidSigner        = null;
-    $lsvidValidator     = null;
-    $requestValidator   = null;
-    $eventValidator     = null;
-    $filterValidator    = null;
-    $lsvidRequired      = $spiffeEnabled && $env('LSVID_REQUIRED', '1') === '1';
-    $downstreamAudience = $env('DOWNSTREAM_SPIFFE_ID', '');
-    $trustDomain        = $env('SPIFFE_TRUST_DOMAIN', 'zt.local');
-    $shmDir             = $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared');
-    $staleThreshold     = (int) $env('SPIFFE_STALE_THRESHOLD_SECS', '7200');
+    //   Opt-out: KEYCLOAK_ENABLED=0 — no token fetch, no validation.
+    $keycloakEnabled   = $env('KEYCLOAK_ENABLED', '1') !== '0';
+    $tokenProvider     = null;
+    $jwtValidator      = null;
+    $staleThreshold    = (int) $env('KEYCLOAK_STALE_THRESHOLD_SECS', '900');
 
-    if ($lsvidEnabled) {
+    if ($keycloakEnabled) {
         try {
-            $boot = SpiffeBootstrap::fromShm($shmDir, [
-                'trust_domain'                   => $trustDomain,
-                'await_timeout'                  => (float) $env('SPIFFE_AWAIT_TIMEOUT', '30'),
-                'clock_skew_seconds'             => 30,
-                'require_audience_on_all_levels' => true,
-                'spiffe_id'                      => $env('SPIFFE_ID', ''),
-            ]);
-
-            $primary = $boot->primary();
-            if ($primary === null || empty($primary['key_pem']) || empty($primary['bundle_pem'])) {
-                throw new \RuntimeException('SHM ready but primary SVID slot is empty or malformed');
-            }
-
-            $lsvidSigner = $boot->signer();
-            // One jtiCache per consumer pipeline — RequestConsumer records
-            // the L0 jti, and if EventConsumer shared the same cache it
-            // would false-positive on the nested L0 it sees during chain
-            // validation of L1 envelopes. Filter validator stays cache-less
-            // (SpiffeLsvidFilter re-validates tokens it's about to extend).
-            $requestValidator = $boot->validator(withJtiCache: true);
-            $eventValidator   = $boot->validator(withJtiCache: true);
-            $filterValidator  = $boot->validator(withJtiCache: false);
-            $lsvidValidator   = $requestValidator;  // kept for legacy call sites
-
-            if ($downstreamAudience === '' && $lsvidRequired) {
-                fwrite(STDERR,
-                    "[worker] FATAL: LSVID_REQUIRED=1 but DOWNSTREAM_SPIFFE_ID is empty. "
-                    . "Set DOWNSTREAM_SPIFFE_ID to the next-hop SPIFFE ID.\n",
-                );
-                exit(1);
-            }
+            $envBag = [
+                'KEYCLOAK_ENABLED'            => $env('KEYCLOAK_ENABLED', '1'),
+                'KEYCLOAK_ISSUER'             => $env('KEYCLOAK_ISSUER', ''),
+                'KEYCLOAK_TOKEN_URI'          => $env('KEYCLOAK_TOKEN_URI', ''),
+                'KEYCLOAK_JWKS_URI'           => $env('KEYCLOAK_JWKS_URI', ''),
+                'KEYCLOAK_CLIENT_ID'          => $env('KEYCLOAK_CLIENT_ID', ''),
+                'KEYCLOAK_CLIENT_SECRET'      => $env('KEYCLOAK_CLIENT_SECRET', ''),
+                'KEYCLOAK_SHM_DIR'            => $env('KEYCLOAK_SHM_DIR', ''),
+                'KEYCLOAK_TOKEN_REFRESH_SKEW' => $env('KEYCLOAK_TOKEN_REFRESH_SKEW', '30'),
+            ];
+            $state = KeycloakBootstrap::fromEnv($envBag, writable: false);
+            $tokenProvider = $state->tokenProvider;
+            $jwtValidator  = $state->jwtValidator;
 
             fwrite(STDOUT, sprintf(
-                "[worker] LSVID enabled — signer+validator wired via SHM "
-                . "(spiffe_id=%s, bundle_certs=%d, shm_version=%d, downstream=%s, required=%s)\n",
-                (string) $primary['spiffe_id'],
-                substr_count((string) $primary['bundle_pem'], 'BEGIN CERTIFICATE'),
-                $boot->version(),
-                $downstreamAudience !== '' ? $downstreamAudience : '(fallback to SPIFFE_ID)',
-                $lsvidRequired ? 'yes' : 'no',
+                "[worker] Keycloak enabled — client_id=%s, issuer=%s, realm=%s, shm=%s\n",
+                $state->clientId,
+                $state->issuer,
+                $state->realm,
+                $state->shmDir,
             ));
 
-            if ($boot->shmReader()->isStale($staleThreshold)) {
-                $msg = sprintf(
-                    "SHM is already stale at boot — last update %ds ago (threshold %ds). Watcher may be down.\n",
-                    $boot->shmReader()->secondsSinceLastUpdate(),
+            if ($state->reader->isStale($staleThreshold)) {
+                fwrite(STDERR, sprintf(
+                    "[worker] WARN: Keycloak SHM is stale at boot — last update %ds ago (threshold %ds)\n",
+                    $state->reader->secondsSinceLastUpdate(),
                     $staleThreshold,
-                );
-                if ($lsvidRequired) {
-                    fwrite(STDERR, "[worker] FATAL: " . $msg);
-                    exit(1);
-                }
-                fwrite(STDERR, "[worker] WARN: " . $msg);
+                ));
             }
         } catch (\Throwable $e) {
-            fwrite(STDERR, sprintf(
-                "[worker] LSVID bootstrap FAILED (shm=%s): %s\n",
-                $shmDir,
-                $e->getMessage(),
-            ));
-            if ($lsvidRequired) {
-                fwrite(STDERR, "[worker] FATAL: LSVID_REQUIRED=1 — exiting.\n");
-                exit(1);
-            }
-            fwrite(STDERR, "[worker] LSVID DEGRADED — running with prefix-check only.\n");
+            fwrite(STDERR, sprintf("[worker] Keycloak bootstrap FAILED: %s\n", $e->getMessage()));
+            exit(1);
         }
-    } elseif (!$spiffeEnabled) {
-        fwrite(STDOUT, "[worker] SPIFFE disabled via SPIFFE_ENABLED=0 — bypassing LSVID/mTLS/identity checks\n");
     } else {
-        fwrite(STDOUT, "[worker] LSVID disabled via LSVID_ENABLED=0\n");
+        fwrite(STDOUT, "[worker] KEYCLOAK_ENABLED=0 — bypassing JWT validation and token minting\n");
     }
 
-    // ── mTLS + LSVID signer + audience map ─────────────────────
-    //   Wire three static registries so the Anser global filter
-    //   (SpiffeLsvidFilter) can:
-    //     1. Extend the LSVID chain with a new level per HTTP call
-    //        (LSVIDSignerRegistry → signer->extend())
-    //     2. Set the correct `aud` claim for each target service
-    //        (SpiffeAudienceRegistry → URL → SPIFFE ID mapping)
-    //     3. Inject mTLS credentials into Guzzle options
-    //        (SpiffeMtlsRegistry → cert/ssl_key/verify)
-    if ($lsvidEnabled && $lsvidSigner !== null) {
-        // 1. LSVID signer for extending the chain.
-        LSVIDSignerRegistry::set($lsvidSigner);
-        fwrite(STDOUT, "[worker] LSVIDSignerRegistry initialized\n");
-
-        // 1b. Filter validator（不帶 jtiCache）for SpiffeLsvidFilter re-validate.
-        //     跟 consumer validator 分離，避免對同一個 token 報 jti replay。
-        if (isset($filterValidator)) {
-            LSVIDValidatorRegistry::set($filterValidator);
-            fwrite(STDOUT, "[worker] LSVIDValidatorRegistry initialized (no jtiCache)\n");
-        }
-
-        // 2. mTLS — 暫不支援（MVP 不啟用 mTLS，SPIFFE_MTLS_ENABLED=0）
-        if ($env('SPIFFE_MTLS_ENABLED', '0') === '1') {
-            fwrite(STDERR, "[worker] mTLS not yet supported in MVP mode (direct Workload API)\n");
-        }
-    }
-
-    // 3. Service URL → SPIFFE ID audience mapping.
-    //    The base URL must match what ServiceList registers in init.php.
-    //    When SPIFFE_MTLS_ENABLED=1, services are reached via Docker
-    //    container names on port 8443 (RoadRunner mTLS).
-    //    When mTLS is off, services are on host.docker.internal with
-    //    their original host-mapped ports (8081/8082/8083).
-    //    When SPIFFE_ENABLED=0 the whole registry + global filter are
-    //    skipped: downstream SimpleService calls go over plain HTTP
-    //    without the X-LSVID header or mTLS material.
-    if ($spiffeEnabled) {
-        $isMtls = ($env('SPIFFE_MTLS_ENABLED', '0')) === '1';
-        $scheme = $isMtls ? 'https' : 'http';
+    // ── Downstream service → client_id audience mapping ──────────
+    //   KeycloakBearerFilter consults this to set the correct `aud`
+    //   on outgoing tokens. Base URL must match ServiceList in init.php.
+    if ($keycloakEnabled) {
         $defaultHost = $env('SERVICE_HOST', 'host.docker.internal');
-        $mtlsPort = $env('MTLS_PORT', '8443');
 
         $orderHost = $env('ORDER_SERVICE_HOST', $defaultHost);
-        $orderPort = $isMtls ? $mtlsPort : $env('ORDER_SERVICE_PORT', '8082');
-        SpiffeAudienceRegistry::register(
-            "{$scheme}://{$orderHost}:{$orderPort}",
-            $env('ORDER_SPIFFE_ID', 'spiffe://zt.local/order-service'),
+        $orderPort = $env('ORDER_SERVICE_PORT', '8082');
+        AudienceRegistry::register(
+            "http://{$orderHost}:{$orderPort}",
+            $env('KEYCLOAK_AUDIENCE_ORDER', 'order-service'),
         );
 
         $productionHost = $env('PRODUCTION_SERVICE_HOST', $defaultHost);
-        $productionPort = $isMtls ? $mtlsPort : $env('PRODUCTION_SERVICE_PORT', '8081');
-        SpiffeAudienceRegistry::register(
-            "{$scheme}://{$productionHost}:{$productionPort}",
-            $env('PRODUCTION_SPIFFE_ID', 'spiffe://zt.local/production-service'),
+        $productionPort = $env('PRODUCTION_SERVICE_PORT', '8081');
+        AudienceRegistry::register(
+            "http://{$productionHost}:{$productionPort}",
+            $env('KEYCLOAK_AUDIENCE_PRODUCTION', 'production-service'),
         );
 
         $userHost = $env('USER_SERVICE_HOST', $defaultHost);
-        $userPort = $isMtls ? $mtlsPort : $env('USER_SERVICE_PORT', '8083');
-        SpiffeAudienceRegistry::register(
-            "{$scheme}://{$userHost}:{$userPort}",
-            $env('USER_SPIFFE_ID', 'spiffe://zt.local/user-service'),
+        $userPort = $env('USER_SERVICE_PORT', '8083');
+        AudienceRegistry::register(
+            "http://{$userHost}:{$userPort}",
+            $env('KEYCLOAK_AUDIENCE_USER', 'user-service'),
         );
 
         fwrite(STDOUT, sprintf(
-            "[worker] SpiffeAudienceRegistry: order=%s:%s, production=%s:%s, user=%s:%s (scheme=%s)\n",
+            "[worker] AudienceRegistry: order=%s:%s, production=%s:%s, user=%s:%s\n",
             $orderHost, $orderPort,
             $productionHost, $productionPort,
             $userHost, $userPort,
-            $scheme,
         ));
 
-        // Register Anser global filter — extends LSVID chain + injects mTLS
-        // into all outgoing SimpleService HTTP calls.
-        ActionFilter::setGlobalFilter(\Filters\SpiffeLsvidFilter::class);
+        ActionFilter::setGlobalFilter(\Filters\KeycloakBearerFilter::class);
     } else {
-        fwrite(STDOUT, "[worker] SpiffeAudienceRegistry + SpiffeLsvidFilter skipped (SPIFFE_ENABLED=0)\n");
+        fwrite(STDOUT, "[worker] AudienceRegistry + KeycloakBearerFilter skipped\n");
     }
 
-    $messageBus = new MessageBus(
-        $channel,
-        $exchange,
-        $lsvidSigner,
-        $downstreamAudience,
-        $lsvidRequired,
-    );
+    $messageBus = new MessageBus($channel, $exchange, $tokenProvider);
 
     // ── EventStoreDB wiring ─────────────────────────────────────
     $eventStoreDB = null;
@@ -244,19 +144,21 @@ try {
         fwrite(STDOUT, "[worker] EventStoreDB disabled\n");
     }
 
+    $selfAudience = $env('KEYCLOAK_CLIENT_ID', 'worker');
+
     $eventBus = new EventBus($messageBus, $eventStoreDB);
     $transportConsumer = new Consumer($channel);
     $requestConsumer = new RequestConsumer(
         $messageBus,
-        $requestValidator ?? $lsvidValidator,
-        $lsvidRequired,
-        $spiffeEnabled,
+        $jwtValidator,
+        $selfAudience,
+        $keycloakEnabled,
     );
     $eventConsumer = new EventConsumer(
         $eventBus,
-        $eventValidator ?? $lsvidValidator,
-        $lsvidRequired,
-        $spiffeEnabled,
+        $jwtValidator,
+        $selfAudience,
+        $keycloakEnabled,
     );
     $scanner = new HandlerScanner();
     $eventQueues = $scanner->scanEventTypesFromFile($sagaFilePath);

@@ -8,21 +8,16 @@ use PhpAmqpLib\Message\AMQPMessage;
 use SDPMlab\ZtEventGateway\Ingress\CanonicalOrderRequest;
 use SDPMlab\ZtEventGateway\MessageQueue\MessageBus;
 use SDPMlab\ZtEventGateway\MessageQueue\UnrecoverableMessageException;
-use SDPMlab\LSVID\LSVIDException;
-use SDPMlab\LSVID\LSVIDValidator;
+use Keycloak\JwtValidator;
+use Keycloak\KeycloakTokenContext;
 
 final class RequestConsumer
 {
-    /** @var list<string> Allowed SPIFFE ID prefixes for message sources */
-    private const ALLOWED_SOURCES = [
-        'spiffe://zt.local/',
-    ];
-
     public function __construct(
         private readonly MessageBus $messageBus,
-        private readonly ?LSVIDValidator $lsvidValidator = null,
-        private readonly bool $lsvidRequired = false,
-        private readonly bool $requireSpiffeIdentity = true,
+        private readonly ?JwtValidator $jwtValidator,
+        private readonly string $selfAudience,
+        private readonly bool $requireAuthorization = true,
     ) {
     }
 
@@ -34,95 +29,46 @@ final class RequestConsumer
         }
 
         try {
-            $envelope = CanonicalOrderRequest::validateEnvelope($payload, $this->requireSpiffeIdentity);
+            $envelope = CanonicalOrderRequest::validateEnvelope($payload, $this->requireAuthorization);
         } catch (\InvalidArgumentException $exception) {
             throw new UnrecoverableMessageException($exception->getMessage());
         }
 
-        $sourceSpiffeId = $envelope['spiffeId'];
-        $spiffePath = $envelope['spiffePath'];
-        $route = $envelope['route'];
+        $jwt       = $envelope['jwt'];
+        $clientId  = $envelope['clientId'];
+        $tokenPath = $envelope['tokenPath'];
+        $route     = $envelope['route'];
         $eventData = $envelope['eventData'];
 
-        if ($this->requireSpiffeIdentity) {
-            $this->verifySpiffeSource($sourceSpiffeId);
-            fwrite(STDOUT, sprintf(
-                "[request-consumer] verified source=%s path=[%s]\n",
-                $sourceSpiffeId,
-                implode(' -> ', $spiffePath),
-            ));
-        }
-
-        // ── Nested LSVID: validate any prior-level token on the inbound
-        //    envelope, then forward it as the `nested` claim of the next
-        //    level signed by MessageBus. When no prior token exists, the
-        //    next hop becomes the base (L0) — but only when LSVID is not
-        //    required. With LSVID_REQUIRED=1, absence is an error.
-        $priorLsvid = null;
-        $inboundLsvid = is_string($payload['lsvid'] ?? null) ? (string) $payload['lsvid'] : null;
-
-        if (!$this->requireSpiffeIdentity) {
-            // Master SPIFFE toggle off — bypass prefix + LSVID validation entirely.
-            // Envelope structure was still checked above.
-        } elseif ($inboundLsvid !== null) {
-            // LSVID present — validator MUST be configured. A wiring error
-            // where the validator is null but the envelope carries an lsvid
-            // is treated as unrecoverable (fail-closed).
-            if ($this->lsvidValidator === null) {
+        $claims = [];
+        if ($this->requireAuthorization) {
+            if ($this->jwtValidator === null) {
                 throw new UnrecoverableMessageException(
-                    'LSVID present on envelope but no LSVIDValidator is configured. '
-                    . 'This is a wiring error — check worker LSVID configuration.',
+                    'Authorization required but no JwtValidator is configured (wiring error).',
                 );
             }
-
             try {
-                $workerSpiffeId = getenv('SPIFFE_ID') ?: null;
-
-                $parsed = $this->lsvidValidator->validate(
-                    $inboundLsvid,
-                    expectedAudience: $workerSpiffeId,
-                    expectedSubject: $sourceSpiffeId,
-                );
-
-                // Additional reconciliation: L0.sub must match envelope source.
-                $chain = $parsed->chain();
-                if ($chain !== []) {
-                    $l0Subject = $chain[0]->subject();
-                    if ($l0Subject !== null && $l0Subject !== $sourceSpiffeId) {
-                        throw new LSVIDException(sprintf(
-                            'L0 subject %s does not match envelope source %s.',
-                            $l0Subject,
-                            $sourceSpiffeId,
-                        ));
-                    }
-                }
-
-                $priorLsvid = $inboundLsvid;
-                fwrite(STDOUT, sprintf(
-                    "[request-consumer] LSVID L%d OK iss=%s\n",
-                    $parsed->level(),
-                    $parsed->issuer(),
-                ));
-                if (getenv('LSVID_LOG_PAYLOAD') === '1') {
-                    foreach ($parsed->chain() as $i => $lvl) {
-                        fwrite(STDOUT, sprintf(
-                            "[request-consumer] LSVID L%d payload=%s\n",
-                            $i,
-                            json_encode($lvl->payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-                        ));
-                    }
-                }
-            } catch (LSVIDException $e) {
-                throw new UnrecoverableMessageException('Invalid inbound LSVID: ' . $e->getMessage());
+                $claims = $this->jwtValidator->validate($jwt, $this->selfAudience);
+            } catch (\Throwable $e) {
+                throw new UnrecoverableMessageException('JWT validation failed: ' . $e->getMessage());
             }
-        } elseif ($this->lsvidRequired) {
-            throw new UnrecoverableMessageException(
-                'LSVID required but envelope carries none. '
-                . 'Ensure the gateway mints L0 at ingress (LSVID_ENABLED=1).',
-            );
-        } else {
-            // Migration period: no lsvid, not required — proceed without.
-            fwrite(STDOUT, "[request-consumer] no LSVID on envelope (migration-period fallback).\n");
+
+            $azp = (string) ($claims['azp'] ?? $claims['client_id'] ?? '');
+            if ($azp !== '' && $clientId !== '' && $azp !== $clientId) {
+                throw new UnrecoverableMessageException(sprintf(
+                    'JWT azp %s does not match envelope client_id %s',
+                    $azp,
+                    $clientId,
+                ));
+            }
+
+            fwrite(STDOUT, sprintf(
+                "[request-consumer] JWT verified iss=%s azp=%s aud=%s path=[%s]\n",
+                (string) ($claims['iss'] ?? ''),
+                $azp,
+                $this->selfAudience,
+                implode(' -> ', $tokenPath),
+            ));
         }
 
         $eventClass = $this->resolveEventClass($route);
@@ -130,33 +76,21 @@ final class RequestConsumer
             throw new UnrecoverableMessageException(sprintf('Unknown request route: %s', $route));
         }
 
-        $this->messageBus->publishEvent(
-            eventType: $eventClass,
-            eventData: $eventData,
-            exchange: null,
-            spiffePath: $spiffePath,
-            priorLsvid: $priorLsvid,
-        );
-
-        fwrite(STDOUT, sprintf("[request-consumer] published event=%s\n", $eventClass));
-    }
-
-    /**
-     * Verify the message source belongs to our trust domain.
-     */
-    private function verifySpiffeSource(string $spiffeId): void
-    {
-        foreach (self::ALLOWED_SOURCES as $prefix) {
-            if (str_starts_with($spiffeId, $prefix)) {
-                return;
-            }
+        if ($this->requireAuthorization && $jwt !== '') {
+            KeycloakTokenContext::set($jwt, $clientId, $claims);
+        }
+        try {
+            $this->messageBus->publishEvent(
+                eventType: $eventClass,
+                eventData: $eventData,
+                exchange: null,
+                tokenPath: $tokenPath,
+            );
+        } finally {
+            KeycloakTokenContext::clear();
         }
 
-        throw new UnrecoverableMessageException(sprintf(
-            'Untrusted SPIFFE source: %s (allowed: %s)',
-            $spiffeId,
-            implode(', ', self::ALLOWED_SOURCES),
-        ));
+        fwrite(STDOUT, sprintf("[request-consumer] published event=%s\n", $eventClass));
     }
 
     private function resolveEventClass(string $route): string

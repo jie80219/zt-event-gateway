@@ -25,128 +25,97 @@ services:
     container_name: eventstoredb
     image: eventstore/eventstore:latest
     environment:
-        EVENTSTORE_CLUSTER_SIZE: 1
-        EVENTSTORE_RUN_PROJECTIONS: All
-        EVENTSTORE_START_STANDARD_PROJECTIONS: "true"
-        EVENTSTORE_INSECURE: "true"
-        EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: "true"
+      EVENTSTORE_CLUSTER_SIZE: 1
+      EVENTSTORE_RUN_PROJECTIONS: All
+      EVENTSTORE_START_STANDARD_PROJECTIONS: "true"
+      EVENTSTORE_INSECURE: "true"
+      EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: "true"
     ports:
-        - '1113:1113' # TCP 客戶端通信
-        - '2113:2113' # HTTP API 接口
-    networks:
-        - anser_project_network
-
-  # ── SPIFFE / SPIRE ──────────────────────────────────────────────
-
-  spire-server:
-    image: ghcr.io/spiffe/spire-server:1.12.0
-    container_name: zt-spire-server
-    command:
-      - -config
-      - /opt/spire/conf/server/server.conf
-    volumes:
-      - ./spiffe/spire-server-e2e/server.conf:/opt/spire/conf/server/server.conf:ro
-      - ./spiffe/certs/agent-ca.crt.pem:/opt/spire/conf/server/agent-ca.crt.pem:ro
-      - spire-server-socket:/tmp/spire-server/private
-    healthcheck:
-      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 10s
+      - '1113:1113'
+      - '2113:2113'
     networks:
       - anser_project_network
 
-  spire-agent:
-    image: ghcr.io/spiffe/spire-agent:1.12.0
-    container_name: zt-spire-agent
-    command:
-      - -config
-      - /opt/spire/conf/agent/agent.conf
-    depends_on:
-      spire-server:
-        condition: service_healthy
-    volumes:
-      - ./spiffe/spire-agent-e2e/agent.conf:/opt/spire/conf/agent/agent.conf:ro
-      - ./spiffe/certs/agent.key.pem:/opt/spire/conf/agent/agent.key.pem:ro
-      - ./spiffe/certs/agent.crt.pem:/opt/spire/conf/agent/agent.crt.pem:ro
-      - spire-agent-sockets:/run/spire/sockets
-    healthcheck:
-      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/sockets/agent.sock"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 15s
-    networks:
-      - anser_project_network
+  # ── Keycloak + backing store ────────────────────────────────────
 
-  workload-registrar:
-    build:
-      context: .
-      dockerfile: docker/workload-registrar/Dockerfile
-    container_name: zt-workload-registrar
-    command: ["/bin/sh", "/opt/spire/conf/scripts/register-workloads-internal.sh"]
+  keycloak-db:
+    image: postgres:16
+    container_name: zt-keycloak-db
     environment:
-      REGISTER_INTERVAL: "60"
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
     volumes:
-      - ./spiffe/scripts/register-workloads-internal.sh:/opt/spire/conf/scripts/register-workloads-internal.sh:ro
-      - spire-server-socket:/tmp/spire-server/private:ro
-      # Bind-mount each agent's cert dir so the registrar can compute its
-      # x509pop fingerprint and use the correct parent ID per SPIFFE ID.
-      # Missing dirs (microservice stack not yet started) are tolerated —
-      # the registrar's 60s loop converges once the cert file appears.
-      - ./spiffe/certs:/agent-certs/zt:ro
-      - ./Services/Order_service/spiffe/certs:/agent-certs/order:ro
-      - ./Services/Production_service/spiffe/certs:/agent-certs/production:ro
-      - ./Services/User_service/spiffe/certs:/agent-certs/user:ro
+      - keycloak_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - anser_project_network
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    container_name: zt-keycloak
+    command:
+      - "start-dev"
+      - "--import-realm"
+      - "--http-port=8080"
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./docker/keycloak/realm-zt.json:/opt/keycloak/data/import/realm-zt.json:ro
+    ports:
+      - "8180:8080"
     depends_on:
-      spire-server:
-        condition: service_healthy
-      spire-agent:
+      keycloak-db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "test -f /tmp/registrar-ready"]
-      interval: 3s
-      timeout: 2s
-      retries: 40
-      start_period: 5s
+      # Keycloak 25 exposes /health/ready on the management port (9000) but
+      # the distribution defaults to running it on the same port as the HTTP
+      # listener when KC_HEALTH_ENABLED=true in start-dev mode.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /realms/zt HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -E 'HTTP/1.[01] [23]'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     networks:
       - anser_project_network
 
   # ── Application (OpenSwoole) ────────────────────────────────────
 
-  spiffe-watcher:
-    pid: "service:spire-agent"
+  keycloak-watcher:
     build:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
-    container_name: zt-spiffe-watcher
-    command: ["php", "bin/spiffe-watcher.php"]
+    container_name: zt-keycloak-watcher
+    command: ["php", "bin/keycloak-watcher.php"]
     environment:
-      SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
-      SPIFFE_PEM_DIR: "/tmp/spiffe-certs"
-      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
-      SPIFFE_WATCHER_HEALTH_ADDR: "0.0.0.0:9901"
-      # Expose the same staleness threshold as gateway/worker so in-process
-      # logs and the healthcheck below share one tunable.
-      SPIFFE_STALE_THRESHOLD_SECS: "700"
+      KEYCLOAK_ENABLED: "1"
+      KEYCLOAK_ISSUER: "http://keycloak:8080/realms/zt"
+      KEYCLOAK_CLIENT_ID: "gateway"
+      KEYCLOAK_CLIENT_SECRET: "gateway-dev-secret"
+      KEYCLOAK_SHM_DIR: "/tmp/keycloak-shared"
+      KEYCLOAK_TOKEN_REFRESH_SKEW: "30"
+      KEYCLOAK_JWKS_REFRESH_INTERVAL: "300"
+      KEYCLOAK_WATCHER_HEALTH_ADDR: "0.0.0.0:9901"
     volumes:
-      - spire-agent-sockets:/run/spire/sockets:ro
-      - spiffe-certs:/tmp/spiffe-certs
-      - spiffe-shared:/tmp/spiffe-shared
+      - keycloak-shared:/tmp/keycloak-shared
     depends_on:
-      spire-agent:
-        condition: service_healthy
-      workload-registrar:
+      keycloak:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      # Staleness-based liveness: meta.json must exist, x509_state must be
-      # "ready", AND updated_at must be within 700s of now. If the watcher's
-      # gRPC stream wedges silently, updated_at stops advancing and Docker
-      # restarts the container (matched to SVID TTL=600s — agent renews at
-      # ~300s, so >700s without an update means something is wrong).
-      test: ["CMD-SHELL", "meta=/tmp/spiffe-shared/meta.json; [ -f $$meta ] && grep -q '\"x509_state\":\"ready\"' $$meta && now=$$(date +%s) && upd=$$(grep -oE '\"updated_at\":[[:space:]]*[0-9]+' $$meta | grep -oE '[0-9]+') && [ -n \"$$upd\" ] && [ $$((now - upd)) -lt 700 ]"]
+      test: ["CMD-SHELL", "meta=/tmp/keycloak-shared/meta.json; [ -f $$meta ] && grep -q '\"token_state\":\"ready\"' $$meta && grep -q '\"jwks_state\":\"ready\"' $$meta && now=$$(date +%s) && upd=$$(grep -oE '\"updated_at\":[[:space:]]*[0-9]+' $$meta | grep -oE '[0-9]+') && [ -n \"$$upd\" ] && [ $$((now - upd)) -lt 900 ]"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -155,7 +124,6 @@ services:
       - anser_project_network
 
   gateway:
-    pid: "service:spire-agent"
     build:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
@@ -171,24 +139,14 @@ services:
       RABBITMQ_PASS: "ztpass"
       EVENTSTOREDB_HOST: eventstoredb
       EVENTSTOREDB_PORT: 2113
-      SPIFFE_ID: "spiffe://zt.local/php-gateway"
-      SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
-      SPIFFE_PEM_DIR: "/tmp/spiffe-certs"
-      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
-      WORKER_SPIFFE_ID: "spiffe://zt.local/php-worker"
-      SPIFFE_TRUST_DOMAIN: "zt.local"
-      # Tightened from default 7200s — must stay > SVID renewal interval
-      # (~300s at TTL=600) + slack, but low enough to surface wedged
-      # watcher quickly in logs.
-      SPIFFE_STALE_THRESHOLD_SECS: "700"
-      LSVID_ENABLED: "1"
-      LSVID_REQUIRED: "1"
-      LSVID_TTL_SECONDS: "1800"
-      LSVID_LOG_PAYLOAD: "0"
+      KEYCLOAK_ENABLED: "1"
+      KEYCLOAK_ISSUER: "http://keycloak:8080/realms/zt"
+      KEYCLOAK_CLIENT_ID: "gateway"
+      KEYCLOAK_CLIENT_SECRET: "gateway-dev-secret"
+      KEYCLOAK_SHM_DIR: "/tmp/keycloak-shared"
+      KEYCLOAK_STALE_THRESHOLD_SECS: "900"
     volumes:
-      - spire-agent-sockets:/run/spire/sockets:ro
-      - spiffe-certs:/tmp/spiffe-certs:ro
-      - spiffe-shared:/tmp/spiffe-shared:ro
+      - keycloak-shared:/tmp/keycloak-shared:ro
     ports:
       - "8080:8080"
     extra_hosts:
@@ -196,17 +154,14 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-      spire-agent:
-        condition: service_healthy
       eventstoredb:
         condition: service_healthy
-      spiffe-watcher:
+      keycloak-watcher:
         condition: service_healthy
     networks:
       - anser_project_network
 
   php-worker:
-    pid: "service:spire-agent"
     build:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
@@ -222,46 +177,34 @@ services:
       RABBITMQ_PORT: "5672"
       RABBITMQ_USER: "zt"
       RABBITMQ_PASS: "ztpass"
-      SPIFFE_ID: "spiffe://zt.local/php-worker"
-      SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
-      SPIFFE_PEM_DIR: "/tmp/spiffe-certs"
-      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
-      DOWNSTREAM_SPIFFE_ID: "spiffe://zt.local/php-worker"
-      SPIFFE_TRUST_DOMAIN: "zt.local"
-      SPIFFE_STALE_THRESHOLD_SECS: "700"
-      LSVID_ENABLED: "1"
-      LSVID_REQUIRED: "1"
-      LSVID_TTL_SECONDS: "1800"
-      LSVID_LOG_PAYLOAD: "0"
-      # ── mTLS to downstream services ──
-      SPIFFE_MTLS_ENABLED: "0"
+      KEYCLOAK_ENABLED: "1"
+      KEYCLOAK_ISSUER: "http://keycloak:8080/realms/zt"
+      KEYCLOAK_CLIENT_ID: "worker"
+      KEYCLOAK_CLIENT_SECRET: "worker-dev-secret"
+      KEYCLOAK_SHM_DIR: "/tmp/keycloak-shared"
+      KEYCLOAK_STALE_THRESHOLD_SECS: "900"
+      KEYCLOAK_AUDIENCE_ORDER: "order-service"
+      KEYCLOAK_AUDIENCE_PRODUCTION: "production-service"
+      KEYCLOAK_AUDIENCE_USER: "user-service"
       ORDER_SERVICE_HOST: "host.docker.internal"
       ORDER_SERVICE_PORT: "8082"
       PRODUCTION_SERVICE_HOST: "host.docker.internal"
       PRODUCTION_SERVICE_PORT: "8083"
       USER_SERVICE_HOST: "host.docker.internal"
       USER_SERVICE_PORT: "8084"
-      ORDER_SPIFFE_ID: "spiffe://zt.local/order-service"
-      PRODUCTION_SPIFFE_ID: "spiffe://zt.local/production-service"
-      USER_SPIFFE_ID: "spiffe://zt.local/user-service"
-      # ── EventStoreDB ──
       EVENTSTOREDB_ENABLED: "1"
       EVENTSTOREDB_HOST: "eventstoredb"
       EVENTSTOREDB_PORT: "2113"
     volumes:
-      - spire-agent-sockets:/run/spire/sockets:ro
-      - spiffe-certs:/tmp/spiffe-certs:ro
-      - spiffe-shared:/tmp/spiffe-shared:ro
+      - keycloak-shared:/tmp/keycloak-shared:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       rabbitmq:
         condition: service_healthy
-      spire-agent:
-        condition: service_healthy
       eventstoredb:
         condition: service_healthy
-      spiffe-watcher:
+      keycloak-watcher:
         condition: service_healthy
     networks:
       - anser_project_network
@@ -269,10 +212,8 @@ services:
 volumes:
   rabbitmq_data:
   eventstoredb_data:
-  spire-agent-sockets:
-  spire-server-socket:
-  spiffe-certs:
-  spiffe-shared:
+  keycloak_db_data:
+  keycloak-shared:
 
 networks:
   anser_project_network:

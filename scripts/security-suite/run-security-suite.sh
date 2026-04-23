@@ -39,16 +39,41 @@ section() { echo -e "\n${CYAN}${BOLD}══ $* ══${RESET}"; }
 warn()    { echo -e "${YELLOW}[warn]${RESET} $*"; }
 
 # ── Profile-to-env mapping ──────────────────────────────────────────────────
+# SEC_COMPOSE_OVERRIDE is set by profile env files that need to merge in an
+# additional compose override (e.g. Profile E swaps the gateway image).
 apply_profile() {
     local p="$1"
+    export SEC_COMPOSE_OVERRIDE=""
     case "$p" in
         A-baseline)   export SPIFFE_ENABLED=0 LSVID_ENABLED=0 LSVID_REQUIRED=0 SPIFFE_MTLS_ENABLED=0 ;;
         B-mtls-only)  export SPIFFE_ENABLED=1 LSVID_ENABLED=0 LSVID_REQUIRED=0 SPIFFE_MTLS_ENABLED=1 ;;
         C-lsvid-only) export SPIFFE_ENABLED=1 LSVID_ENABLED=1 LSVID_REQUIRED=1 SPIFFE_MTLS_ENABLED=0 ;;
         D-full-zt)    export SPIFFE_ENABLED=1 LSVID_ENABLED=1 LSVID_REQUIRED=1 SPIFFE_MTLS_ENABLED=1 ;;
+        E-oauth2-bearer)
+            # Non-workload-identity comparison baseline. See
+            # docs/experiment-comparison-targets.md §2.6.
+            local envfile="${PROJECT_DIR}/scripts/security-suite/profiles/E-oauth2-bearer.env"
+            if [[ -f "$envfile" ]]; then
+                # shellcheck disable=SC1090
+                set -a; source "$envfile"; set +a
+            else
+                warn "profile env file missing: $envfile"
+                return 1
+            fi
+            ;;
         *) echo "unknown profile: $p" >&2; return 1 ;;
     esac
-    log "profile=$p SPIFFE_ENABLED=$SPIFFE_ENABLED LSVID_ENABLED=$LSVID_ENABLED LSVID_REQUIRED=$LSVID_REQUIRED SPIFFE_MTLS_ENABLED=$SPIFFE_MTLS_ENABLED"
+    log "profile=$p SPIFFE_ENABLED=${SPIFFE_ENABLED:-unset} LSVID_ENABLED=${LSVID_ENABLED:-unset} LSVID_REQUIRED=${LSVID_REQUIRED:-unset} SPIFFE_MTLS_ENABLED=${SPIFFE_MTLS_ENABLED:-unset}"
+}
+
+# Build the `-f` flags for `docker compose` so Profile E can layer its
+# override on top of the main compose file.
+compose_files_args() {
+    local -a args=(-f "$COMPOSE_FILE")
+    if [[ -n "${SEC_COMPOSE_OVERRIDE:-}" ]]; then
+        args+=(-f "$SEC_COMPOSE_OVERRIDE")
+    fi
+    printf '%s\n' "${args[@]}"
 }
 
 restart_stack_for_profile() {
@@ -59,8 +84,14 @@ restart_stack_for_profile() {
         warn "docker not available — running unit stage only"
         return 1
     fi
+    mapfile -t compose_args < <(compose_files_args)
     log "recreating gateway + worker for profile..."
-    docker compose -f "$COMPOSE_FILE" --profile zt up -d --force-recreate gateway php-worker spiffe-watcher 2>&1 | tail -5 || true
+    if [[ "${PROFILE:-}" == "E-oauth2-bearer" ]]; then
+        # Profile E does not use spiffe-watcher — skip it.
+        docker compose "${compose_args[@]}" up -d --force-recreate gateway php-worker 2>&1 | tail -5 || true
+    else
+        docker compose "${compose_args[@]}" --profile zt up -d --force-recreate gateway php-worker spiffe-watcher 2>&1 | tail -5 || true
+    fi
     sleep 5
 }
 
@@ -81,17 +112,23 @@ for P in "${PROFILES[@]}"; do
 
     restart_stack_for_profile || warn "continuing without Docker stack"
 
-    if [[ "${SEC_SKIP_UNIT:-0}" != "1" ]]; then
-        bash "${PROJECT_DIR}/scripts/security-suite/stages/stage1-unit-matrix.sh" || warn "stage1 failed"
-    fi
-    if [[ "${SEC_SKIP_HTTP:-0}" != "1" ]]; then
-        bash "${PROJECT_DIR}/scripts/security-suite/stages/stage2-e2e-http.sh" || warn "stage2 failed"
-    fi
-    if [[ "${SEC_SKIP_AMQP:-0}" != "1" ]]; then
-        bash "${PROJECT_DIR}/scripts/security-suite/stages/stage3-amqp-inject.sh" || warn "stage3 failed"
-    fi
-    if [[ "${SEC_SKIP_ROTATE:-0}" != "1" && "$P" == "D-full-zt" ]]; then
-        bash "${PROJECT_DIR}/scripts/security-suite/stages/stage4-rotation-race.sh" || warn "stage4 failed"
+    if [[ "$P" == "E-oauth2-bearer" ]]; then
+        # Profile E has its own dedicated stage — stages 1/3/4 are LSVID-specific
+        # and would produce only empty or misleading rows against jwt-gateway.
+        bash "${PROJECT_DIR}/scripts/security-suite/stages/stage-profile-e.sh" || warn "stage-profile-e failed"
+    else
+        if [[ "${SEC_SKIP_UNIT:-0}" != "1" ]]; then
+            bash "${PROJECT_DIR}/scripts/security-suite/stages/stage1-unit-matrix.sh" || warn "stage1 failed"
+        fi
+        if [[ "${SEC_SKIP_HTTP:-0}" != "1" ]]; then
+            bash "${PROJECT_DIR}/scripts/security-suite/stages/stage2-e2e-http.sh" || warn "stage2 failed"
+        fi
+        if [[ "${SEC_SKIP_AMQP:-0}" != "1" ]]; then
+            bash "${PROJECT_DIR}/scripts/security-suite/stages/stage3-amqp-inject.sh" || warn "stage3 failed"
+        fi
+        if [[ "${SEC_SKIP_ROTATE:-0}" != "1" && "$P" == "D-full-zt" ]]; then
+            bash "${PROJECT_DIR}/scripts/security-suite/stages/stage4-rotation-race.sh" || warn "stage4 failed"
+        fi
     fi
 
     # Restore OUT_DIR for the next profile iteration

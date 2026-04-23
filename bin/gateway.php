@@ -4,9 +4,9 @@
  *
  * Features:
  *   - OpenSwoole HTTP Server with coroutine support
- *   - Native gRPC to SPIRE Agent (Swoole\Coroutine\Http2\Client)
  *   - Anser-Gateway Kernel: Router (FastRoute) → Filter → Controller → Filter
- *   - SPIFFE identity propagation in event envelope payloads
+ *   - Keycloak service-account token minted per request via TokenProvider
+ *     (cached in SHM by keycloak-watcher for cross-coroutine reuse)
  *
  * Usage:
  *   php bin/gateway.php
@@ -17,18 +17,17 @@ declare(strict_types=1);
 use Swoole\Http\Server;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
-use SDPMlab\ZtEventGateway\Spiffe\SpiffeBootstrap;
-use Spiffe\SharedMemory\SpiffeTableReader;
+use Keycloak\KeycloakBootstrap;
+use Keycloak\SharedMemory\KeycloakTableReader;
 use AnserGateway\AnserGateway;
 use AnserGateway\Router\Router;
 use AnserGateway\Router\RouteCollector;
 use AnserGateway\Adapter\SwooleRequestAdapter;
 use AnserGateway\Adapter\SwooleResponseAdapter;
-use AnserGateway\Spiffe\GatewaySpiffeState;
+use AnserGateway\Keycloak\GatewayKeycloakState;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
-// Anser-Gateway framework constants (normally set by anser-gateway/anser bootstrap)
 if (!defined('PROJECT_APP')) {
     define('PROJECT_APP', dirname(__DIR__) . '/anser-gateway/app/');
 }
@@ -62,15 +61,12 @@ $server->set([
     'log_level'              => SWOOLE_LOG_INFO,
 ]);
 
-// ── Per-worker state ──────────────────────────────────────────────
 $workerState = new class {
     public ?Router $router = null;
-    public ?SpiffeTableReader $shmReader = null;
+    public ?KeycloakTableReader $shmReader = null;
 };
 
-// ── Worker start: initialize framework + SPIFFE ───────────────────
 $server->on('workerStart', function (Server $server, int $workerId) use ($env, $workerState) {
-    // ── 1. Anser-Gateway Router initialization ───────────────────
     try {
         $routesFile = dirname(__DIR__) . '/anser-gateway/config/Routes.php';
         RouteCollector::resetDiscover();
@@ -81,60 +77,50 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
         fwrite(STDERR, sprintf("[gateway] Router init failed: %s\n", $e->getMessage()));
     }
 
-    // ── 2. SPIFFE / LSVID bootstrap (SHM-backed) ─────────────────
-    //
-    //   Single source of truth: the shared-memory store populated by the
-    //   spiffe-watcher daemon. We NO LONGER spawn our own X509Source here
-    //   — that would duplicate the watcher's gRPC stream and risk
-    //   two-sided disagreement on the "current" SVID. Instead we:
-    //
-    //     1. Read the primary SVID from SHM (seqlock-consistent).
-    //     2. Build LSVIDSigner via SpiffeTableSvidReader (adapter).
-    //     3. Launch a coroutine that polls meta.json.version and refreshes
-    //        the GatewaySpiffeState singleton whenever the watcher
-    //        publishes a new rotation.
-    $spiffeEnabled = $env('SPIFFE_ENABLED', '1') !== '0';
-    $downstreamSpiffeId = $env('WORKER_SPIFFE_ID', 'spiffe://zt.local/php-worker');
-    GatewaySpiffeState::setSpiffeId($spiffeEnabled ? $env('SPIFFE_ID', '') : '');
-    GatewaySpiffeState::setDownstreamSpiffeId($spiffeEnabled ? $downstreamSpiffeId : '');
+    // ── Keycloak bootstrap (SHM-backed) ──────────────────────────
+    //   Reads cached token + JWKS from /tmp/keycloak-shared/ (populated
+    //   by the keycloak-watcher daemon). The TokenProvider we get back
+    //   falls back to a synchronous refresh if the cache is cold.
+    $keycloakEnabled = $env('KEYCLOAK_ENABLED', '1') !== '0';
+    GatewayKeycloakState::setEnabled($keycloakEnabled);
 
-    if (!$spiffeEnabled) {
-        fwrite(STDOUT, "[gateway] SPIFFE disabled via SPIFFE_ENABLED=0 — skipping LSVID bootstrap\n");
-    } elseif ($env('LSVID_ENABLED', '1') !== '0') {
-        $shmDir = $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared');
-        $awaitTimeout = (float) $env('SPIFFE_AWAIT_TIMEOUT', '30');
+    if (!$keycloakEnabled) {
+        fwrite(STDOUT, "[gateway] Keycloak disabled via KEYCLOAK_ENABLED=0 — running without auth\n");
+    } else {
+        $envBag = [
+            'KEYCLOAK_ENABLED'            => $env('KEYCLOAK_ENABLED', '1'),
+            'KEYCLOAK_ISSUER'             => $env('KEYCLOAK_ISSUER', ''),
+            'KEYCLOAK_TOKEN_URI'          => $env('KEYCLOAK_TOKEN_URI', ''),
+            'KEYCLOAK_JWKS_URI'           => $env('KEYCLOAK_JWKS_URI', ''),
+            'KEYCLOAK_CLIENT_ID'          => $env('KEYCLOAK_CLIENT_ID', ''),
+            'KEYCLOAK_CLIENT_SECRET'      => $env('KEYCLOAK_CLIENT_SECRET', ''),
+            'KEYCLOAK_SHM_DIR'            => $env('KEYCLOAK_SHM_DIR', ''),
+            'KEYCLOAK_TOKEN_REFRESH_SKEW' => $env('KEYCLOAK_TOKEN_REFRESH_SKEW', '30'),
+        ];
+
         try {
-            $boot = SpiffeBootstrap::fromShm($shmDir, [
-                'trust_domain'                   => $env('SPIFFE_TRUST_DOMAIN', 'zt.local'),
-                'await_timeout'                  => $awaitTimeout,
-                'clock_skew_seconds'             => 30,
-                'require_audience_on_all_levels' => true,
-                'spiffe_id'                      => $env('SPIFFE_ID', ''),
-            ]);
+            $state = KeycloakBootstrap::fromEnv($envBag, writable: false);
+            $workerState->shmReader = $state->reader;
 
-            $workerState->shmReader = $boot->shmReader();
-            $primary = $boot->primary();
-            if ($primary === null) {
-                throw new \RuntimeException('SHM ready but primary SVID slot empty');
-            }
-
-            GatewaySpiffeState::setLsvidSigner($boot->signer());
-            GatewaySpiffeState::setSpiffeId((string) $primary['spiffe_id']);
+            GatewayKeycloakState::setTokenProvider($state->tokenProvider);
+            GatewayKeycloakState::setClientId($state->clientId);
+            GatewayKeycloakState::setIssuer($state->issuer);
 
             fwrite(STDOUT, sprintf(
-                "[gateway] LSVID bootstrap OK (iss=%s, aud=%s, shm=%s, version=%d)\n",
-                $primary['spiffe_id'],
-                $downstreamSpiffeId,
-                $shmDir,
-                $boot->version(),
+                "[gateway] Keycloak bootstrap OK (iss=%s, client_id=%s, realm=%s, shm=%s)\n",
+                $state->issuer,
+                $state->clientId,
+                $state->realm,
+                $state->shmDir,
             ));
 
-            // ── Rotation watcher coroutine ──────────────────────
-            //   On every SHM version bump, rebuild the signer so the
-            //   new X.509 key is used for the next mint. watchVersion()
-            //   is cooperative — it usleep()s between polls and will
-            //   yield to other coroutines.
-            $pollSec = (float) max(0.1, (float) (getenv('SPIFFE_SHM_POLL_MS') ?: 500) / 1000.0);
+            // ── Token-cache rotation watcher coroutine ──────────
+            //   Logs whenever the watcher publishes a fresh token so
+            //   operators can confirm the cross-process refresh path
+            //   is alive. Actual token read is lazy: controllers call
+            //   TokenProvider->getAccessToken() which re-reads SHM
+            //   under the seqlock on every call.
+            $pollSec = (float) max(0.1, (float) (getenv('KEYCLOAK_SHM_POLL_MS') ?: 500) / 1000.0);
             $coSleep = static function (float $s): void {
                 if ($s < 1.0) {
                     \OpenSwoole\Coroutine::usleep((int) ($s * 1_000_000));
@@ -143,21 +129,14 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
                 }
             };
 
-            \go(static function () use ($boot, $workerId, $pollSec, $coSleep) {
-                $boot->shmReader()->watchVersion(
-                    static function (int $newV, int $oldV) use ($boot, $workerId) {
-                        $primary = $boot->primary();
-                        if ($primary === null) {
-                            return;
-                        }
-                        GatewaySpiffeState::setLsvidSigner($boot->signer());
-                        GatewaySpiffeState::setSpiffeId((string) $primary['spiffe_id']);
+            \go(static function () use ($state, $workerId, $pollSec, $coSleep) {
+                $state->reader->watchVersion(
+                    static function (int $newV, int $oldV) use ($workerId) {
                         fwrite(STDOUT, sprintf(
-                            "[gateway] Worker #%d SVID rotated v%d→v%d (iss=%s)\n",
+                            "[gateway] Worker #%d Keycloak cache bumped v%d→v%d\n",
                             $workerId,
                             $oldV,
                             $newV,
-                            $primary['spiffe_id'],
                         ));
                     },
                     pollInterval: $pollSec,
@@ -165,19 +144,14 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
                 );
             });
 
-            // ── Staleness monitor coroutine (every 30s) ─────────
-            //   If the watcher wedges, updated_at stops advancing even
-            //   though files still exist. Threshold defaults to 2×
-            //   typical SVID TTL (3600s) but can be tuned.
-            $staleThreshold = (int) $env('SPIFFE_STALE_THRESHOLD_SECS', '7200');
-            \go(static function () use ($boot, $workerId, $staleThreshold) {
+            $staleThreshold = (int) $env('KEYCLOAK_STALE_THRESHOLD_SECS', '900');
+            \go(static function () use ($state, $workerId, $staleThreshold) {
                 while (true) {
-                    if ($boot->shmReader()->isStale($staleThreshold)) {
+                    if ($state->reader->isStale($staleThreshold)) {
                         fwrite(STDERR, sprintf(
-                            "[gateway] Worker #%d ERROR: SPIFFE SHM stale — "
-                            . "last update %ds ago (threshold %ds)\n",
+                            "[gateway] Worker #%d ERROR: Keycloak SHM stale — last update %ds ago (threshold %ds)\n",
                             $workerId,
-                            $boot->shmReader()->secondsSinceLastUpdate(),
+                            $state->reader->secondsSinceLastUpdate(),
                             $staleThreshold,
                         ));
                     }
@@ -186,26 +160,21 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
             });
         } catch (\Throwable $e) {
             fwrite(STDERR, sprintf(
-                "[gateway] LSVID bootstrap FAILED (shm=%s): %s\n",
-                $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared'),
+                "[gateway] Keycloak bootstrap FAILED: %s\n",
                 $e->getMessage(),
             ));
         }
-    } else {
-        fwrite(STDOUT, "[gateway] LSVID disabled via LSVID_ENABLED=0\n");
     }
 
     fwrite(STDOUT, sprintf(
-        "[gateway] Worker #%d started (pid=%d, spiffe_id=%s)\n",
+        "[gateway] Worker #%d started (pid=%d, client_id=%s)\n",
         $workerId,
         getmypid(),
-        GatewaySpiffeState::getSpiffeId() ?: '(none)',
+        GatewayKeycloakState::getClientId() ?: '(none)',
     ));
 });
 
-// ── Request handler — delegates to Anser-Gateway Kernel ───────────
 $server->on('request', function (Request $req, Response $res) use ($workerState) {
-    // CORS
     $res->header('Access-Control-Allow-Origin', '*');
 
     if (!$workerState->router instanceof Router) {
@@ -216,27 +185,17 @@ $server->on('request', function (Request $req, Response $res) use ($workerState)
     }
 
     try {
-        // Adapter: wrap Swoole types into Workerman-compatible types
         $adaptedRequest = new SwooleRequestAdapter($req);
         $gateway = new AnserGateway($workerState->router);
 
         /** @var SwooleResponseAdapter|\Workerman\Protocols\Http\Response $workermanResponse */
         $workermanResponse = $gateway->handleRequest($adaptedRequest);
 
-        // Transfer framework response → Swoole response
         $res->status($workermanResponse->getStatusCode());
         foreach ($workermanResponse->getHeaders() as $name => $value) {
             $res->header($name, (string) $value);
         }
         $res->end($workermanResponse->rawBody());
-    } catch (\SDPMlab\LSVID\LSVIDException $e) {
-        fwrite(STDERR, "[gateway] LSVID error (cert may be expired): {$e->getMessage()}\n");
-        $res->status(503);
-        $res->header('Content-Type', 'application/json; charset=utf-8');
-        $res->end(json_encode([
-            'status' => 503,
-            'message' => 'SPIFFE credentials unavailable — please retry later',
-        ]));
     } catch (\Throwable $e) {
         fwrite(STDERR, "[gateway] Error: {$e->getMessage()}\n");
         $res->status(500);
@@ -245,7 +204,6 @@ $server->on('request', function (Request $req, Response $res) use ($workerState)
     }
 });
 
-// ── Start server ────────────────────────────────────────────────
 echo "╔══════════════════════════════════════════════════════════╗\n";
 echo "║    ZT Event Gateway (OpenSwoole + Anser-Gateway Kernel) ║\n";
 echo "╠══════════════════════════════════════════════════════════╣\n";

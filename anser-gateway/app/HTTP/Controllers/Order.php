@@ -7,18 +7,14 @@ use PhpAmqpLib\Connection\AMQPSocketConnection;
 use PhpAmqpLib\Message\AMQPMessage;
 use Workerman\Protocols\Http\Response;
 use SDPMlab\ZtEventGateway\Ingress\CanonicalOrderRequest;
-use SDPMlab\LSVID\LSVIDException;
-use AnserGateway\Spiffe\GatewaySpiffeState;
+use AnserGateway\Keycloak\GatewayKeycloakState;
 
 class Order extends BaseController
 {
     /**
      * Persistent connection shared across all requests within this
-     * worker process. Survives thousands of requests without opening
-     * new TCP sockets.
-     *
-     * A coroutine-level lock serializes access so concurrent Swoole
-     * coroutines don't interleave AMQP frames on the same channel.
+     * worker process. A coroutine-level lock serializes access so concurrent
+     * Swoole coroutines don't interleave AMQP frames on the same channel.
      */
     private static ?AMQPSocketConnection $persistentConn = null;
     private static ?AMQPChannel $persistentCh = null;
@@ -58,61 +54,46 @@ class Order extends BaseController
         $routingKey = $this->env('REQUEST_ROUTING_KEY', 'request.new');
         $targetEvent = $this->env('REQUEST_EVENT_TYPE', 'OrderCreateRequestedEvent');
 
-        $spiffeEnabled = ($this->env('SPIFFE_ENABLED', '1') !== '0');
-        $spiffeId = $spiffeEnabled ? GatewaySpiffeState::getSpiffeId() : '';
+        $keycloakEnabled = GatewayKeycloakState::isEnabled();
+        $clientId = $keycloakEnabled ? GatewayKeycloakState::getClientId() : '';
 
         $envelope = [
             'schema_version' => CanonicalOrderRequest::SCHEMA_VERSION,
-            'type'        => CanonicalOrderRequest::ENVELOPE_TYPE,
-            'route'       => $targetEvent,
-            'id'          => $traceId,
-            'spiffe_id'   => $spiffeId,
-            'spiffe_path' => $spiffeId !== '' ? [$spiffeId] : [],
-            'data'        => $data,
+            'type'           => CanonicalOrderRequest::ENVELOPE_TYPE,
+            'route'          => $targetEvent,
+            'id'             => $traceId,
+            'token_path'     => $clientId !== '' ? [$clientId] : [],
+            'data'           => $data,
         ];
 
-        if ($spiffeEnabled) {
-            // ── LSVID Step 1 — Creation (L0) ─────────────────────────
-            //   Default is fail-closed: if LSVID_REQUIRED is unset we treat it
-            //   as enabled and refuse to emit an envelope without an L0 token.
-            //   Operators can explicitly opt out (LSVID_REQUIRED=0) for
-            //   migration windows; see docs/lsvid-experiment.md §5.
-            $lsvidRequired = ($this->env('LSVID_REQUIRED', '1') === '1');
-            $lsvidSigner = GatewaySpiffeState::getLsvidSigner();
-            if ($lsvidSigner !== null) {
-                try {
-                    $l0 = $lsvidSigner->createBase(
-                        audience: GatewaySpiffeState::getDownstreamSpiffeId(),
-                        subject: null,
-                        extraClaims: [
-                            'traceId' => $traceId,
-                            'route'   => $targetEvent,
-                            'level'   => 'L0',
-                        ],
-                    );
-                    $envelope['lsvid'] = $l0->raw;
-                } catch (LSVIDException $e) {
-                    fwrite(STDERR, sprintf(
-                        "[gateway] LSVID L0 mint failed (trace=%s): %s\n",
-                        $traceId,
-                        $e->getMessage(),
-                    ));
-                    if ($lsvidRequired) {
-                        return $this->jsonResponse([
-                            'status' => 'Internal Server Error',
-                            'message' => 'Identity token creation failed.',
-                        ], 500);
-                    }
-                }
-            } elseif ($lsvidRequired) {
+        if ($keycloakEnabled) {
+            $provider = GatewayKeycloakState::getTokenProvider();
+            if ($provider === null) {
                 return $this->jsonResponse([
                     'status' => 'Service Unavailable',
-                    'message' => 'LSVID signing is required but signer is not available.',
+                    'message' => 'Keycloak token provider is not available.',
                 ], 503);
             }
+            try {
+                $jwt = $provider->getAccessToken();
+            } catch (\Throwable $e) {
+                fwrite(STDERR, sprintf(
+                    "[gateway] Keycloak token mint failed (trace=%s): %s\n",
+                    $traceId,
+                    $e->getMessage(),
+                ));
+                return $this->jsonResponse([
+                    'status' => 'Internal Server Error',
+                    'message' => 'Identity token creation failed.',
+                ], 500);
+            }
+
+            $envelope['authorization'] = [
+                'jwt'       => $jwt,
+                'client_id' => $clientId,
+            ];
         }
 
-        // Serialize AMQP access across coroutines sharing this worker process
         $lock = self::getLock();
         $lock->lock();
         try {
@@ -146,22 +127,13 @@ class Order extends BaseController
         }
     }
 
-    /**
-     * Get or create the persistent AMQP channel.
-     *
-     * One TCP connection + one AMQP channel per Workerman worker process,
-     * reused across all HTTP requests. Reconnects automatically if the
-     * connection drops.
-     */
     private function getChannel(): AMQPChannel
     {
-        // Fast path: reuse existing connection
         if (self::$persistentConn !== null && self::$persistentConn->isConnected()
             && self::$persistentCh !== null && self::$persistentCh->is_open()) {
             return self::$persistentCh;
         }
 
-        // Connection lost or first call — (re)connect
         $this->resetConnection();
 
         $host = $this->envAny(['RABBITMQ_HOST', 'AMQP_HOST'], 'rabbitmq');
@@ -171,15 +143,11 @@ class Order extends BaseController
         self::$persistentCh = self::$persistentConn->channel();
         self::$topologyDeclared = false;
 
-        // Declare topology once per connection
         $this->ensureTopology(self::$persistentCh);
 
         return self::$persistentCh;
     }
 
-    /**
-     * Declare exchange + queue + binding once per connection lifetime.
-     */
     private function ensureTopology(AMQPChannel $channel): void
     {
         if (self::$topologyDeclared) {
@@ -231,7 +199,6 @@ class Order extends BaseController
         }
 
         $candidates[] = ['zt', 'ztpass'];
-        // No guest fallback — use 'zt'/'ztpass' or env vars only
 
         $lastException = null;
 
@@ -239,16 +206,16 @@ class Order extends BaseController
             try {
                 return new AMQPSocketConnection(
                     $host, $port, $user, $pass,
-                    '/',          // vhost
-                    false,        // insist
-                    'AMQPLAIN',   // login_method
-                    null,         // login_response
-                    'en_US',      // locale
-                    10.0,         // connection_timeout
-                    10.0,         // read_write_timeout
-                    null,         // context
-                    false,        // keepalive
-                    0,            // heartbeat=0 for Swow compatibility
+                    '/',
+                    false,
+                    'AMQPLAIN',
+                    null,
+                    'en_US',
+                    10.0,
+                    10.0,
+                    null,
+                    false,
+                    0,
                 );
             } catch (\Throwable $e) {
                 $lastException = $e;
