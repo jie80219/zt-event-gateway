@@ -24,6 +24,9 @@ CONCURRENCY=${2:-1}
 # script can correlate each run with its LSVID config (baseline/on/fail-closed).
 LSVID_MODE="${LSVID_MODE:-unset}"
 STRESS_JSON_OUT="${STRESS_JSON_OUT:-}"
+# Number of products per request — lets perf-suite sweep payload size without
+# forking stress_test.sh. Default 1 preserves existing behavior.
+PRODUCT_COUNT="${STRESS_PRODUCT_COUNT:-1}"
 
 USER_IDS=(1 2 3 4 5)
 PRODUCT_KEYS=(1 2 3 4 5)
@@ -62,8 +65,15 @@ send_request() {
     local idx=$1
     local result_file="$TMPDIR_STRESS/result_${idx}"
     local user_id=$(( (RANDOM % 5) + 1 ))
-    local product_key=$(( (RANDOM % 5) + 1 ))
-    local amount=$(( (RANDOM % 5) + 1 ))
+
+    local product_list=""
+    local count="${PRODUCT_COUNT:-1}"
+    for ((i=0; i<count; i++)); do
+        local pk=$(( (RANDOM % 5) + 1 ))
+        local am=$(( (RANDOM % 5) + 1 ))
+        [ -z "$product_list" ] || product_list+=","
+        product_list+="{\"p_key\": $pk, \"amount\": $am}"
+    done
 
     local output
     output=$(curl -s -w "\n%{http_code} %{time_total}" \
@@ -71,7 +81,7 @@ send_request() {
         -X POST "$URL" \
         -H "Content-Type: application/json" \
         -H "X-Correlation-ID: stress-${idx}-$(date +%s)" \
-        -d "{\"user_id\": $user_id, \"product_list\": [{\"p_key\": $product_key, \"amount\": $amount}]}" 2>/dev/null || echo -e "\n000 0.000")
+        -d "{\"user_id\": $user_id, \"product_list\": [${product_list}]}" 2>/dev/null || echo -e "\n000 0.000")
 
     local last_line
     last_line=$(echo "$output" | tail -1)
@@ -82,12 +92,12 @@ send_request() {
 }
 
 export -f send_request
-export URL TMPDIR_STRESS
+export URL TMPDIR_STRESS PRODUCT_COUNT
 
 # ── Run stress test ─────────────────────────────────────────
 
 echo "Sending $TOTAL_REQUESTS requests (concurrency=$CONCURRENCY) to $URL"
-echo "LSVID mode: $LSVID_MODE"
+echo "LSVID mode: $LSVID_MODE  product_count: $PRODUCT_COUNT"
 echo "-----------------------------------------------------"
 
 START_TIME=$(get_timestamp_ms)
@@ -220,11 +230,12 @@ if [ -n "$STRESS_JSON_OUT" ] && [ "$LATENCY_COUNT" -gt 0 ]; then
     mkdir -p "$(dirname "$STRESS_JSON_OUT")"
     python3 - "$STRESS_JSON_OUT" "$LSVID_MODE" "$TOTAL_REQUESTS" "$CONCURRENCY" \
         "$SUCCESS" "$FAIL" "$DURATION" "$RATE" \
-        "$PMIN" "$AVG" "$PMAX" "$P50" "$P90" "$P95" "$P99" <<'PY'
+        "$PMIN" "$AVG" "$PMAX" "$P50" "$P90" "$P95" "$P99" "$PRODUCT_COUNT" <<'PY'
 import json, sys
-out, mode, total, conc, succ, fail, dur, rate, pmin, avg, pmax, p50, p90, p95, p99 = sys.argv[1:]
+out, mode, total, conc, succ, fail, dur, rate, pmin, avg, pmax, p50, p90, p95, p99, pc = sys.argv[1:]
 data = {
     "lsvid_mode": mode,
+    "product_count": int(pc),
     "total_requests": int(total),
     "concurrency": int(conc),
     "success": int(succ),

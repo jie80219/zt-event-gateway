@@ -133,6 +133,21 @@ $fixedL0 = $gwSigner->createBase(audience: 'spiffe://zt.local/bench-worker');
 $fixedL1 = $wkSigner->extend(priorRawToken: $fixedL0->raw, audience: 'spiffe://zt.local/bench-downstream');
 $fixedL2 = $dsSigner->extend(priorRawToken: $fixedL1->raw, audience: 'spiffe://zt.local/bench-final');
 
+// Deeper chains for chain-depth scaling (B3). Every extension uses a fresh
+// workload identity so chain continuity holds (enclosing.iss == nested.aud);
+// readers share the same CA so the validator's trust bundle accepts each
+// leaf cert. L2.aud = "bench-final" so the L3 signer must be at "bench-final".
+$finalReader = $gwReader->deriveWorkload('spiffe://zt.local/bench-final');
+$hop4Reader  = $gwReader->deriveWorkload('spiffe://zt.local/bench-hop-4');
+$hop5Reader  = $gwReader->deriveWorkload('spiffe://zt.local/bench-hop-5');
+$finalSigner = new LSVIDSigner($finalReader, defaultTtlSeconds: 300);
+$hop4Signer  = new LSVIDSigner($hop4Reader, defaultTtlSeconds: 300);
+$hop5Signer  = new LSVIDSigner($hop5Reader, defaultTtlSeconds: 300);
+
+$fixedL3 = $finalSigner->extend(priorRawToken: $fixedL2->raw, audience: 'spiffe://zt.local/bench-hop-4');
+$fixedL4 = $hop4Signer->extend(priorRawToken: $fixedL3->raw, audience: 'spiffe://zt.local/bench-hop-5');
+$fixedL5 = $hop5Signer->extend(priorRawToken: $fixedL4->raw, audience: 'spiffe://zt.local/bench-hop-6');
+
 // ── 1. Signing ────────────────────────────────────────────────────
 echo "[Sign / Extend]\n";
 
@@ -189,6 +204,51 @@ $bench->run('LSVIDValidator::validate() — L0+L1', $N, function () use ($valida
 
 $bench->run('LSVIDValidator::validate() — L0+L1+L2', $N, function () use ($validator, $fixedL2) {
     $validator->validate($fixedL2->raw);
+});
+
+$bench->run('LSVIDValidator::validate() — L0..L3 (4 levels)', $N, function () use ($validator, $fixedL3) {
+    $validator->validate($fixedL3->raw);
+});
+
+$bench->run('LSVIDValidator::validate() — L0..L4 (5 levels)', $N, function () use ($validator, $fixedL4) {
+    $validator->validate($fixedL4->raw);
+});
+
+$bench->run('LSVIDValidator::validate() — L0..L5 (6 levels)', $N, function () use ($validator, $fixedL5) {
+    $validator->validate($fixedL5->raw);
+});
+
+// ── 3b. Crypto primitives (isolate the dominant cost) ──────────────
+// These measure what fraction of validate() is spent in the two OpenSSL
+// calls that can't be amortized per-level: cert verification and JWS
+// signature verification. Reported per-primitive ops/s helps identify
+// whether future optimization effort should target x509 or signature.
+echo "\n[Crypto primitives — per-level, isolated]\n";
+
+$leafCert = openssl_x509_read($gwReader->readX509Primary()['cert_pem']);
+$caCert = openssl_x509_read($gwReader->readX509Primary()['bundle_pem']);
+$leafPub = openssl_pkey_get_public($gwReader->readX509Primary()['cert_pem']);
+$leafPriv = openssl_pkey_get_private($gwReader->readX509Primary()['key_pem']);
+
+// What openssl_x509_verify actually does inside validator per level.
+$bench->run('openssl_x509_verify (leaf vs CA)', $N, function () use ($leafCert, $caCert) {
+    openssl_x509_verify($leafCert, $caCert);
+});
+
+// Raw ES256 signature verify — the JWS compact format validator runs
+// per level after cert trust is established.
+$signingInput = 'eyJhbGciOiJFUzI1NiIsInR5cCI6IkxTVklEIn0.' .
+    rtrim(strtr(base64_encode('{"iss":"bench","sub":"bench","aud":"bench","iat":0,"exp":0,"jti":"x"}'), '+/', '-_'), '=');
+$sig = '';
+openssl_sign($signingInput, $sig, $leafPriv, OPENSSL_ALGO_SHA256);
+
+$bench->run('openssl_verify (ES256 sig verify)', $N, function () use ($signingInput, $sig, $leafPub) {
+    openssl_verify($signingInput, $sig, $leafPub, OPENSSL_ALGO_SHA256);
+});
+
+$bench->run('openssl_sign (ES256 sig create)', $N, function () use ($signingInput, $leafPriv) {
+    $s = '';
+    openssl_sign($signingInput, $s, $leafPriv, OPENSSL_ALGO_SHA256);
 });
 
 // ── 4. Trust-bundle cache (cold vs warm) ───────────────────────────

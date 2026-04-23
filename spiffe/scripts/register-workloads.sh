@@ -23,7 +23,7 @@ register() {
         -parentID "$AGENT_ID" \
         -spiffeID "$spiffe_id" \
         -selector "$selector" \
-        -x509SVIDTTL 3600 2>&1 | grep -v "AlreadyExists" || true
+        -x509SVIDTTL 600 2>&1 | grep -v "AlreadyExists" || true
 }
 
 # ── Gateway & Worker (unix:uid:0 — process-level attestation) ────

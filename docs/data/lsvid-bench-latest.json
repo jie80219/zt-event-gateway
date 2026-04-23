@@ -1,88 +1,124 @@
 {
-    "generated_at": "2026-04-17T14:35:34+00:00",
+    "generated_at": "2026-04-23T13:36:02+00:00",
     "env": {
         "php_version": "8.3.23",
         "os": "Darwin arm64",
-        "iterations_per_case": 5000
+        "iterations_per_case": 200
     },
     "results": [
         {
             "name": "LSVIDSigner::createBase() \u2014 L0 mint",
-            "iterations": 5000,
-            "ops_per_sec": 9538.866542885755,
-            "us_per_op": 104.8342584
+            "iterations": 200,
+            "ops_per_sec": 3553.9417816713344,
+            "us_per_op": 281.37771000000004
         },
         {
             "name": "LSVIDSigner::extend() \u2014 L0 \u2192 L1",
-            "iterations": 5000,
-            "ops_per_sec": 9171.835244995413,
-            "us_per_op": 109.0294334
+            "iterations": 200,
+            "ops_per_sec": 3628.4085814475407,
+            "us_per_op": 275.60292000000004
         },
         {
             "name": "LSVIDSigner::extend() \u2014 L1 \u2192 L2",
-            "iterations": 5000,
-            "ops_per_sec": 8503.274216348793,
-            "us_per_op": 117.6017584
+            "iterations": 200,
+            "ops_per_sec": 2533.386615520631,
+            "us_per_op": 394.72854
         },
         {
             "name": "LSVID::parse() \u2014 L0",
-            "iterations": 5000,
-            "ops_per_sec": 338262.58593899256,
-            "us_per_op": 2.9562832
+            "iterations": 200,
+            "ops_per_sec": 149388.40387453762,
+            "us_per_op": 6.693960000000001
         },
         {
             "name": "LSVID::parse() \u2014 L1 (nested)",
-            "iterations": 5000,
-            "ops_per_sec": 125757.1618640803,
-            "us_per_op": 7.951833399999999
+            "iterations": 200,
+            "ops_per_sec": 50631.30913578685,
+            "us_per_op": 19.750625
         },
         {
             "name": "LSVID::parse() \u2014 L2 (double nested)",
-            "iterations": 5000,
-            "ops_per_sec": 63628.98336842726,
-            "us_per_op": 15.716108400000001
+            "iterations": 200,
+            "ops_per_sec": 22442.80507234326,
+            "us_per_op": 44.55770999999999
         },
         {
             "name": "LSVIDValidator::validate() \u2014 L0",
-            "iterations": 5000,
-            "ops_per_sec": 4139.918765371369,
-            "us_per_op": 241.55063339999998
+            "iterations": 200,
+            "ops_per_sec": 1626.6328598137302,
+            "us_per_op": 614.766875
         },
         {
             "name": "LSVIDValidator::validate() \u2014 L0+L1",
-            "iterations": 5000,
-            "ops_per_sec": 2660.5337221034333,
-            "us_per_op": 375.8644334
+            "iterations": 200,
+            "ops_per_sec": 770.6869228879566,
+            "us_per_op": 1297.54375
         },
         {
             "name": "LSVIDValidator::validate() \u2014 L0+L1+L2",
-            "iterations": 5000,
-            "ops_per_sec": 1785.8264049983527,
-            "us_per_op": 559.9648416
+            "iterations": 200,
+            "ops_per_sec": 504.1340047067362,
+            "us_per_op": 1983.5995800000003
+        },
+        {
+            "name": "LSVIDValidator::validate() \u2014 L0..L3 (4 levels)",
+            "iterations": 200,
+            "ops_per_sec": 508.9034788293214,
+            "us_per_op": 1965.009165
+        },
+        {
+            "name": "LSVIDValidator::validate() \u2014 L0..L4 (5 levels)",
+            "iterations": 200,
+            "ops_per_sec": 368.7492673297761,
+            "us_per_op": 2711.869795
+        },
+        {
+            "name": "LSVIDValidator::validate() \u2014 L0..L5 (6 levels)",
+            "iterations": 200,
+            "ops_per_sec": 349.31777531113244,
+            "us_per_op": 2862.7229150000003
+        },
+        {
+            "name": "openssl_x509_verify (leaf vs CA)",
+            "iterations": 200,
+            "ops_per_sec": 9546.349363833666,
+            "us_per_op": 104.752085
+        },
+        {
+            "name": "openssl_verify (ES256 sig verify)",
+            "iterations": 200,
+            "ops_per_sec": 10197.881216813226,
+            "us_per_op": 98.059585
+        },
+        {
+            "name": "openssl_sign (ES256 sig create)",
+            "iterations": 200,
+            "ops_per_sec": 25276.59227049391,
+            "us_per_op": 39.562295
         },
         {
             "name": "validate() \u2014 cold trust bundle (new validator)",
-            "iterations": 500,
-            "ops_per_sec": 4647.878664487468,
-            "us_per_op": 215.151916
+            "iterations": 200,
+            "ops_per_sec": 2040.7530007155594,
+            "us_per_op": 490.0152049999999
         },
         {
             "name": "validate() \u2014 warm trust bundle (same validator)",
-            "iterations": 5000,
-            "ops_per_sec": 5454.8072833114875,
-            "us_per_op": 183.32453339999998
+            "iterations": 200,
+            "ops_per_sec": 1916.1982687666016,
+            "us_per_op": 521.866665
         },
         {
             "name": "JtiReplayCache::seenOrRecord() \u2014 fresh",
-            "iterations": 5000,
-            "ops_per_sec": 35525.42999092326,
-            "us_per_op": 28.148849999999996
+            "iterations": 200,
+            "ops_per_sec": 354426.4317055709,
+            "us_per_op": 2.8214599999999996
         },
         {
             "name": "JtiReplayCache::seenOrRecord() \u2014 replay hit",
-            "iterations": 5000,
-            "ops_per_sec": 25006.64238938468,
-            "us_per_op": 39.989374999999995
+            "iterations": 200,
+            "ops_per_sec": 243383.02403407363,
+            "us_per_op": 4.108750000000001
         }
     ]
 }

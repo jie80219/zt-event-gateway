@@ -169,7 +169,9 @@
       "Bash(xxd /Users/jiezhiyang/zt-event-gateway/artifacts/experiment-20260417-223524/ablation-summary.json)",
       "WebFetch(domain:ieeexplore.ieee.org)",
       "WebFetch(domain:www.researchgate.net)",
-      "WebFetch(domain:www.computer.org)"
+      "WebFetch(domain:www.computer.org)",
+      "Bash(tar -x -C /tmp/)",
+      "Bash(awk ' *)"
     ]
   }
 }
