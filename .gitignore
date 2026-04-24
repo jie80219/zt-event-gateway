@@ -16,6 +16,7 @@
 !/docs/thesis/
 /docs/thesis/*
 !/docs/thesis/ch2.5-shm-svid-delivery.md
+!/docs/thesis/4.md
 /.lsvid-experiment.override.yml
 
 .claude/
