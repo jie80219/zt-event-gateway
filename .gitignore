@@ -12,8 +12,10 @@
 # tracked (regeneratable via scripts/run-thesis-experiment.sh).
 # Previously tracked files remain tracked; new files are ignored.
 /docs/data/
-/docs/thesis/
-/docs/
+/docs/*
+!/docs/thesis/
+/docs/thesis/*
+!/docs/thesis/ch2.5-shm-svid-delivery.md
 /.lsvid-experiment.override.yml
 
 .claude/
