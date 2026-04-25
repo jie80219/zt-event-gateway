@@ -48,6 +48,10 @@ services:
       - ./spiffe/spire-server-e2e/server.conf:/opt/spire/conf/server/server.conf:ro
       - ./spiffe/certs/agent-ca.crt.pem:/opt/spire/conf/server/agent-ca.crt.pem:ro
       - spire-server-socket:/tmp/spire-server/private
+    ports:
+      # Publish gRPC port so off-host SPIRE Agents (10.1.1.210/.207/.214)
+      # can attest against this server over the LAN.
+      - "8081:8081"
     healthcheck:
       test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
       interval: 5s
