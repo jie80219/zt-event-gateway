@@ -13,19 +13,19 @@ docker compose up --build -d rabbitmq gateway
 
 Gateway endpoints:
 
-- `GET http://localhost:8080/api/health`
-- `POST http://localhost:8080/api/orders`
+- `GET http://10.1.1.209:8080/api/health`
+- `POST http://10.1.1.209:8080/api/orders`
 
 Quick health check:
 
 ```bash
-curl http://localhost:8080/api/health
+curl http://10.1.1.209:8080/api/health
 ```
 
 Submit an order request (ingress aliases are accepted and normalized):
 
 ```bash
-curl -X POST http://localhost:8080/api/orders \
+curl -X POST http://10.1.1.209:8080/api/orders \
   -H "Content-Type: application/json" \
   -H "X-Correlation-Id: trace-demo-001" \
   -d '{"user_id":1,"product_list":[{"p_key":1,"amount":2}],"total":100}'

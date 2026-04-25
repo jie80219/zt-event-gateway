@@ -40,9 +40,9 @@ cd "$PROJECT_DIR"
 
 COMPOSE="docker-compose.yml"
 
-GATEWAY_URL="http://127.0.0.1:8080/api/orders"
-HEALTH_URL="http://127.0.0.1:8080/api/health"
-RABBIT_API="http://127.0.0.1:15672/api"
+GATEWAY_URL="http://10.1.1.209:8080/api/orders"
+HEALTH_URL="http://10.1.1.209:8080/api/health"
+RABBIT_API="http://10.1.1.209:15672/api"
 RABBIT_USER="zt"
 RABBIT_PASS="ztpass"
 
@@ -518,9 +518,9 @@ else
     for svc in "order-service" "production-service" "user-service"; do
         svc_url=""
         case "$svc" in
-            order-service)      svc_url="http://127.0.0.1:8082" ;;
-            production-service) svc_url="http://127.0.0.1:8081" ;;
-            user-service)       svc_url="http://127.0.0.1:8083" ;;
+            order-service)      svc_url="http://10.1.1.210:8082" ;;
+            production-service) svc_url="http://10.1.1.207:8081" ;;
+            user-service)       svc_url="http://10.1.1.214:8083" ;;
         esac
         if wait_http_200 "$svc" "$svc_url" 60; then
             pass "${svc} is reachable"

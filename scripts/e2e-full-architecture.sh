@@ -51,10 +51,10 @@
 # Environment overrides:
 #   COMPOSE_FILE          (default: docker-compose.yml)
 #   COMPOSE_PROFILES      (default: zt — required for SPIRE stack)
-#   E2E_GATEWAY_URL       (default: http://127.0.0.1:8080/api/orders)
-#   E2E_HEALTH_URL        (default: http://127.0.0.1:8080/api/health)
-#   E2E_RABBIT_API_URL    (default: http://127.0.0.1:15672/api)
-#   E2E_EVENTSTOREDB_URL  (default: http://127.0.0.1:2113)
+#   E2E_GATEWAY_URL       (default: http://10.1.1.209:8080/api/orders)
+#   E2E_HEALTH_URL        (default: http://10.1.1.209:8080/api/health)
+#   E2E_RABBIT_API_URL    (default: http://10.1.1.209:15672/api)
+#   E2E_EVENTSTOREDB_URL  (default: http://10.1.1.209:2113)
 #   E2E_WAIT_TIMEOUT      (default: 120)
 #   E2E_KEEP_ON_FAIL      (default: 0)
 #   E2E_BUILD_IMAGES      (default: 1)
@@ -74,10 +74,10 @@ COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 # are defined under `profiles: ["zt"]` in docker-compose.yml.
 # Without this, `docker compose up` will NOT start SPIRE infrastructure.
 export COMPOSE_PROFILES="${COMPOSE_PROFILES:-zt}"
-REQUEST_URL="${E2E_GATEWAY_URL:-http://127.0.0.1:8080/api/orders}"
-HEALTH_URL="${E2E_HEALTH_URL:-http://127.0.0.1:8080/api/health}"
-RABBIT_API_URL="${E2E_RABBIT_API_URL:-http://127.0.0.1:15672/api}"
-EVENTSTOREDB_URL="${E2E_EVENTSTOREDB_URL:-http://127.0.0.1:2113}"
+REQUEST_URL="${E2E_GATEWAY_URL:-http://10.1.1.209:8080/api/orders}"
+HEALTH_URL="${E2E_HEALTH_URL:-http://10.1.1.209:8080/api/health}"
+RABBIT_API_URL="${E2E_RABBIT_API_URL:-http://10.1.1.209:15672/api}"
+EVENTSTOREDB_URL="${E2E_EVENTSTOREDB_URL:-http://10.1.1.209:2113}"
 RABBIT_USER="${E2E_RABBIT_USER:-zt}"
 RABBIT_PASS="${E2E_RABBIT_PASS:-ztpass}"
 WAIT_TIMEOUT="${E2E_WAIT_TIMEOUT:-120}"

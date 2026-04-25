@@ -16,8 +16,8 @@ cd "$PROJECT_DIR"
 
 OUT_DIR="${OUT_DIR:-${PROJECT_DIR}/artifacts/security-adhoc}"
 PROFILE="${PROFILE:-D-full-zt}"
-GATEWAY_URL="${GATEWAY_URL:-http://127.0.0.1:8080/api/orders}"
-HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/api/health}"
+GATEWAY_URL="${GATEWAY_URL:-http://10.1.1.209:8080/api/orders}"
+HEALTH_URL="${HEALTH_URL:-http://10.1.1.209:8080/api/health}"
 
 mkdir -p "$OUT_DIR"
 OUT_FILE="${OUT_DIR}/http-attacks.json"

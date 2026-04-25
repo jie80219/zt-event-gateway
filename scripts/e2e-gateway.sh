@@ -35,9 +35,9 @@
 #
 # Environment overrides:
 #   COMPOSE_FILE          (default: docker-compose.yml)
-#   E2E_GATEWAY_URL       (default: http://127.0.0.1:8080/api/orders)
-#   E2E_HEALTH_URL        (default: http://127.0.0.1:8080/api/health)
-#   E2E_RABBIT_API_URL    (default: http://127.0.0.1:15672/api)
+#   E2E_GATEWAY_URL       (default: http://10.1.1.209:8080/api/orders)
+#   E2E_HEALTH_URL        (default: http://10.1.1.209:8080/api/health)
+#   E2E_RABBIT_API_URL    (default: http://10.1.1.209:15672/api)
 #   E2E_WAIT_TIMEOUT      (default: 90)
 #   E2E_KEEP_ON_FAIL      (default: 0)
 #   E2E_BUILD_IMAGES      (default: 1)
@@ -47,9 +47,9 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
-REQUEST_URL="${E2E_GATEWAY_URL:-http://127.0.0.1:8080/api/orders}"
-HEALTH_URL="${E2E_HEALTH_URL:-http://127.0.0.1:8080/api/health}"
-RABBIT_API_URL="${E2E_RABBIT_API_URL:-http://127.0.0.1:15672/api}"
+REQUEST_URL="${E2E_GATEWAY_URL:-http://10.1.1.209:8080/api/orders}"
+HEALTH_URL="${E2E_HEALTH_URL:-http://10.1.1.209:8080/api/health}"
+RABBIT_API_URL="${E2E_RABBIT_API_URL:-http://10.1.1.209:15672/api}"
 RABBIT_USER="${E2E_RABBIT_USER:-zt}"
 RABBIT_PASS="${E2E_RABBIT_PASS:-ztpass}"
 WAIT_TIMEOUT="${E2E_WAIT_TIMEOUT:-90}"

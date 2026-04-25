@@ -20,10 +20,10 @@
 #  Preconditions (this script does NOT bring the stacks up — use
 #  scripts/e2e-full-stack.sh --keep first, or bring the 3 microservice
 #  stacks up manually):
-#    * Gateway healthy at http://127.0.0.1:8080
-#    * order-service at  http://127.0.0.1:8082
-#    * production-svc at http://127.0.0.1:8083
-#    * user-service at   http://127.0.0.1:8084
+#    * Gateway healthy at http://10.1.1.209:8080
+#    * order-service at  http://10.1.1.210:8082
+#    * production-svc at http://10.1.1.207:8083
+#    * user-service at   http://10.1.1.214:8084
 #    * mTLS enabled on downstream (SPIFFE_MTLS_ENABLED=1)
 #
 #  Outputs:
@@ -39,11 +39,11 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$PROJECT_DIR"
 
-GATEWAY_URL="${GATEWAY_URL:-http://127.0.0.1:8080}"
-ORDER_URL="${ORDER_URL:-http://127.0.0.1:8082}"
-PRODUCTION_URL="${PRODUCTION_URL:-http://127.0.0.1:8083}"
-USER_URL="${USER_URL:-http://127.0.0.1:8084}"
-PRODUCTION_MTLS_URL="${PRODUCTION_MTLS_URL:-https://127.0.0.1:18083}"
+GATEWAY_URL="${GATEWAY_URL:-http://10.1.1.209:8080}"
+ORDER_URL="${ORDER_URL:-http://10.1.1.210:8082}"
+PRODUCTION_URL="${PRODUCTION_URL:-http://10.1.1.207:8083}"
+USER_URL="${USER_URL:-http://10.1.1.214:8084}"
+PRODUCTION_MTLS_URL="${PRODUCTION_MTLS_URL:-https://10.1.1.207:18083}"
 
 WORKER_CONTAINER="${WORKER_CONTAINER:-php-worker}"
 CASES="${CASES:-MS-HAPPY MS-PAYMENT-FAIL MS-LSVID-CHAIN MS-MTLS-REJECT}"

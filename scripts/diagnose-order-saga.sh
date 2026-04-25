@@ -17,14 +17,14 @@
 #   bash scripts/diagnose-order-saga.sh --watch-seconds 60
 #
 # Env overrides:
-#   GATEWAY_URL         default: http://127.0.0.1:8080/api/orders
-#   HEALTH_URL          default: http://127.0.0.1:8080/api/health
-#   RABBIT_API          default: http://127.0.0.1:15672/api
+#   GATEWAY_URL         default: http://10.1.1.209:8080/api/orders
+#   HEALTH_URL          default: http://10.1.1.209:8080/api/health
+#   RABBIT_API          default: http://10.1.1.209:15672/api
 #   RABBIT_USER         default: zt
 #   RABBIT_PASS         default: ztpass
-#   ORDER_URL           default: http://127.0.0.1:8082
-#   PRODUCTION_URL      default: http://127.0.0.1:8083
-#   USER_URL            default: http://127.0.0.1:8084
+#   ORDER_URL           default: http://10.1.1.210:8082
+#   PRODUCTION_URL      default: http://10.1.1.207:8083
+#   USER_URL            default: http://10.1.1.214:8084
 #   WORKER_CONTAINER    default: zt-php-worker
 #   WATCH_SECONDS       default: 30
 # =============================================================================
@@ -35,14 +35,14 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
 # ── Config ───────────────────────────────────────────────────────────────────
-GATEWAY_URL="${GATEWAY_URL:-http://127.0.0.1:8080/api/orders}"
-HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/api/health}"
-RABBIT_API="${RABBIT_API:-http://127.0.0.1:15672/api}"
+GATEWAY_URL="${GATEWAY_URL:-http://10.1.1.209:8080/api/orders}"
+HEALTH_URL="${HEALTH_URL:-http://10.1.1.209:8080/api/health}"
+RABBIT_API="${RABBIT_API:-http://10.1.1.209:15672/api}"
 RABBIT_USER="${RABBIT_USER:-zt}"
 RABBIT_PASS="${RABBIT_PASS:-ztpass}"
-ORDER_URL="${ORDER_URL:-http://127.0.0.1:8082}"
-PRODUCTION_URL="${PRODUCTION_URL:-http://127.0.0.1:8083}"
-USER_URL="${USER_URL:-http://127.0.0.1:8084}"
+ORDER_URL="${ORDER_URL:-http://10.1.1.210:8082}"
+PRODUCTION_URL="${PRODUCTION_URL:-http://10.1.1.207:8083}"
+USER_URL="${USER_URL:-http://10.1.1.214:8084}"
 WORKER_CONTAINER="${WORKER_CONTAINER:-zt-php-worker}"
 WATCH_SECONDS="${WATCH_SECONDS:-30}"
 

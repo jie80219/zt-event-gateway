@@ -15,11 +15,11 @@ cd "$PROJECT_DIR"
 
 OUT_DIR="${OUT_DIR:-${PROJECT_DIR}/artifacts/security-adhoc}"
 PROFILE="${PROFILE:-D-full-zt}"
-GATEWAY_URL="${GATEWAY_URL:-http://127.0.0.1:8080/api/orders}"
+GATEWAY_URL="${GATEWAY_URL:-http://10.1.1.209:8080/api/orders}"
 WATCHER_CONTAINER="${WATCHER_CONTAINER:-zt-spiffe-watcher}"
 BURST_COUNT="${ROTATION_BURST:-40}"   # requests during the race
 # Downstream mTLS check uses a direct curl with / without a cert:
-DOWNSTREAM_URL="${DOWNSTREAM_URL:-http://127.0.0.1:8082/health}"
+DOWNSTREAM_URL="${DOWNSTREAM_URL:-http://10.1.1.210:8082/health}"
 
 mkdir -p "$OUT_DIR"
 OUT_FILE="${OUT_DIR}/rotation-race.json"
