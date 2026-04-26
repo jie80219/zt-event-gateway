@@ -31,7 +31,7 @@ OUT_DIR="${PROJECT_DIR}/artifacts/security-${STAMP}"
 mkdir -p "$OUT_DIR"
 export OUT_DIR
 
-PROFILES=(${SEC_PROFILES:-A-baseline B-mtls-only C-lsvid-only D-full-zt})
+PROFILES=(${SEC_PROFILES:-A-baseline B-mtls-only C-lsvid-only D-full-zt E-oauth2-bearer F-keycloak-jwt G-keycloak-mtls})
 
 BOLD='\033[1m'; GREEN='\033[32m'; RED='\033[31m'; CYAN='\033[36m'; YELLOW='\033[33m'; RESET='\033[0m'
 log()     { echo -e "${BOLD}[sec]${RESET} $(date +%T) $*"; }
@@ -49,10 +49,12 @@ apply_profile() {
         B-mtls-only)  export SPIFFE_ENABLED=1 LSVID_ENABLED=0 LSVID_REQUIRED=0 SPIFFE_MTLS_ENABLED=1 ;;
         C-lsvid-only) export SPIFFE_ENABLED=1 LSVID_ENABLED=1 LSVID_REQUIRED=1 SPIFFE_MTLS_ENABLED=0 ;;
         D-full-zt)    export SPIFFE_ENABLED=1 LSVID_ENABLED=1 LSVID_REQUIRED=1 SPIFFE_MTLS_ENABLED=1 ;;
-        E-oauth2-bearer)
-            # Non-workload-identity comparison baseline. See
-            # docs/experiment-comparison-targets.md §2.6.
-            local envfile="${PROJECT_DIR}/scripts/security-suite/profiles/E-oauth2-bearer.env"
+        E-oauth2-bearer|F-keycloak-jwt|G-keycloak-mtls)
+            # OAuth2/Keycloak comparison profiles. E uses static HS256 (naive
+            # baseline). F is real Keycloak realm + downstream Service JWT
+            # validation. G is Keycloak + SPIFFE mTLS hybrid. See
+            # docs/experiment-comparison-targets.md §2.6 / §2.7.
+            local envfile="${PROJECT_DIR}/scripts/security-suite/profiles/${p}.env"
             if [[ -f "$envfile" ]]; then
                 # shellcheck disable=SC1090
                 set -a; source "$envfile"; set +a
@@ -86,12 +88,28 @@ restart_stack_for_profile() {
     fi
     mapfile -t compose_args < <(compose_files_args)
     log "recreating gateway + worker for profile..."
-    if [[ "${PROFILE:-}" == "E-oauth2-bearer" ]]; then
-        # Profile E does not use spiffe-watcher — skip it.
-        docker compose "${compose_args[@]}" up -d --force-recreate gateway php-worker 2>&1 | tail -5 || true
-    else
-        docker compose "${compose_args[@]}" --profile zt up -d --force-recreate gateway php-worker spiffe-watcher 2>&1 | tail -5 || true
-    fi
+    case "${PROFILE:-}" in
+        E-oauth2-bearer)
+            # Profile E uses a static-key gateway image — no SPIFFE watcher,
+            # no Keycloak stack.
+            docker compose "${compose_args[@]}" up -d --force-recreate gateway php-worker 2>&1 | tail -5 || true
+            ;;
+        F-keycloak-jwt)
+            # Profile F: real Keycloak realm + downstream Service JWT
+            # validation. Brings up keycloak, keycloak-db, keycloak-watcher.
+            docker compose "${compose_args[@]}" --profile keycloak up -d --force-recreate \
+                keycloak keycloak-db keycloak-watcher gateway php-worker 2>&1 | tail -5 || true
+            ;;
+        G-keycloak-mtls)
+            # Profile G: Keycloak + SPIFFE mTLS hybrid. Both compose profiles
+            # active (`zt,keycloak`).
+            docker compose "${compose_args[@]}" --profile zt --profile keycloak up -d --force-recreate \
+                keycloak keycloak-db keycloak-watcher gateway php-worker spiffe-watcher 2>&1 | tail -5 || true
+            ;;
+        *)
+            docker compose "${compose_args[@]}" --profile zt up -d --force-recreate gateway php-worker spiffe-watcher 2>&1 | tail -5 || true
+            ;;
+    esac
     sleep 5
 }
 

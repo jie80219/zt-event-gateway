@@ -63,9 +63,12 @@ wait_health() {
 }
 
 # ── Profile application: single override file, restart gateway+worker ────────
+# Modes:
+#   spiffe rows  → fields: label spiffe lsvid_en lsvid_req mtls keycloak
+#   keycloak rows → label is sourced from scripts/security-suite/profiles/<label>.env
 apply_profile() {
-    local profile="$1" spiffe="$2" lsvid_en="$3" lsvid_req="$4" mtls="$5"
-    info "profile=${profile}  SPIFFE=${spiffe}  LSVID=${lsvid_en}  REQUIRED=${lsvid_req}  MTLS=${mtls}"
+    local profile="$1" spiffe="$2" lsvid_en="$3" lsvid_req="$4" mtls="$5" keycloak="${6:-0}"
+    info "profile=${profile}  SPIFFE=${spiffe}  LSVID=${lsvid_en}  REQUIRED=${lsvid_req}  MTLS=${mtls}  KEYCLOAK=${keycloak}"
 
     cat > "$OVERRIDE_FILE" <<YAML
 services:
@@ -75,16 +78,33 @@ services:
       LSVID_ENABLED: "${lsvid_en}"
       LSVID_REQUIRED: "${lsvid_req}"
       SPIFFE_MTLS_ENABLED: "${mtls}"
+      KEYCLOAK_ENABLED: "${keycloak}"
+      KEYCLOAK_REQUIRED: "${keycloak}"
   php-worker:
     environment:
       SPIFFE_ENABLED: "${spiffe}"
       LSVID_ENABLED: "${lsvid_en}"
       LSVID_REQUIRED: "${lsvid_req}"
       SPIFFE_MTLS_ENABLED: "${mtls}"
+      KEYCLOAK_ENABLED: "${keycloak}"
+      KEYCLOAK_REQUIRED: "${keycloak}"
 YAML
 
-    docker compose -f "$COMPOSE_FILE" -f "$OVERRIDE_FILE" \
+    local -a compose_args=(-f "$COMPOSE_FILE" -f "$OVERRIDE_FILE")
+    local -a profile_args=()
+    if [[ "$keycloak" == "1" ]]; then
+        profile_args+=(--profile keycloak)
+    fi
+    if [[ "$spiffe" == "1" ]]; then
+        profile_args+=(--profile zt)
+    fi
+
+    docker compose "${compose_args[@]}" "${profile_args[@]}" \
         up -d --force-recreate php-gateway php-worker >/dev/null
+    if [[ "$keycloak" == "1" ]]; then
+        docker compose "${compose_args[@]}" --profile keycloak \
+            up -d keycloak keycloak-db keycloak-watcher >/dev/null 2>&1 || true
+    fi
     wait_health
     sleep 3
 }
@@ -118,19 +138,26 @@ info "zt-cost-matrix starting (stamp=$STAMP total=$TOTAL payloads='$PAYLOADS' co
 
 # Profile order is deliberate: cheapest → most expensive, so an early abort
 # still gives a usable cost ordering.
-# Columns: label spiffe lsvid_en lsvid_req mtls
+# Columns: label spiffe lsvid_en lsvid_req mtls keycloak
+#
+# Keycloak rows (F, G) require the `keycloak` compose profile and a populated
+# Realm `zt` (see docker/keycloak/realm-zt.json). E uses the static-key
+# jwt-gateway image and is run via its own stage in security-suite — perf
+# parity is approximated here by swapping the gateway env at runtime.
 PROFILES=(
-    "A-baseline  0 0 0 0"
-    "B-mtls      1 0 0 1"
-    "C-lsvid     1 1 1 0"
-    "D-full-zt   1 1 1 1"
+    "A-baseline   0 0 0 0 0"
+    "B-mtls       1 0 0 1 0"
+    "C-lsvid      1 1 1 0 0"
+    "D-full-zt    1 1 1 1 0"
+    "F-keycloak   0 0 0 0 1"
+    "G-keycloak-mtls 1 0 0 1 1"
 )
 
 for row in "${PROFILES[@]}"; do
     # shellcheck disable=SC2206
     fields=($row)
     profile="${fields[0]}"
-    apply_profile "$profile" "${fields[1]}" "${fields[2]}" "${fields[3]}" "${fields[4]}"
+    apply_profile "$profile" "${fields[1]}" "${fields[2]}" "${fields[3]}" "${fields[4]}" "${fields[5]}"
     warmup "$profile"
     for payload in $PAYLOADS; do
         for conc in $CONCS; do
