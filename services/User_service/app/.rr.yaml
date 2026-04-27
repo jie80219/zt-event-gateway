@@ -1,0 +1,18 @@
+version: "2.7"
+
+rpc:
+  listen: tcp://127.0.0.1:6001
+
+server:
+  command: "php Worker.php -f=/app/vendor/monken/codeigniter4-burner/src/FrontLoader.php -a=/app/app/"
+
+http:
+  address: "0.0.0.0:8080"
+  static:
+    dir: "/app/public"
+    forbid: [".htaccess", ".php"]
+  pool:
+    num_workers: 2
+    max_jobs: 500
+    supervisor:
+      max_worker_memory: 256

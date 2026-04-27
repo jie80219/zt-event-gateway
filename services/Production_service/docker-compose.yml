@@ -1,0 +1,110 @@
+services:
+    # ── SPIRE Agent ─────────────────────────────────────────────────
+    spire-agent:
+        image: ghcr.io/spiffe/spire-agent:1.12.0
+        container_name: production-spire-agent
+        command:
+            - -config
+            - /opt/spire/conf/agent/agent.conf
+        volumes:
+            - ./spiffe/spire-agent-e2e/agent.conf:/opt/spire/conf/agent/agent.conf:ro
+            - ./spiffe/certs/production-agent.key.pem:/opt/spire/conf/agent/agent.key.pem:ro
+            - ./spiffe/certs/production-agent.crt.pem:/opt/spire/conf/agent/agent.crt.pem:ro
+            - spire-agent-sockets:/run/spire/sockets
+        healthcheck:
+            test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/sockets/agent.sock"]
+            interval: 5s
+            timeout: 3s
+            retries: 30
+            start_period: 15s
+        restart: unless-stopped
+        networks:
+            - anser_project_network
+
+    # ── spiffe-helper sidecar ───────────────────────────────────────
+    # NOTE: production-helper 共享 spire-agent 的 PID namespace。
+    # 若 spire-agent 被 recreate（非僅 restart），production-helper 也必須 recreate，
+    # 否則 PID namespace 參照會失效。請使用 restart-helper.sh 處理此情境。
+    production-helper:
+        image: ghcr.io/spiffe/spiffe-helper:0.8.0
+        container_name: production-helper
+        pid: "service:spire-agent"
+        command: ["-config", "/opt/spiffe-helper/helper.conf"]
+        volumes:
+            - ./spiffe/helper/production-service.conf:/opt/spiffe-helper/helper.conf:ro
+            - spire-agent-sockets:/run/spire/sockets:ro
+            - production-certs:/certs
+        depends_on:
+            spire-agent:
+                condition: service_healthy
+        restart: unless-stopped
+        networks:
+            - anser_project_network
+
+    # ── Production Service ──────────────────────────────────────────
+    production-service:
+        image: webdevops/php:8.2
+        platform: linux/x86_64
+        networks:
+            - anser_project_network
+        ports:
+            - 8083:8080
+            - 18081:8443
+        working_dir: /app
+        environment:
+            - WEB_DOCUMENT_ROOT=/app/public
+            - PHP_MEMORY_LIMIT=2048M
+            - PHP_MAX_EXECUTION_TIME=300
+            - PHP_POST_MAX_SIZE=2048M
+            - PHP_UPLOAD_MAX_FILESIZE=2048M
+            # ── SPIFFE / LSVID ──
+            - SPIFFE_ID=spiffe://zt.local/production-service
+            - SPIFFE_SHM_DIR=/certs
+            - LSVID_REQUIRED=0
+        volumes:
+            - './app:/app'
+            - production-certs:/certs:ro
+        command: >
+            bash -c "chmod 776 ./start_service.sh && ./start_service.sh"
+        depends_on:
+            production-helper:
+                condition: service_started
+        healthcheck:
+            test: ["CMD-SHELL", "curl -so /dev/null -w '%{http_code}' http://127.0.0.1:8080/ | grep -qE '^[2-4]'"]
+            interval: 10s
+            timeout: 5s
+            retries: 6
+            start_period: 120s
+        restart: unless-stopped
+
+    production_DB:
+        image: postgres:11.12
+        networks:
+            - anser_project_network
+        restart: unless-stopped
+        environment:
+            POSTGRES_DB: production
+            POSTGRES_USER: root
+            POSTGRES_PASSWORD: root
+        volumes:
+            - ./production-db-data:/var/lib/postgresql/data/
+        ports:
+            - "8310:5432"
+        command:
+            [
+                "postgres",
+                "-c",
+                "logging_collector=on",
+                "-c",
+                "log_destination=stderr",
+                "-c",
+                "max_connections=50000"
+            ]
+
+volumes:
+    spire-agent-sockets:
+    production-certs:
+
+networks:
+    anser_project_network:
+        external: true

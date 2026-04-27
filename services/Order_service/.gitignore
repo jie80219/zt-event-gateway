@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------
+# OS / Editor
+# ---------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# ---------------------------------------------------------------
+# Claude Code
+# ---------------------------------------------------------------
+.claude/
+
+# ---------------------------------------------------------------
+# Database data (PostgreSQL volume)
+# ---------------------------------------------------------------
+order-db-data/
+
+# ---------------------------------------------------------------
+# PHP / Composer
+# ---------------------------------------------------------------
+app/vendor/
+vendor/
+composer.phar
+
+# ---------------------------------------------------------------
+# CodeIgniter runtime
+# ---------------------------------------------------------------
+app/writable/cache/*
+app/writable/logs/*
+app/writable/session/*
+app/writable/uploads/*
+app/writable/debugbar/*
+!app/writable/cache/.gitkeep
+!app/writable/logs/.gitkeep
+!app/writable/session/.gitkeep
+!app/writable/uploads/.gitkeep
+!app/writable/debugbar/.gitkeep
+app/builds/
+
+# ---------------------------------------------------------------
+# Environment / secrets
+# (NOTE: app/env is the CI4 example template and IS committed)
+# ---------------------------------------------------------------
+.env
+app/.env
+
+# ---------------------------------------------------------------
+# SPIFFE certs / keys (do not publish)
+# ---------------------------------------------------------------
+spiffe/certs/
+spiffe/**/*.key
+spiffe/**/*.key.pem
+spiffe/**/*.pem
+spiffe/**/*.crt
+spiffe/**/*.crt.pem
+spiffe/**/*.srl
+
+# ---------------------------------------------------------------
+# Misc
+# ---------------------------------------------------------------
+*.log

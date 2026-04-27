@@ -1,0 +1,36 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Claude Code
+.claude/
+
+# Secrets
+app/.env
+*.pem
+spiffe/certs/*.key.pem
+spiffe/certs/*.crt.pem
+spiffe/certs/*.srl
+
+# Database volume
+production-db-data/
+
+# Composer
+app/vendor/
+
+# CodeIgniter writable
+app/writable/cache/*
+!app/writable/cache/.gitkeep
+app/writable/logs/*
+!app/writable/logs/.gitkeep
+app/writable/session/*
+!app/writable/session/.gitkeep
+app/writable/uploads/*
+!app/writable/uploads/.gitkeep
+app/writable/debugbar/
+
+# Logs
+*.log

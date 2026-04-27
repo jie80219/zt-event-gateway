@@ -23,6 +23,5 @@
 .claude-logs/
 .phpunit.cache/
 
-# Submodules / symlinks managed outside this repo
-Services/
+# Symlinked external packages
 packages/php-lsvid/
