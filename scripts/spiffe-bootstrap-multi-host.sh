@@ -77,9 +77,13 @@ err()  { echo -e "  ${RED}✗${RESET} $*" >&2; }
 step() { echo -e "\n${CYAN}${BOLD}── $* ──${RESET}"; }
 
 # ── 1. CA ────────────────────────────────────────────────────────────
+# --force only re-signs agent certs; it MUST NOT regenerate the CA, because
+# SPIRE Server's ca_bundle_path is bound to this exact CA and cannot reload
+# without an explicit restart + re-registration. To rotate the CA, delete
+# agent-ca.{crt,key}.pem first (or use a dedicated tool).
 step "Step 1: ensure CA"
 mkdir -p "$CA_DIR"
-if [ -f "$CA_CRT" ] && [ -f "$CA_KEY" ] && [ "$FORCE" -ne 1 ]; then
+if [ -f "$CA_CRT" ] && [ -f "$CA_KEY" ]; then
   ok "agent-ca exists, reusing ($(openssl x509 -in "$CA_CRT" -noout -subject))"
 else
   log "generating new CA (EC P-256, 10 years)..."
@@ -94,17 +98,20 @@ fi
 
 # ── 2. agent cert generator ─────────────────────────────────────────
 gen_agent_cert() {
-  local target_dir="$1" cn="$2"
+  local target_dir="$1" cn="$2" filename_base="${3:-agent}"
   mkdir -p "$target_dir"
-  if [ -f "${target_dir}/agent.crt.pem" ] && [ -f "${target_dir}/agent.key.pem" ] && [ "$FORCE" -ne 1 ]; then
-    ok "  ${target_dir}/agent.{crt,key}.pem exists, skipping (--force to regen)"
+  local crt="${target_dir}/${filename_base}.crt.pem"
+  local key="${target_dir}/${filename_base}.key.pem"
+  local csr="${target_dir}/${filename_base}.csr"
+  if [ -f "$crt" ] && [ -f "$key" ] && [ "$FORCE" -ne 1 ]; then
+    ok "  ${crt} exists, skipping (--force to regen)"
     return
   fi
   openssl ecparam -name prime256v1 -genkey -noout \
-    -out "${target_dir}/agent.key.pem" 2>/dev/null
-  openssl req -new -key "${target_dir}/agent.key.pem" \
+    -out "$key" 2>/dev/null
+  openssl req -new -key "$key" \
     -subj "/C=TW/O=ZT/CN=${cn}" \
-    -out "${target_dir}/agent.csr" 2>/dev/null
+    -out "$csr" 2>/dev/null
 
   # SPIRE x509pop NodeAttestor signs the server's challenge with this key,
   # which requires keyUsage=digitalSignature on the leaf cert.
@@ -116,16 +123,16 @@ basicConstraints = critical, CA:FALSE
 subjectKeyIdentifier = hash
 EOF
 
-  openssl x509 -req -in "${target_dir}/agent.csr" \
+  openssl x509 -req -in "$csr" \
     -CA "$CA_CRT" -CAkey "$CA_KEY" \
     -CAcreateserial -CAserial "$CA_SRL" \
     -days 3650 -sha256 \
     -extfile "$ext_file" \
-    -out "${target_dir}/agent.crt.pem" 2>/dev/null
+    -out "$crt" 2>/dev/null
 
-  rm -f "${target_dir}/agent.csr" "$ext_file"
-  chmod 600 "${target_dir}/agent.key.pem"
-  ok "  signed ${target_dir}/agent.{crt,key}.pem (CN=${cn})"
+  rm -f "$csr" "$ext_file"
+  chmod 600 "$key"
+  ok "  signed ${crt} + ${key} (CN=${cn})"
 }
 
 # ── 3. Gateway's own spire-agent cert ───────────────────────────────
@@ -133,10 +140,14 @@ step "Step 2: gateway spire-agent cert"
 gen_agent_cert "$CA_DIR" "gateway-agent"
 
 # ── 4. Per-service cert (local copy, also feeds workload-registrar) ─
+# Filename uses the CN (order-agent / production-agent / user-agent) so the
+# workload-registrar mappings (`<role>-agent.crt.pem`) and each service host's
+# docker-compose mount line up. Gateway's own cert above stays as plain
+# `agent.{crt,key}.pem` to match the gateway/worker compose mount.
 step "Step 3: per-service certs (local + for workload-registrar)"
 for entry in "${SERVICES[@]}"; do
   IFS=':' read -r local_dir host remote_dir cn <<<"$entry"
-  gen_agent_cert "${PROJECT_DIR}/${local_dir}/spiffe/certs" "$cn"
+  gen_agent_cert "${PROJECT_DIR}/${local_dir}/spiffe/certs" "$cn" "$cn"
 done
 
 # ── 5. Distribute to remote hosts in parallel ───────────────────────
@@ -152,8 +163,8 @@ for entry in "${SERVICES[@]}"; do
       exit 11
     fi
     if scp -o BatchMode=yes \
-        "${PROJECT_DIR}/${local_dir}/spiffe/certs/agent.crt.pem" \
-        "${PROJECT_DIR}/${local_dir}/spiffe/certs/agent.key.pem" \
+        "${PROJECT_DIR}/${local_dir}/spiffe/certs/${cn}.crt.pem" \
+        "${PROJECT_DIR}/${local_dir}/spiffe/certs/${cn}.key.pem" \
         "${SSH_USER}@${host}:~/${remote_dir}/spiffe/certs/" >/dev/null 2>&1; then
       ok "${host} cert delivered"
     else
