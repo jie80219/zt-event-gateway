@@ -105,12 +105,25 @@ gen_agent_cert() {
   openssl req -new -key "${target_dir}/agent.key.pem" \
     -subj "/C=TW/O=ZT/CN=${cn}" \
     -out "${target_dir}/agent.csr" 2>/dev/null
+
+  # SPIRE x509pop NodeAttestor signs the server's challenge with this key,
+  # which requires keyUsage=digitalSignature on the leaf cert.
+  local ext_file
+  ext_file="$(mktemp)"
+  cat > "$ext_file" <<'EOF'
+keyUsage = critical, digitalSignature
+basicConstraints = critical, CA:FALSE
+subjectKeyIdentifier = hash
+EOF
+
   openssl x509 -req -in "${target_dir}/agent.csr" \
     -CA "$CA_CRT" -CAkey "$CA_KEY" \
     -CAcreateserial -CAserial "$CA_SRL" \
     -days 3650 -sha256 \
+    -extfile "$ext_file" \
     -out "${target_dir}/agent.crt.pem" 2>/dev/null
-  rm "${target_dir}/agent.csr"
+
+  rm -f "${target_dir}/agent.csr" "$ext_file"
   chmod 600 "${target_dir}/agent.key.pem"
   ok "  signed ${target_dir}/agent.{crt,key}.pem (CN=${cn})"
 }
