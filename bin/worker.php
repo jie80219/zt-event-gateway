@@ -178,7 +178,7 @@ try {
     //    When SPIFFE_MTLS_ENABLED=1, services are reached via Docker
     //    container names on port 8443 (RoadRunner mTLS).
     //    When mTLS is off, services are on host.docker.internal with
-    //    their original host-mapped ports (8081/8082/8083).
+    //    their original host-mapped ports (order=8082, production=8083, user=8084).
     //    When SPIFFE_ENABLED=0 the whole registry + global filter are
     //    skipped: downstream SimpleService calls go over plain HTTP
     //    without the X-LSVID header or mTLS material.
@@ -196,14 +196,14 @@ try {
         );
 
         $productionHost = $env('PRODUCTION_SERVICE_HOST', $defaultHost);
-        $productionPort = $isMtls ? $mtlsPort : $env('PRODUCTION_SERVICE_PORT', '8081');
+        $productionPort = $isMtls ? $mtlsPort : $env('PRODUCTION_SERVICE_PORT', '8083');
         SpiffeAudienceRegistry::register(
             "{$scheme}://{$productionHost}:{$productionPort}",
             $env('PRODUCTION_SPIFFE_ID', 'spiffe://zt.local/production-service'),
         );
 
         $userHost = $env('USER_SERVICE_HOST', $defaultHost);
-        $userPort = $isMtls ? $mtlsPort : $env('USER_SERVICE_PORT', '8083');
+        $userPort = $isMtls ? $mtlsPort : $env('USER_SERVICE_PORT', '8084');
         SpiffeAudienceRegistry::register(
             "{$scheme}://{$userHost}:{$userPort}",
             $env('USER_SPIFFE_ID', 'spiffe://zt.local/user-service'),
