@@ -53,7 +53,7 @@ CA_SRL="${CA_DIR}/agent-ca.crt.srl"
 # <local-dir-relative>:<remote-host>:<remote-dir-name>:<cert-CN>
 SERVICES=(
   "Services/Order_service:${ORDER_HOST}:Order_service:order-agent"
-  "Services/Production_service:${PRODUCTION_HOST}:Production_service:production-agent"
+  "Services/Production_service:${PRODUCTION_HOST}:Production-Service:production-agent"
   "Services/User_service:${USER_HOST}:User_service:user-agent"
 )
 
