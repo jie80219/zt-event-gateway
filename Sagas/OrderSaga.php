@@ -40,21 +40,31 @@ class OrderSaga extends Saga{
         $productList = $event->productList;
         // 取得最新價格
         foreach ($productList as &$product) {
-            $price = $this->productionService
+            $info = $this->productionService
                 ->productInfoAction((int)$product['p_key'])
-                ->do()->getMeaningData()['data']['price'] ?? null;
-            if (!is_int($price)) {
-                $product['price'] = $price;
+                ->do()->getMeaningData();
+            if (!is_array($info) || !$this->isSuccess($info)) {
+                $this->log("[x] 商品資訊查詢失敗，中止 Step 1");
+                return;
+            }
+            $price = $info['data']['price'] ?? null;
+            if (is_numeric($price)) {
+                $product['price'] = (int) $price;
             }
         }
+        unset($product);
         $this->generateProductList($productList);
         // 產生 orderId
         $orderId = $this->generateOrderId();
         // 新增訂單
         $info = $this->orderService
-            ->createOrderAction($this->userKey, $orderId, $this->productList)
+            ->createOrderAction((int) $this->userKey, $orderId, $this->productList)
             ->do()->getMeaningData();
-        $total=$info['total'] ?? 1000;
+        if (!is_array($info) || !$this->isSuccess($info)) {
+            $this->log("[x] 訂單建立失敗，中止 Step 1");
+            return;
+        }
+        $total = isset($info['total']) ? (int) $info['total'] : $this->calculateTotal($this->productList);
         $this->log("[x] 訂單建立成功");
           // 發送下一步消息
         $this->publish(OrderCreatedEvent::class, [
@@ -62,7 +72,20 @@ class OrderSaga extends Saga{
             'userKey' => $this->userKey,
             'productList' => $this->productList,
             'total' => $total
-        ]);   
+        ]);
+    }
+
+    private function calculateTotal(array $productList): int
+    {
+        $total = 0;
+        foreach ($productList as $p) {
+            if ($p instanceof OrderProductDetail) {
+                $total += $p->price * $p->amount;
+            } elseif (is_array($p)) {
+                $total += ((int) ($p['price'] ?? 0)) * ((int) ($p['amount'] ?? 0));
+            }
+        }
+        return $total;
     }
 
     #[EventHandler]
@@ -70,45 +93,47 @@ class OrderSaga extends Saga{
     {
         $this->log("Saga Step 2: 訂單建立，開始扣庫存");
 
-        $successfulDeductions = [];
-        $inventoryFailed = false;
-       
         $concurrent = new ConcurrentAction();
         $actions = [];
-
+        $keyToIndex = [];
         foreach ($event->productList as $index => $product) {
-            $actions["product_{$index}"] = $this->productionService->reduceInventory($product['p_key'], $event->orderId, $product['amount']);
+            $key = "product_{$index}";
+            $actions[$key] = $this->productionService
+                ->reduceInventory($product['p_key'], $event->orderId, $product['amount']);
+            $keyToIndex[$key] = $index;
         }
 
         $concurrent->setActions($actions)->send();
-        $this->log("[x] 扣減庫存成功");
-         /*
         $results = $concurrent->getActionsMeaningData();
-       
-        foreach ($results as $index => $result) {
-            $info = $result->getMeaningData();
-            if ($this->isSuccess($info)) {
-                $successfulDeductions[] = $event->productList[$index];
+
+        $successfulDeductions = [];
+        $inventoryFailed = false;
+        foreach ($results as $key => $info) {
+            if (is_array($info) && $this->isSuccess($info)) {
+                $successfulDeductions[] = $event->productList[$keyToIndex[$key]];
             } else {
                 $inventoryFailed = true;
-                break;
             }
         }
 
         if ($inventoryFailed) {
+            $this->log("[x] 扣減庫存失敗，觸發補償");
             $this->compensate(RollbackInventoryEvent::class, [
-                'orderId' => $event->orderId,
-                'userKey' => $event->userKey,
+                'orderId'              => $event->orderId,
+                'userKey'              => $event->userKey,
                 'successfulDeductions' => $successfulDeductions,
+                'paymentCompleted'     => false,
+                'total'                => 0,
             ]);
             return;
         }
-        */
+
+        $this->log("[x] 扣減庫存成功");
         $this->publish(InventoryDeductedEvent::class, [
-            'orderId' => $event->orderId,
-            'userKey' => $event->userKey,
+            'orderId'     => $event->orderId,
+            'userKey'     => $event->userKey,
             'productList' => $successfulDeductions,
-            'total' => $event->total
+            'total'       => $event->total,
         ]);
     }
 
@@ -133,10 +158,10 @@ class OrderSaga extends Saga{
         }
         $this->log("[x] 支付成功");
         $this->publish(PaymentProcessedEvent::class, [
-            'orderId' => $event->orderId,
-            'success' => true,
-            'userKey' => $event->userKey,
-            'total' => $event->total,
+            'orderId'     => $event->orderId,
+            'success'     => $this->isSuccess($info),
+            'userKey'     => $event->userKey,
+            'total'       => $event->total,
             'productList' => $event->productList,
         ]);
     }
