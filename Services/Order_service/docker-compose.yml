@@ -4,9 +4,12 @@ services:
     spire-agent:
         image: ghcr.io/spiffe/spire-agent:1.12.0
         container_name: order-spire-agent
+        user: "0:0"
         command:
             - -config
             - /opt/spire/conf/agent/agent.conf
+        extra_hosts:
+            - "zt-spire-server:10.1.1.209"
         volumes:
             - ./spiffe/spire-agent/agent.conf:/opt/spire/conf/agent/agent.conf:ro
             - ./spiffe/certs/order-agent.key.pem:/opt/spire/conf/agent/agent.key.pem:ro

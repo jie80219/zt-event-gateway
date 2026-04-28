@@ -41,6 +41,7 @@ services:
   spire-server:
     image: ghcr.io/spiffe/spire-server:1.12.0
     container_name: zt-spire-server
+    user: "0:0"
     command:
       - -config
       - /opt/spire/conf/server/server.conf
@@ -66,6 +67,7 @@ services:
   spire-agent:
     image: ghcr.io/spiffe/spire-agent:1.12.0
     container_name: zt-spire-agent
+    user: "0:0"
     command:
       - -config
       - /opt/spire/conf/agent/agent.conf
@@ -244,12 +246,12 @@ services:
       LSVID_LOG_PAYLOAD: "0"
       # ── mTLS to downstream services ──
       SPIFFE_MTLS_ENABLED: "0"
-      ORDER_SERVICE_HOST: "order-service"
-      ORDER_SERVICE_PORT: "8080"
-      PRODUCTION_SERVICE_HOST: "production-service"
-      PRODUCTION_SERVICE_PORT: "8080"
-      USER_SERVICE_HOST: "user-service"
-      USER_SERVICE_PORT: "8080"
+      ORDER_SERVICE_HOST: "${ORDER_SERVICE_HOST:-10.1.1.210}"
+      ORDER_SERVICE_PORT: "${ORDER_SERVICE_PORT:-8082}"
+      PRODUCTION_SERVICE_HOST: "${PRODUCTION_SERVICE_HOST:-10.1.1.207}"
+      PRODUCTION_SERVICE_PORT: "${PRODUCTION_SERVICE_PORT:-8083}"
+      USER_SERVICE_HOST: "${USER_SERVICE_HOST:-10.1.1.214}"
+      USER_SERVICE_PORT: "${USER_SERVICE_PORT:-8084}"
       ORDER_SPIFFE_ID: "spiffe://zt.local/order-service"
       PRODUCTION_SPIFFE_ID: "spiffe://zt.local/production-service"
       USER_SPIFFE_ID: "spiffe://zt.local/user-service"
