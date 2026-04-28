@@ -48,9 +48,10 @@ services:
       - ./spiffe/spire-server-e2e/server.conf:/opt/spire/conf/server/server.conf:ro
       - ./spiffe/certs/agent-ca.crt.pem:/opt/spire/conf/server/agent-ca.crt.pem:ro
       - spire-server-socket:/tmp/spire-server/private
+      - spire-server-data:/tmp/spire-server/data
     ports:
-      # Publish gRPC port so off-host SPIRE Agents (10.1.1.210/.207/.214)
-      # can attest against this server over the LAN.
+      # Publish gRPC port so off-host SPIRE Agents can attest against
+      # this server over the LAN (kept for multi-host scenarios).
       - "8081:8081"
     healthcheck:
       test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
@@ -58,6 +59,7 @@ services:
       timeout: 3s
       retries: 30
       start_period: 10s
+    restart: unless-stopped
     networks:
       - anser_project_network
 
@@ -75,12 +77,14 @@ services:
       - ./spiffe/certs/agent.key.pem:/opt/spire/conf/agent/agent.key.pem:ro
       - ./spiffe/certs/agent.crt.pem:/opt/spire/conf/agent/agent.crt.pem:ro
       - spire-agent-sockets:/run/spire/sockets
+      - spire-agent-data:/opt/spire/data/agent
     healthcheck:
       test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/sockets/agent.sock"]
       interval: 5s
       timeout: 3s
       retries: 30
       start_period: 15s
+    restart: unless-stopped
     networks:
       - anser_project_network
 
@@ -114,6 +118,7 @@ services:
       timeout: 2s
       retries: 40
       start_period: 5s
+    restart: unless-stopped
     networks:
       - anser_project_network
 
@@ -239,12 +244,12 @@ services:
       LSVID_LOG_PAYLOAD: "0"
       # ── mTLS to downstream services ──
       SPIFFE_MTLS_ENABLED: "0"
-      ORDER_SERVICE_HOST: "10.1.1.210"
-      ORDER_SERVICE_PORT: "8082"
-      PRODUCTION_SERVICE_HOST: "10.1.1.207"
-      PRODUCTION_SERVICE_PORT: "8083"
-      USER_SERVICE_HOST: "10.1.1.214"
-      USER_SERVICE_PORT: "8084"
+      ORDER_SERVICE_HOST: "order-service"
+      ORDER_SERVICE_PORT: "8080"
+      PRODUCTION_SERVICE_HOST: "production-service"
+      PRODUCTION_SERVICE_PORT: "8080"
+      USER_SERVICE_HOST: "user-service"
+      USER_SERVICE_PORT: "8080"
       ORDER_SPIFFE_ID: "spiffe://zt.local/order-service"
       PRODUCTION_SPIFFE_ID: "spiffe://zt.local/production-service"
       USER_SPIFFE_ID: "spiffe://zt.local/user-service"
@@ -275,6 +280,8 @@ volumes:
   eventstoredb_data:
   spire-agent-sockets:
   spire-server-socket:
+  spire-server-data:
+  spire-agent-data:
   spiffe-certs:
   spiffe-shared:
 

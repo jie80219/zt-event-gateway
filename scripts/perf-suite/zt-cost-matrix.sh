@@ -51,7 +51,7 @@ cleanup() { rm -f "$OVERRIDE_FILE"; }
 trap cleanup EXIT
 
 wait_health() {
-    local url="${HEALTH_URL:-http://10.1.1.209:8080/api/health}"
+    local url="${HEALTH_URL:-http://127.0.0.1:8080/api/health}"
     local deadline=$((SECONDS + 120))
     while (( SECONDS < deadline )); do
         if [[ "$(curl -s -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 000)" == "200" ]]; then

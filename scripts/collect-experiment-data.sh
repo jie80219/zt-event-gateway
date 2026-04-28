@@ -46,9 +46,9 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT_DIR="${PROJECT_DIR}/artifacts/experiment-${STAMP}"
 mkdir -p "$OUT_DIR"
 
-REQUEST_URL="http://10.1.1.209:8080/api/orders"
-HEALTH_URL="http://10.1.1.209:8080/api/health"
-RABBIT_API="http://10.1.1.209:15672/api"
+REQUEST_URL="http://127.0.0.1:8080/api/orders"
+HEALTH_URL="http://127.0.0.1:8080/api/health"
+RABBIT_API="http://127.0.0.1:15672/api"
 RABBIT_USER="zt"
 RABBIT_PASS="ztpass"
 

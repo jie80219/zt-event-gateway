@@ -11,6 +11,7 @@ services:
             - ./spiffe/certs/production-agent.key.pem:/opt/spire/conf/agent/agent.key.pem:ro
             - ./spiffe/certs/production-agent.crt.pem:/opt/spire/conf/agent/agent.crt.pem:ro
             - spire-agent-sockets:/run/spire/sockets
+            - production-spire-data:/opt/spire/data/agent
         healthcheck:
             test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/sockets/agent.sock"]
             interval: 5s
@@ -104,6 +105,7 @@ services:
 volumes:
     spire-agent-sockets:
     production-certs:
+    production-spire-data:
 
 networks:
     anser_project_network:

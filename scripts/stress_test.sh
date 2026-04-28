@@ -11,13 +11,13 @@
 #    bash scripts/stress_test.sh 500 10       # 500 reqs, 10 concurrent
 #
 #  Environment:
-#    STRESS_URL    Gateway endpoint (default: http://10.1.1.209:8080/api/orders)
-#    HEALTH_URL    Health endpoint  (default: http://10.1.1.209:8080/api/health)
+#    STRESS_URL    Gateway endpoint (default: http://127.0.0.1:8080/api/orders)
+#    HEALTH_URL    Health endpoint  (default: http://127.0.0.1:8080/api/health)
 # ──────────────────────────────────────────────────────────────
 set -euo pipefail
 
-URL="${STRESS_URL:-http://10.1.1.209:8080/api/orders}"
-HEALTH="${HEALTH_URL:-http://10.1.1.209:8080/api/health}"
+URL="${STRESS_URL:-http://127.0.0.1:8080/api/orders}"
+HEALTH="${HEALTH_URL:-http://127.0.0.1:8080/api/health}"
 TOTAL_REQUESTS=${1:-200}
 CONCURRENCY=${2:-1}
 # Informational label written into STRESS_JSON_OUT so the LSVID experiment
