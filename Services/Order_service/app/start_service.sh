@@ -29,6 +29,12 @@ if [ ! -d "./vendor" ]; then
     composer install
 fi
 
+# ── Apply pending migrations (idempotent) ───────────────────────
+echo "[start_service] Running database migrations..."
+php spark migrate --all -n || {
+    echo "[start_service] WARNING: migration failed; continuing"
+}
+
 if [ ! -f "./vendor/bin/rr_server" ]; then
     php spark burner:init RoadRunner
 fi

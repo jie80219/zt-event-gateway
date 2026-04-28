@@ -189,5 +189,51 @@ $watcher->onShutdown(function () {
     fwrite(STDOUT, "[spiffe-watcher] Graceful shutdown complete\n");
 });
 
+// ──────────────────────────────────────────────────────────────────
+//  Self-monitor: workaround for the gRPC stream reconnect bug where
+//  the watcher silently stops publishing fresh SVIDs after a stream
+//  interrupt (recvTimeout fires every ~30s of idle, but on resubscribe
+//  no new rotation event reaches the SHM publisher). Without this,
+//  the SVID in SHM ages out and gateway 500s with "Identity token
+//  creation failed". We probe meta.json's updated_at and exit(1) so
+//  docker `restart: unless-stopped` brings up a fresh process — the
+//  initial subscribe always publishes, which gives downstream callers
+//  a fresh SVID immediately.
+// ──────────────────────────────────────────────────────────────────
+$selfHealStaleSecs = (int) $env('SPIFFE_WATCHER_SELFHEAL_STALE_SECS', '400');
+$selfHealEnabled   = $env('SPIFFE_WATCHER_SELFHEAL', '1') !== '0';
+
+if ($selfHealEnabled) {
+    $watcher->onReady(function () use ($shmDir, $selfHealStaleSecs) {
+        $metaPath = $shmDir . '/meta.json';
+        \OpenSwoole\Coroutine::create(static function () use ($metaPath, $selfHealStaleSecs) {
+            // Wait one full grace period before first check so we don't race
+            // a freshly-started watcher's initial publish.
+            \OpenSwoole\Coroutine::sleep($selfHealStaleSecs);
+            while (true) {
+                $meta = @file_get_contents($metaPath);
+                if ($meta !== false) {
+                    $data = @json_decode($meta, true);
+                    $updatedAt = is_array($data) ? (int) ($data['updated_at'] ?? 0) : 0;
+                    $age = time() - $updatedAt;
+                    if ($updatedAt > 0 && $age >= $selfHealStaleSecs) {
+                        fwrite(STDERR, sprintf(
+                            "[spiffe-watcher] SHM stale (age=%ds, threshold=%ds) — exiting for restart\n",
+                            $age,
+                            $selfHealStaleSecs,
+                        ));
+                        exit(1);
+                    }
+                }
+                \OpenSwoole\Coroutine::sleep(30);
+            }
+        });
+        fwrite(STDOUT, sprintf(
+            "[spiffe-watcher] Self-heal armed (threshold=%ds)\n",
+            $selfHealStaleSecs,
+        ));
+    });
+}
+
 // Run — this blocks until SIGTERM/SIGINT
 $watcher->run();
