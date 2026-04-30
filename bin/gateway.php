@@ -25,6 +25,7 @@ use AnserGateway\Router\RouteCollector;
 use AnserGateway\Adapter\SwooleRequestAdapter;
 use AnserGateway\Adapter\SwooleResponseAdapter;
 use AnserGateway\Spiffe\GatewaySpiffeState;
+use SDPMlab\Anser\Service\ServiceList;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
@@ -79,6 +80,25 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
         fwrite(STDOUT, "[gateway] Router initialized from {$routesFile}\n");
     } catch (\Throwable $e) {
         fwrite(STDERR, sprintf("[gateway] Router init failed: %s\n", $e->getMessage()));
+    }
+
+    // ── 1b. Downstream service registration for HTTP-proxy routes ──
+    // OpenSwoole runtime does not auto-include anser-gateway/config/Service.php
+    // (that's Workerman/GatewayWorker behaviour). Wire the service list here
+    // so controllers using `new Action(serviceName: ...)` can resolve hosts.
+    try {
+        $productHost = $env('PRODUCTION_SERVICE_HOST', '10.1.1.207');
+        $productPort = (int) $env('PRODUCTION_SERVICE_PORT', '8083');
+        $productHttps = filter_var($env('PRODUCTION_SERVICE_HTTPS', '0'), FILTER_VALIDATE_BOOLEAN);
+        ServiceList::addLocalService('product_service', $productHost, $productPort, $productHttps);
+        fwrite(STDOUT, sprintf(
+            "[gateway] registered product_service => %s://%s:%d\n",
+            $productHttps ? 'https' : 'http',
+            $productHost,
+            $productPort,
+        ));
+    } catch (\Throwable $e) {
+        fwrite(STDERR, sprintf("[gateway] service registration failed: %s\n", $e->getMessage()));
     }
 
     // ── 2. SPIFFE / LSVID bootstrap (SHM-backed) ─────────────────

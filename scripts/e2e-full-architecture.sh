@@ -487,6 +487,54 @@ publish_forged_message() {
         -d "$payload"
 }
 
+# Mint a deliberately-bad LSVID token from inside the gateway container.
+#   $1 = variant: expired | wrong-aud | tampered | happy
+# Echoes the raw compact-JWS token on stdout. Empty on failure.
+mint_forged_lsvid_token() {
+    local variant="$1"
+    docker compose -f "$COMPOSE_FILE" exec -T gateway \
+        php /app/scripts/_mint-lsvid-test-token.php "--variant=${variant}" 2>/dev/null \
+        | tr -d '\r\n'
+}
+
+# Publish an envelope with a deliberately-bad LSVID token to request.new.
+#   $1 = trace_id, $2 = raw lsvid token
+publish_lsvid_forged_message() {
+    local trace_id="$1"
+    local lsvid_token="$2"
+
+    local payload
+    payload="$(TRACE="$trace_id" LSVID="$lsvid_token" php -n -r '
+        $trace = getenv("TRACE");
+        $lsvid = getenv("LSVID");
+        echo json_encode([
+            "properties" => ["delivery_mode" => 2],
+            "routing_key" => "request.new",
+            "payload" => json_encode([
+                "schema_version" => 1,
+                "type" => "gateway.request",
+                "route" => "OrderCreateRequestedEvent",
+                "id" => $trace,
+                "spiffe_id" => "spiffe://zt.local/php-gateway",
+                "spiffe_path" => ["spiffe://zt.local/php-gateway"],
+                "data" => [
+                    "userKey" => "1",
+                    "productList" => [["p_key" => 1, "amount" => 1]],
+                    "total" => 0,
+                ],
+                "lsvid" => $lsvid,
+            ], JSON_UNESCAPED_SLASHES),
+            "payload_encoding" => "string",
+        ], JSON_UNESCAPED_SLASHES);
+    ')"
+
+    curl -sS \
+        -u "${RABBIT_USER}:${RABBIT_PASS}" \
+        -H 'content-type: application/json' \
+        -X POST "${RABBIT_API_URL}/exchanges/%2F/events/publish" \
+        -d "$payload"
+}
+
 # Publish a message with replayed LSVID token (same raw token, new trace).
 publish_replayed_lsvid_message() {
     local trace_id="$1"
@@ -1004,6 +1052,82 @@ else
     skip "test 20: could not inject wrong-trust-domain message"
 fi
 
+# ── Tests 20a-c: LSVID cryptographic-validation integration boundary ────────
+# The LSVID library has its own negative-matrix unit tests; what these probes
+# verify is that the gateway's *consumers* surface those rejections all the
+# way up — i.e. an attacker who plants a forged token in the queue cannot
+# reach the saga even when the SPIFFE source prefix happens to be correct.
+
+forge_health="$(mint_forged_lsvid_token happy)"
+if [[ -z "$forge_health" || "$forge_health" != *.*.* ]]; then
+    skip "tests 20a-c: cannot mint test LSVID inside gateway (forge helper unavailable)"
+else
+    # ── Test 20a: expired LSVID rejected ─────────────────────────────────
+    expired_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    expired_trace="$(new_trace_id 'e2e-lsvid-expired')"
+    LAST_TRACE="$expired_trace"
+    log "test 20a: expired LSVID (trace=${expired_trace})"
+
+    expired_token="$(mint_forged_lsvid_token expired)"
+    if [[ -z "$expired_token" ]]; then
+        skip "test 20a: failed to mint expired token"
+    else
+        publish_lsvid_forged_message "$expired_trace" "$expired_token" >/dev/null
+        if wait_for_worker_log "$expired_since" "Invalid inbound LSVID" "$WAIT_TIMEOUT"; then
+            pass "test 20a: expired LSVID rejected by RequestConsumer"
+        else
+            fail "test 20a: expired LSVID was not surfaced as Invalid inbound LSVID"
+        fi
+    fi
+
+    # ── Test 20b: wrong-audience LSVID rejected ──────────────────────────
+    waud_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    waud_trace="$(new_trace_id 'e2e-lsvid-waud')"
+    LAST_TRACE="$waud_trace"
+    log "test 20b: wrong-audience LSVID (trace=${waud_trace})"
+
+    waud_token="$(mint_forged_lsvid_token wrong-aud)"
+    if [[ -z "$waud_token" ]]; then
+        skip "test 20b: failed to mint wrong-audience token"
+    else
+        publish_lsvid_forged_message "$waud_trace" "$waud_token" >/dev/null
+        if wait_for_worker_log "$waud_since" "Invalid inbound LSVID" "$WAIT_TIMEOUT"; then
+            pass "test 20b: wrong-audience LSVID rejected by RequestConsumer"
+        else
+            fail "test 20b: wrong-audience LSVID was not surfaced as Invalid inbound LSVID"
+        fi
+    fi
+
+    # ── Test 20c: tampered-signature LSVID rejected ──────────────────────
+    tamp_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    tamp_trace="$(new_trace_id 'e2e-lsvid-tampered')"
+    LAST_TRACE="$tamp_trace"
+    log "test 20c: tampered-signature LSVID (trace=${tamp_trace})"
+
+    tamp_token="$(mint_forged_lsvid_token tampered)"
+    if [[ -z "$tamp_token" ]]; then
+        skip "test 20c: failed to mint tampered token"
+    else
+        publish_lsvid_forged_message "$tamp_trace" "$tamp_token" >/dev/null
+        if wait_for_worker_log "$tamp_since" "Invalid inbound LSVID" "$WAIT_TIMEOUT"; then
+            pass "test 20c: tampered LSVID rejected by RequestConsumer"
+        else
+            fail "test 20c: tampered LSVID was not surfaced as Invalid inbound LSVID"
+        fi
+    fi
+
+    # All three forge variants land in the request queue. None of them must
+    # leave a residual unhandled message — this guards against requeue
+    # storms when validation throws.
+    sleep 2
+    leftover="$(queue_messages_ready "$REQUEST_QUEUE" || true)"
+    if [[ "$leftover" =~ ^[0-9]+$ ]] && (( leftover > 0 )); then
+        fail "test 20d: LSVID forge tests left ${leftover} messages stuck in ${REQUEST_QUEUE}"
+    else
+        pass "test 20d: forged-LSVID rejections did not requeue-storm"
+    fi
+fi
+
 # ============================================================================
 # Phase 6: Resilience + Concurrency
 # ============================================================================
@@ -1121,6 +1245,51 @@ if [[ "$reconnect_ok" == true ]]; then
     pass "test 23: Gateway reconnected to RabbitMQ and resumed publishing"
 else
     fail "test 23: Gateway did not recover after RabbitMQ restart (last code=${LAST_HTTP_CODE})"
+fi
+
+# ── Test 23a: Compensation events are not requeue-stuck ─────────────────────
+# Phase 4 already drove many sagas into compensation (downstream is unreachable
+# in the gateway-only stack, so Step 1/2/3 trigger RollbackInventoryEvent /
+# RollbackOrderEvent). Today the compensation handlers are fire-and-forget
+# — if they ever start nack'ing or requeue'ing on transient errors, those
+# rollback events would pile up in the OrderCreateRequestedEvent /
+# RollbackInventoryEvent / RollbackOrderEvent queues. This probe pins that
+# the queues do NOT grow during the run.
+log "test 23a: compensation events are drained (no requeue storm)"
+
+# Allow a small grace window for any straggler events to finish processing.
+sleep 5
+
+declare -a SAGA_QUEUES=(
+    "OrderCreateRequestedEvent"
+    "OrderCreatedEvent"
+    "InventoryDeductedEvent"
+    "PaymentProcessedEvent"
+    "RollbackInventoryEvent"
+    "RollbackOrderEvent"
+)
+
+stuck_total=0
+stuck_summary=""
+for q in "${SAGA_QUEUES[@]}"; do
+    depth="$(queue_messages_ready "$q" 2>/dev/null || echo "-")"
+    if [[ "$depth" =~ ^[0-9]+$ ]]; then
+        if (( depth > 0 )); then
+            stuck_total=$((stuck_total + depth))
+            stuck_summary+="${q}=${depth} "
+        fi
+    fi
+done
+
+if (( stuck_total == 0 )); then
+    pass "test 23a: all saga + rollback queues empty (compensation drains cleanly)"
+else
+    # This is informational — the gateway-only stack genuinely has no
+    # downstream Order/User/Production services, so the saga always
+    # rolls back. Stuck events here would indicate the rollback handler
+    # itself is throwing and AMQP is requeue'ing. Treat as fail because
+    # that is exactly the cliff edge we wrote this probe to detect.
+    fail "test 23a: ${stuck_total} message(s) stuck in saga queues (${stuck_summary})"
 fi
 
 # ============================================================================

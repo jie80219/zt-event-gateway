@@ -152,4 +152,29 @@ class OrderModel extends Model
         }
         return $result;
     }
+
+    /**
+     * 將訂單狀態更新（Saga Step 4 / 補償使用）。
+     * 使用 query builder 直接寫入，繞過 $allowedFields 限制。
+     *
+     * @param string $orderKey
+     * @param string $status
+     * @return bool
+     */
+    public function confirmOrderTranscation(string $orderKey, string $status = 'completed'): bool
+    {
+        try {
+            $affected = $this->db->table('order')
+                ->where('o_key', $orderKey)
+                ->where('deleted_at', null)
+                ->update([
+                    'status'     => $status,
+                    'updated_at' => date('Y-m-d H:i:s'),
+                ]);
+            return $affected !== false;
+        } catch (\Exception $e) {
+            log_message('error', '[ERROR] {exception}', ['exception' => $e]);
+            return false;
+        }
+    }
 }

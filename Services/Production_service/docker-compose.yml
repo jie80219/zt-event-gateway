@@ -7,8 +7,11 @@ services:
         command:
             - -config
             - /opt/spire/conf/agent/agent.conf
-        extra_hosts:
-            - "zt-spire-server:10.1.1.209"
+        # Single-host (default): rely on docker DNS via anser_project_network
+        # to resolve `zt-spire-server`. For multi-host deployments where the
+        # spire-server lives on a different machine, add to a local override:
+        #   extra_hosts:
+        #     - "zt-spire-server:<gateway-host-LAN-IP>"
         volumes:
             - ./spiffe/spire-agent-e2e/agent.conf:/opt/spire/conf/agent/agent.conf:ro
             - ./spiffe/certs/production-agent.key.pem:/opt/spire/conf/agent/agent.key.pem:ro

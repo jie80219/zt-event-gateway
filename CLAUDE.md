@@ -185,7 +185,7 @@ spiffe/
 docker/
   php-openswoole/          → Gateway + Worker Dockerfile
   php-spiffe/              → SPIFFE client Dockerfile (Swow runtime)
-  rabbitmq/                → RabbitMQ config + definitions
+  rabbitmq/            ls -la ~/.ssh/    → RabbitMQ config + definitions
 ```
 
 ## Docker Topology

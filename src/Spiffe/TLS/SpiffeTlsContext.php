@@ -233,11 +233,26 @@ final class SpiffeTlsContext
         $cred = $this->current();
         $files = $cred->materializeFiles();
 
-        return [
+        $opts = [
             'cert'    => $files['cert'],
             'ssl_key' => $files['key'],
             'verify'  => $verifyPeer ? $files['ca'] : false,
         ];
+
+        if (getenv('PERF_METRIC_ENABLED') === '1') {
+            $opts['on_stats'] = static function (\GuzzleHttp\TransferStats $stats): void {
+                $h = $stats->getHandlerStats();
+                fwrite(STDOUT, sprintf(
+                    "[perf-mtls] handshake_ms=%.3f connect_ms=%.3f total_ms=%.3f url=%s\n",
+                    (float) ($h['appconnect_time'] ?? 0) * 1000.0,
+                    (float) ($h['connect_time'] ?? 0) * 1000.0,
+                    (float) $stats->getTransferTime() * 1000.0,
+                    (string) $stats->getEffectiveUri()
+                ));
+            };
+        }
+
+        return $opts;
     }
 
     /**

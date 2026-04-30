@@ -56,6 +56,14 @@ class OrderSaga extends Saga{
         $this->generateProductList($productList);
         // 產生 orderId
         $orderId = $this->generateOrderId();
+        if (getenv('PERF_METRIC_ENABLED') === '1') {
+            fwrite(STDOUT, sprintf(
+                "[perf-saga-step1] ts=%.6f orderId=%s traceId=%s\n",
+                microtime(true),
+                $orderId,
+                $event->getTraceId() ?? ''
+            ));
+        }
         // 新增訂單
         $info = $this->orderService
             ->createOrderAction((int) $this->userKey, $orderId, $this->productList)
@@ -196,6 +204,13 @@ class OrderSaga extends Saga{
         }
 
         $this->log("✅ Saga Step 4: 訂單完成！");
+        if (getenv('PERF_METRIC_ENABLED') === '1') {
+            fwrite(STDOUT, sprintf(
+                "[perf-saga-complete] ts=%.6f orderId=%s\n",
+                microtime(true),
+                $event->orderId
+            ));
+        }
         $this->publish(OrderSagaCompletedEvent::class, [
             'orderId' => $event->orderId,
             'userKey' => $event->userKey,
@@ -242,10 +257,20 @@ class OrderSaga extends Saga{
         $info = $this->orderService
             ->compensateOrderAction($event->userKey, $event->orderId)->do()->getMeaningData();
 
-        if ($this->isSuccess($info)) {
+        $outcome = $this->isSuccess($info) ? 'success' : 'fail';
+        if ($outcome === 'success') {
             $this->log("✅ 訂單取消成功");
         } else {
             $this->log("❌ 訂單取消失敗");
+        }
+
+        if (getenv('PERF_METRIC_ENABLED') === '1') {
+            fwrite(STDOUT, sprintf(
+                "[perf-saga-rolled-back] ts=%.6f orderId=%s outcome=%s\n",
+                microtime(true),
+                $event->orderId,
+                $outcome
+            ));
         }
     }
 

@@ -28,6 +28,8 @@ class Order extends BaseController
     public function create()
     {
         $request = $this->request;
+        $perfEnabled = getenv('PERF_METRIC_ENABLED') === '1';
+        $perfStart = $perfEnabled ? microtime(true) : 0.0;
         $rawBody = $request->rawBody();
 
         if ($rawBody === '' || $rawBody === false) {
@@ -122,6 +124,17 @@ class Order extends BaseController
                 'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
             ]);
             $channel->basic_publish($msg, 'events', $routingKey);
+
+            if ($perfEnabled) {
+                $perfEnd = microtime(true);
+                fwrite(STDOUT, sprintf(
+                    "[perf-request-in] ts_in=%.6f ts_out=%.6f gw_proc_ms=%.3f traceId=%s\n",
+                    $perfStart,
+                    $perfEnd,
+                    ($perfEnd - $perfStart) * 1000.0,
+                    $traceId
+                ));
+            }
 
             return $this->jsonResponse([
                 'status' => 'Accepted',

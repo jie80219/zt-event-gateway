@@ -176,6 +176,19 @@ class OrderController extends BaseController
         $orderEntity = OrderBusinessLogic::getOrder($orderKey);
         if (!$orderEntity) return $this->fail("找不到訂單", 404);
 
-        return $this->respond(["msg" => "OK", "o_key" => $orderKey]);
+        $body   = $this->request->getJSON(true) ?? [];
+        $status = isset($body['status']) && is_string($body['status']) && $body['status'] !== ''
+            ? $body['status']
+            : 'completed';
+
+        $orderModel = new OrderModel();
+        $ok = $orderModel->confirmOrderTranscation($orderKey, $status);
+        if (!$ok) return $this->fail("訂單狀態更新失敗", 400);
+
+        return $this->respond([
+            "msg"    => "OK",
+            "o_key"  => $orderKey,
+            "status" => $status,
+        ]);
     }
 }
