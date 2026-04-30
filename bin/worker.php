@@ -12,6 +12,7 @@ use ZtEventGateway\Worker\EventConsumer;
 use ZtEventGateway\Worker\RequestConsumer;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
+require dirname(__DIR__) . '/init.php';
 
 $env = static function (string $key, string $default): string {
     $value = getenv($key);

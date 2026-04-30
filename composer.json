@@ -1,6 +1,6 @@
 {
   "name": "zt/event-gateway",
-  "description": "PHP event-driven gateway starter with Envoy routing and SPIFFE/SPIRE-ready security",
+  "description": "PHP event-driven gateway with Vault-backed secret management.",
   "type": "project",
   "license": "proprietary",
   "require": {

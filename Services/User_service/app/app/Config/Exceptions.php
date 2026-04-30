@@ -57,4 +57,19 @@ class Exceptions extends BaseConfig
      * @var array
      */
     public $sensitiveDataInTrace = [];
+
+    /**
+     * Whether to log PHP deprecation warnings (CI4 5.x+ on PHP 8.2+).
+     * Declared explicitly to avoid the "Creation of dynamic property" fatal.
+     *
+     * @var bool
+     */
+    public $logDeprecations = false;
+
+    /**
+     * Log level for deprecation warnings (CI4 5.x+).
+     *
+     * @var string
+     */
+    public $deprecationLogLevel = 'warning';
 }

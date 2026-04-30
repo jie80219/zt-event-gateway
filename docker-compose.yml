@@ -110,6 +110,15 @@ services:
       RABBITMQ_PORT: "5672"
       RABBITMQ_USER: "zt"
       RABBITMQ_PASS: "ztpass"
+      ORDER_SERVICE_HOST: "order-service"
+      ORDER_SERVICE_PORT: "8080"
+      PRODUCTION_SERVICE_HOST: "production-service"
+      PRODUCTION_SERVICE_PORT: "8080"
+      USER_SERVICE_HOST: "user-service"
+      USER_SERVICE_PORT: "8080"
+    networks:
+      - default
+      - anser_project_network
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -159,3 +168,8 @@ services:
 volumes:
   rabbitmq_data:
   redis_data:
+
+networks:
+  default:
+  anser_project_network:
+    external: true

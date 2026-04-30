@@ -4,7 +4,6 @@ Starter skeleton for:
 
 - PHP event-driven flow (producer + consumer)
 - Anser-Gateway for API ingress before event-driven workflow
-- SPIFFE/SPIRE-ready secure routing config for workload identity verification
 
 ## 1) Run the stack
 
@@ -105,19 +104,7 @@ Gateway ingress writes order requests into queue `request_queue`:
 
 Then `RequestConsumer` republishes system events to exchange `events`, and `EventConsumer` consumes the event queues generated from saga handlers.
 
-## 3) SPIFFE/SPIRE integration
-
-- secure Envoy config: `docker/envoy/envoy-spiffe.yaml` (optional, not enabled in current Anser-only compose)
-- SPIRE setup notes: `docs/spiffe-spire.md`
-
-Recommended rollout:
-
-1. Run the default compose stack first.
-2. Deploy SPIRE server and agents.
-3. Register workload SPIFFE IDs for gateway workloads.
-4. Switch Envoy to `envoy-spiffe.yaml` to enforce mTLS and SAN checks.
-
-## 4) Key files
+## 3) Key files
 
 - `bin/worker.php`: Request/Event worker entrypoint
 - `Sagas/OrderSaga.php`: Anser-EDA style saga orchestration
