@@ -1,0 +1,253 @@
+{
+	"info": {
+		"_postman_id": "34511f1a-571c-419c-878e-d17d5600bd77",
+		"name": "Production Service",
+		"schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json",
+		"_exporter_id": "29411031"
+	},
+	"item": [
+		{
+			"name": "Product",
+			"item": [
+				{
+					"name": "商品清單",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{production_service}}/api/v1/products?limit=10&offset=0&isDesc=desc",
+							"host": [
+								"{{production_service}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"products"
+							],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10",
+									"description": "數量"
+								},
+								{
+									"key": "offset",
+									"value": "0",
+									"description": "偏移量"
+								},
+								{
+									"key": "search",
+									"value": "",
+									"disabled": true
+								},
+								{
+									"key": "isDesc",
+									"value": "desc",
+									"description": "排序方式"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "商品詳細資訊",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{production_service}}/api/v1/products/1",
+							"host": [
+								"{{production_service}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"products",
+								"1"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "",
+									"disabled": true
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "建立商品",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "name",
+									"value": "product name",
+									"description": "商品名稱",
+									"type": "text"
+								},
+								{
+									"key": "description",
+									"value": "des",
+									"description": "說明",
+									"type": "text"
+								},
+								{
+									"key": "price",
+									"value": "150",
+									"description": "售價",
+									"type": "text"
+								},
+								{
+									"key": "amount",
+									"value": "5",
+									"description": "數量",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{production_service}}/api/v1/products",
+							"host": [
+								"{{production_service}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"products"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "",
+									"disabled": true
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "更新商品資訊",
+					"request": {
+						"method": "PUT",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    // \"name\" : \"pro\",\n    // \"description\" : \"\",\n    // \"price\" : 1\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{production_service}}/api/v1/products/1",
+							"host": [
+								"{{production_service}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"products",
+								"1"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "",
+									"disabled": true
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Inventory",
+			"item": [
+				{
+					"name": "庫存補償",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "p_key",
+									"value": "100",
+									"description": "商品ID",
+									"type": "text"
+								},
+								{
+									"key": "o_key",
+									"value": "order0001",
+									"description": "訂單ID",
+									"type": "text"
+								},
+								{
+									"key": "addAmount",
+									"value": "150",
+									"description": "需補償的庫存數量",
+									"type": "text"
+								},
+								{
+									"key": "type",
+									"value": "compensate",
+									"type": "text"
+								}
+							]
+						},
+						"url": "{{production_service}}/api/v1/inventory/addInventory"
+					},
+					"response": []
+				},
+				{
+					"name": "減少庫存",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "p_key",
+									"value": "100",
+									"description": "商品ID",
+									"type": "text"
+								},
+								{
+									"key": "o_key",
+									"value": "order0001",
+									"description": "訂單ID",
+									"type": "text"
+								},
+								{
+									"key": "addAmount",
+									"value": "150",
+									"description": "需補償的庫存數量",
+									"type": "text"
+								},
+								{
+									"key": "type",
+									"value": "compensate",
+									"type": "text"
+								}
+							]
+						},
+						"url": "{{production_service}}/api/v1/inventory/reduceInventory"
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}

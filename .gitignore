@@ -2,3 +2,28 @@
 /.idea/
 /.vscode/
 /.phpunit.result.cache
+
+# Local Claude Code settings (per-machine, any depth)
+**/.claude/settings.local.json
+
+# Per-service runtime configs (real secrets) — commit *.env.example instead
+Services/*/app/.env
+
+# Service vendor directories
+Services/*/app/vendor/
+Services/*/app/writable/
+
+# PostgreSQL data volumes (mounted by per-service docker compose)
+Services/*/order-db-data/
+Services/*/production-db-data/
+Services/*/user-db-data/
+
+# SPIRE server datastore / runtime data (may contain SVID issuance state)
+Services/*/.spire-data/
+
+# Third-party repos with their own .git (treat as external deps)
+/swow/
+/packages/php-lsvid/
+
+# macOS
+.DS_Store

@@ -1,0 +1,164 @@
+{
+	"info": {
+		"_postman_id": "71a35e49-a880-45f9-be8c-d4b46fcc687a",
+		"name": "Order Service",
+		"schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json",
+		"_exporter_id": "29411031"
+	},
+	"item": [
+		{
+			"name": "Order",
+			"item": [
+				{
+					"name": "訂單清單",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "x-user-key",
+								"value": "1",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{order_service}}/api/v1/order?limit=10&offset=0&isDesc=desc",
+							"host": [
+								"{{order_service}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"order"
+							],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10",
+									"description": "數量"
+								},
+								{
+									"key": "offset",
+									"value": "0",
+									"description": "偏移量"
+								},
+								{
+									"key": "isDesc",
+									"value": "desc",
+									"description": "排序方式"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "訂單詳細資訊",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "x-user-key",
+								"value": "1",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{order_service}}/api/v1/order/order_1",
+							"host": [
+								"{{order_service}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"order",
+								"order_1"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "",
+									"disabled": true
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "建立訂單",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "x-user-key",
+								"value": "1",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"o_key\" : \"order_1\",\n    \"product_detail\" : [\n        {\n            \"p_key\"  : 1,\n            \"price\"  : 150,\n            \"amount\" : 10\n        },\n        {\n            \"p_key\"  : 2,\n            \"price\"  : 75,\n            \"amount\" : 5\n        }\n    ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{order_service}}/api/v1/order",
+							"host": [
+								"{{order_service}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"order"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "",
+									"disabled": true
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "刪除訂單",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "x-user-key",
+								"value": "1",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{order_service}}/api/v1/order/order_1",
+							"host": [
+								"{{order_service}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"order",
+								"order_1"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "",
+									"disabled": true
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}

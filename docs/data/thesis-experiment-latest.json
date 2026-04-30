@@ -1,0 +1,200 @@
+{
+    "experiment_id": "20260417-223524",
+    "generated_at": "2026-04-22T18:54:09+00:00",
+    "sources": {
+        "experiment_dir": "artifacts/experiment-20260417-223524",
+        "security_dir": null,
+        "lsvid_bench": "/Users/jiezhiyang/zt-event-gateway/docs/data/lsvid-bench-latest.json"
+    },
+    "env": {
+        "php_version": "8.3.23",
+        "os": "Darwin arm64"
+    },
+    "profiles": {
+        "A": {
+            "label": "baseline",
+            "success": 100,
+            "failed": 0,
+            "throughput_rps": 102.8,
+            "latency_p50_ms": 7.52,
+            "latency_p90_ms": 19.29,
+            "latency_p95_ms": 23.49,
+            "latency_p99_ms": 56.68,
+            "latency_avg_ms": 10,
+            "delta_p50_pct": 0
+        },
+        "B": {
+            "label": "lsvid-mint",
+            "success": 100,
+            "failed": 0,
+            "throughput_rps": 109.6,
+            "latency_p50_ms": 8.41,
+            "latency_p90_ms": 19.09,
+            "latency_p95_ms": 22.98,
+            "latency_p99_ms": 35.4,
+            "latency_avg_ms": 10,
+            "delta_p50_pct": 11.8
+        },
+        "C": {
+            "label": "fail-closed",
+            "success": 100,
+            "failed": 0,
+            "throughput_rps": 103.1,
+            "latency_p50_ms": 9.47,
+            "latency_p90_ms": 20.36,
+            "latency_p95_ms": 50.38,
+            "latency_p99_ms": 66.05,
+            "latency_avg_ms": 14,
+            "delta_p50_pct": 26
+        },
+        "D": {
+            "label": "full-zt",
+            "success": 100,
+            "failed": 0,
+            "throughput_rps": 110.1,
+            "latency_p50_ms": 9.42,
+            "latency_p90_ms": 17.01,
+            "latency_p95_ms": 20.72,
+            "latency_p99_ms": 33.28,
+            "latency_avg_ms": 11,
+            "delta_p50_pct": 25.3
+        }
+    },
+    "lsvid_size": {
+        "synthesized": {
+            "source": "benchmark-lsvid.php (in-process signing)",
+            "L0_bytes": 1155,
+            "L1_bytes": 2714,
+            "L2_bytes": 4802,
+            "L0_to_L1_growth": 1559,
+            "L1_to_L2_growth": 2088,
+            "growth_ratio_L1_L0": 2.35,
+            "growth_ratio_L2_L0": 4.158
+        },
+        "real_from_wire": null,
+        "envelope": null
+    },
+    "security_matrix": null,
+    "micro_benchmarks": {
+        "lsvid_ops": {
+            "LSVIDSigner::createBase() — L0 mint": {
+                "ops_per_sec": 9538.866542885755,
+                "us_per_op": 104.8342584
+            },
+            "LSVIDSigner::extend() — L0 → L1": {
+                "ops_per_sec": 9171.835244995413,
+                "us_per_op": 109.0294334
+            },
+            "LSVIDSigner::extend() — L1 → L2": {
+                "ops_per_sec": 8503.274216348793,
+                "us_per_op": 117.6017584
+            },
+            "LSVID::parse() — L0": {
+                "ops_per_sec": 338262.58593899256,
+                "us_per_op": 2.9562832
+            },
+            "LSVID::parse() — L1 (nested)": {
+                "ops_per_sec": 125757.1618640803,
+                "us_per_op": 7.951833399999999
+            },
+            "LSVID::parse() — L2 (double nested)": {
+                "ops_per_sec": 63628.98336842726,
+                "us_per_op": 15.716108400000001
+            },
+            "LSVIDValidator::validate() — L0": {
+                "ops_per_sec": 4139.918765371369,
+                "us_per_op": 241.55063339999998
+            },
+            "LSVIDValidator::validate() — L0+L1": {
+                "ops_per_sec": 2660.5337221034333,
+                "us_per_op": 375.8644334
+            },
+            "LSVIDValidator::validate() — L0+L1+L2": {
+                "ops_per_sec": 1785.8264049983527,
+                "us_per_op": 559.9648416
+            },
+            "validate() — cold trust bundle (new validator)": {
+                "ops_per_sec": 4647.878664487468,
+                "us_per_op": 215.151916
+            },
+            "validate() — warm trust bundle (same validator)": {
+                "ops_per_sec": 5454.8072833114875,
+                "us_per_op": 183.32453339999998
+            },
+            "JtiReplayCache::seenOrRecord() — fresh": {
+                "ops_per_sec": 35525.42999092326,
+                "us_per_op": 28.148849999999996
+            },
+            "JtiReplayCache::seenOrRecord() — replay hit": {
+                "ops_per_sec": 25006.64238938468,
+                "us_per_op": 39.989374999999995
+            }
+        },
+        "iterations": null,
+        "run_at": "2026-04-17T14:35:34+00:00"
+    },
+    "saga_latency": {
+        "timestamp": "2026-04-17T14:40:08+00:00",
+        "summary": {
+            "samples": 5,
+            "avg_ms": 3003.2,
+            "min_ms": 696,
+            "max_ms": 4490,
+            "p50_ms": 3284,
+            "p95_ms": 4490
+        },
+        "samples": [
+            {
+                "sample": 1,
+                "total_ms": 696,
+                "request_to_step1_ms": 207,
+                "step1_to_step2_ms": 176,
+                "step2_to_step3_ms": 122,
+                "step3_to_step4_ms": null,
+                "completed": false,
+                "compensated": true
+            },
+            {
+                "sample": 2,
+                "total_ms": 2856,
+                "request_to_step1_ms": 2291,
+                "step1_to_step2_ms": 149,
+                "step2_to_step3_ms": 202,
+                "step3_to_step4_ms": null,
+                "completed": false,
+                "compensated": true
+            },
+            {
+                "sample": 3,
+                "total_ms": 4490,
+                "request_to_step1_ms": 2687,
+                "step1_to_step2_ms": 697,
+                "step2_to_step3_ms": 210,
+                "step3_to_step4_ms": null,
+                "completed": false,
+                "compensated": true
+            },
+            {
+                "sample": 4,
+                "total_ms": 3690,
+                "request_to_step1_ms": 327,
+                "step1_to_step2_ms": 192,
+                "step2_to_step3_ms": 2649,
+                "step3_to_step4_ms": null,
+                "completed": false,
+                "compensated": true
+            },
+            {
+                "sample": 5,
+                "total_ms": 3284,
+                "request_to_step1_ms": 428,
+                "step1_to_step2_ms": 2437,
+                "step2_to_step3_ms": 183,
+                "step3_to_step4_ms": null,
+                "completed": false,
+                "compensated": true
+            }
+        ]
+    },
+    "notes": []
+}

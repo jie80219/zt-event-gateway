@@ -1,0 +1,124 @@
+{
+    "generated_at": "2026-04-23T13:36:02+00:00",
+    "env": {
+        "php_version": "8.3.23",
+        "os": "Darwin arm64",
+        "iterations_per_case": 200
+    },
+    "results": [
+        {
+            "name": "LSVIDSigner::createBase() \u2014 L0 mint",
+            "iterations": 200,
+            "ops_per_sec": 3553.9417816713344,
+            "us_per_op": 281.37771000000004
+        },
+        {
+            "name": "LSVIDSigner::extend() \u2014 L0 \u2192 L1",
+            "iterations": 200,
+            "ops_per_sec": 3628.4085814475407,
+            "us_per_op": 275.60292000000004
+        },
+        {
+            "name": "LSVIDSigner::extend() \u2014 L1 \u2192 L2",
+            "iterations": 200,
+            "ops_per_sec": 2533.386615520631,
+            "us_per_op": 394.72854
+        },
+        {
+            "name": "LSVID::parse() \u2014 L0",
+            "iterations": 200,
+            "ops_per_sec": 149388.40387453762,
+            "us_per_op": 6.693960000000001
+        },
+        {
+            "name": "LSVID::parse() \u2014 L1 (nested)",
+            "iterations": 200,
+            "ops_per_sec": 50631.30913578685,
+            "us_per_op": 19.750625
+        },
+        {
+            "name": "LSVID::parse() \u2014 L2 (double nested)",
+            "iterations": 200,
+            "ops_per_sec": 22442.80507234326,
+            "us_per_op": 44.55770999999999
+        },
+        {
+            "name": "LSVIDValidator::validate() \u2014 L0",
+            "iterations": 200,
+            "ops_per_sec": 1626.6328598137302,
+            "us_per_op": 614.766875
+        },
+        {
+            "name": "LSVIDValidator::validate() \u2014 L0+L1",
+            "iterations": 200,
+            "ops_per_sec": 770.6869228879566,
+            "us_per_op": 1297.54375
+        },
+        {
+            "name": "LSVIDValidator::validate() \u2014 L0+L1+L2",
+            "iterations": 200,
+            "ops_per_sec": 504.1340047067362,
+            "us_per_op": 1983.5995800000003
+        },
+        {
+            "name": "LSVIDValidator::validate() \u2014 L0..L3 (4 levels)",
+            "iterations": 200,
+            "ops_per_sec": 508.9034788293214,
+            "us_per_op": 1965.009165
+        },
+        {
+            "name": "LSVIDValidator::validate() \u2014 L0..L4 (5 levels)",
+            "iterations": 200,
+            "ops_per_sec": 368.7492673297761,
+            "us_per_op": 2711.869795
+        },
+        {
+            "name": "LSVIDValidator::validate() \u2014 L0..L5 (6 levels)",
+            "iterations": 200,
+            "ops_per_sec": 349.31777531113244,
+            "us_per_op": 2862.7229150000003
+        },
+        {
+            "name": "openssl_x509_verify (leaf vs CA)",
+            "iterations": 200,
+            "ops_per_sec": 9546.349363833666,
+            "us_per_op": 104.752085
+        },
+        {
+            "name": "openssl_verify (ES256 sig verify)",
+            "iterations": 200,
+            "ops_per_sec": 10197.881216813226,
+            "us_per_op": 98.059585
+        },
+        {
+            "name": "openssl_sign (ES256 sig create)",
+            "iterations": 200,
+            "ops_per_sec": 25276.59227049391,
+            "us_per_op": 39.562295
+        },
+        {
+            "name": "validate() \u2014 cold trust bundle (new validator)",
+            "iterations": 200,
+            "ops_per_sec": 2040.7530007155594,
+            "us_per_op": 490.0152049999999
+        },
+        {
+            "name": "validate() \u2014 warm trust bundle (same validator)",
+            "iterations": 200,
+            "ops_per_sec": 1916.1982687666016,
+            "us_per_op": 521.866665
+        },
+        {
+            "name": "JtiReplayCache::seenOrRecord() \u2014 fresh",
+            "iterations": 200,
+            "ops_per_sec": 354426.4317055709,
+            "us_per_op": 2.8214599999999996
+        },
+        {
+            "name": "JtiReplayCache::seenOrRecord() \u2014 replay hit",
+            "iterations": 200,
+            "ops_per_sec": 243383.02403407363,
+            "us_per_op": 4.108750000000001
+        }
+    ]
+}
