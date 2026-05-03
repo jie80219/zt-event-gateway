@@ -74,7 +74,9 @@ class OrderSaga extends Saga{
                 $this->onRollbackInventory(new RollbackInventoryEvent(
                     (string) ($payload['orderId'] ?? $payload['o_key'] ?? ''),
                     (string) ($payload['userKey'] ?? $payload['customerId'] ?? $this->userKey),
-                    is_array($payload['successfulDeductions'] ?? null) ? $payload['successfulDeductions'] : []
+                    is_array($payload['successfulDeductions'] ?? null) ? $payload['successfulDeductions'] : [],
+                    filter_var($payload['paymentCompleted'] ?? false, FILTER_VALIDATE_BOOL),
+                    (int) ($payload['total'] ?? $payload['amount'] ?? 0)
                 ));
                 return;
 
@@ -161,6 +163,8 @@ class OrderSaga extends Saga{
                 'orderId' => $event->orderId,
                 'userKey' => $event->userKey,
                 'successfulDeductions' => $successfulDeductions,
+                'paymentCompleted' => false,
+                'total' => $event->total,
             ]);
             return;
         }
@@ -188,7 +192,9 @@ class OrderSaga extends Saga{
             $this->compensate(RollbackInventoryEvent::class, [
                 'orderId' => $event->orderId,
                 'userKey' => $event->userKey,
-                'successfulDeductions' => $event->productList
+                'successfulDeductions' => $event->productList,
+                'paymentCompleted' => false,
+                'total' => $event->total
             ]);
             return;
         }
@@ -212,6 +218,11 @@ class OrderSaga extends Saga{
     public function onRollbackInventory(RollbackInventoryEvent $event)
     {
         $this->log("RollbackSaga Step 2: 回滾已扣減庫存");
+        if ($event->paymentCompleted && $event->total > 0) {
+            $this->userService
+                ->walletCompensateAction($event->userKey, $event->orderId, $event->total)
+                ->do()->getMeaningData();
+        }
 		#進行回滾
         foreach ($event->successfulDeductions as $product) {
             $info = $this->productionService

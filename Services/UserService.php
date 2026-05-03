@@ -65,10 +65,10 @@ class UserService extends SimpleService
     /**
      * 取得使用者錢包資訊
      *
-     * @param integer $userId
+     * @param integer|string $userId
      * @return ActionInterface
      */
-    public function walletAction(int $userId): ActionInterface
+    public function walletAction(int|string $userId): ActionInterface
     {
         return $this->getAction(
             method: "GET",
@@ -83,11 +83,11 @@ class UserService extends SimpleService
     /**
      * 使用者錢包儲值
      *
-     * @param integer $userId 使用者ID
+     * @param integer|string $userId 使用者ID
      * @param integer $amount 儲值金額
      * @return ActionInterface
      */
-    public function walletDepositAction(int $userId, int $amount): ActionInterface
+    public function walletDepositAction(int|string $userId, int $amount): ActionInterface
     {
         return $this->getAction(
             method: "POST",
@@ -105,12 +105,12 @@ class UserService extends SimpleService
     /**
      * 使用者錢包扣款
      *
-     * @param integer $userId  使用者ID
+     * @param integer|string $userId  使用者ID
      * @param string  $orderId 訂單ID
      * @param integer $total   扣款金額
      * @return ActionInterface
      */
-    public function walletChargeAction(int $userId, string $orderId, int $total): ActionInterface
+    public function walletChargeAction(int|string $userId, string $orderId, int $total): ActionInterface
     {
         return $this->getAction(
             method: "POST",
@@ -129,12 +129,12 @@ class UserService extends SimpleService
     /**
      * 使用者錢包補償
      *
-     * @param integer $userId  使用者ID
+     * @param integer|string $userId  使用者ID
      * @param string  $orderId 訂單ID
      * @param integer $amount  補償金額
      * @return ActionInterface
      */
-    public function walletCompensateAction(int $userId, string $orderId, int $amount): ActionInterface
+    public function walletCompensateAction(int|string $userId, string $orderId, int $amount): ActionInterface
     {
         return $this->getAction(
             method: "POST",

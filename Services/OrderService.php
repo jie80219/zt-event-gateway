@@ -25,7 +25,7 @@ class OrderService extends SimpleService
     /**
      * 取得使用者訂單清單
      *
-     * @param integer $userId
+     * @param integer|string $userId
      * @param integer $limit
      * @param integer $offest
      * @param string $orderBy DESC or ASC
@@ -33,7 +33,7 @@ class OrderService extends SimpleService
      * @return ActionInterface
      */
     public function orderListAction(
-        int $userId,
+        int|string $userId,
         int $limit = 10,
         int $offest = 0,
         string $orderBy = "DESC",
@@ -58,11 +58,11 @@ class OrderService extends SimpleService
     /**
      * 取得使用者訂單資訊
      *
-     * @param integer $userId
+     * @param integer|string $userId
      * @param string $orderId
      * @return ActionInterface
      */
-    public function orderInfoAction(int $userId, string $orderId): ActionInterface
+    public function orderInfoAction(int|string $userId, string $orderId): ActionInterface
     {
         return $this->getAction(
             method: "GET",
@@ -77,13 +77,13 @@ class OrderService extends SimpleService
     /**
      * 新增訂單
      *
-     * @param integer $userId 使用者ID
+     * @param integer|string $userId 使用者ID
      * @param string $orderId 訂單ID 
      * @param OrderProductDetail[] $productDetailList 購買的商品清單
      * @return ActionInterface
      */
     public function createOrderAction(
-        int $userId,
+        int|string $userId,
         string $orderId,
         array $productDetailList
     ): ActionInterface {
@@ -108,11 +108,11 @@ class OrderService extends SimpleService
     /**
      * 訂單補償（刪除）
      *
-     * @param integer $userId
+     * @param integer|string $userId
      * @param string $orderId
      * @return ActionInterface
      */
-    public function compensateOrderAction(int $userId, string $orderId): ActionInterface
+    public function compensateOrderAction(int|string $userId, string $orderId): ActionInterface
     {
         return $this->getAction(
             method: "DELETE",

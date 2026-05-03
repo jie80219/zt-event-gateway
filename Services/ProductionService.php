@@ -45,7 +45,7 @@ class ProductionService extends SimpleService
                 "limit" => $limit,
                 "offset" => $offest,
                 "isDesc" => $orderBy,
-                "query" => $search
+                "search" => $search
             ]
         ]);
     }
