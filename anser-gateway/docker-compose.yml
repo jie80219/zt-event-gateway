@@ -1,5 +1,11 @@
 version: "3"
 
+# LEGACY standalone compose — kept for historical reference only.
+# Production / dev should use the root docker-compose.yml, which wires
+# anser-gateway to the Vault Agent sidecar so RabbitMQ credentials come
+# from Vault. Bringing this compose up directly will use the hard-coded
+# guest/guest creds below and bypass Vault.
+
 services:
     app:
         build: ./

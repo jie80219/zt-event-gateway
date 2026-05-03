@@ -43,20 +43,176 @@ services:
       timeout: 3s
       retries: 20
 
+  # ---- HashiCorp Vault (dev mode) -----------------------------------------
+  # Source of truth for RabbitMQ / DB / JWT secrets. CI4 services in the
+  # Services/*_service compose files reach this same container via the
+  # external `anser_project_network`.
+  vault:
+    image: hashicorp/vault:1.18
+    container_name: zt-vault
+    command:
+      - "vault"
+      - "server"
+      - "-dev"
+      - "-dev-root-token-id=zt-root"
+      - "-dev-listen-address=0.0.0.0:8200"
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_ADDR: "http://0.0.0.0:8200"
+      VAULT_DEV_ROOT_TOKEN_ID: "zt-root"
+    ports:
+      - "8200:8200"
+    networks:
+      - default
+      - anser_project_network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8200/v1/sys/health?standbyok=true"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+
+  # One-shot bootstrap: enable approle, seed secrets, write per-role
+  # role_id/secret_id into the shared docker/vault/creds bind mount, so
+  # CI4 services in the separate compose projects can read the same creds.
+  vault-init:
+    image: hashicorp/vault:1.18
+    container_name: zt-vault-init
+    entrypoint: ["/bin/sh", "/vault/scripts/init.sh"]
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: "zt-root"
+    volumes:
+      - ./docker/vault/scripts:/vault/scripts:ro
+      - ./docker/vault/policies:/vault/policies:ro
+      - ./docker/vault/creds:/vault/creds
+    depends_on:
+      vault:
+        condition: service_healthy
+
+  # ---- Vault Agent sidecars (one per consumer container) -----------------
+  # The entrypoint override chowns the rendered-output volume to the vault
+  # user before docker-entrypoint.sh drops privileges. Without this the
+  # agent (uid 100) cannot write into the root-owned named volume.
+  vault-agent-php-worker:
+    image: hashicorp/vault:1.18
+    container_name: zt-vault-agent-php-worker
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "chown -R vault:vault /vault/runtime; exec docker-entrypoint.sh agent -config=/vault/config.hcl"
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    volumes:
+      - ./docker/vault/agent/php-worker.hcl:/vault/config.hcl:ro
+      - ./docker/vault/templates:/vault/templates:ro
+      - ./docker/vault/creds:/vault/creds:ro
+      - vault_runtime_php_worker:/vault/runtime
+    depends_on:
+      vault:
+        condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+
+  vault-agent-anser-gateway:
+    image: hashicorp/vault:1.18
+    container_name: zt-vault-agent-anser-gateway
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "chown -R vault:vault /vault/runtime; exec docker-entrypoint.sh agent -config=/vault/config.hcl"
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    volumes:
+      - ./docker/vault/agent/anser-gateway.hcl:/vault/config.hcl:ro
+      - ./docker/vault/templates:/vault/templates:ro
+      - ./docker/vault/creds:/vault/creds:ro
+      - vault_runtime_anser_gateway:/vault/runtime
+    depends_on:
+      vault:
+        condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+
+  vault-agent-app:
+    image: hashicorp/vault:1.18
+    container_name: zt-vault-agent-app
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "chown -R vault:vault /vault/runtime; exec docker-entrypoint.sh agent -config=/vault/config.hcl"
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    volumes:
+      - ./docker/vault/agent/anser-gateway.hcl:/vault/config.hcl:ro
+      - ./docker/vault/templates:/vault/templates:ro
+      - ./docker/vault/creds:/vault/creds:ro
+      - vault_runtime_app:/vault/runtime
+    depends_on:
+      vault:
+        condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+
+  vault-agent-monitor:
+    image: hashicorp/vault:1.18
+    container_name: zt-vault-agent-monitor
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "chown -R vault:vault /vault/runtime; exec docker-entrypoint.sh agent -config=/vault/config.hcl"
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    volumes:
+      - ./docker/vault/agent/anser-gateway.hcl:/vault/config.hcl:ro
+      - ./docker/vault/templates:/vault/templates:ro
+      - ./docker/vault/creds:/vault/creds:ro
+      - vault_runtime_monitor:/vault/runtime
+    depends_on:
+      vault:
+        condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+
+  vault-agent-recalc:
+    image: hashicorp/vault:1.18
+    container_name: zt-vault-agent-recalc
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "chown -R vault:vault /vault/runtime; exec docker-entrypoint.sh agent -config=/vault/config.hcl"
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    volumes:
+      - ./docker/vault/agent/anser-gateway.hcl:/vault/config.hcl:ro
+      - ./docker/vault/templates:/vault/templates:ro
+      - ./docker/vault/creds:/vault/creds:ro
+      - vault_runtime_recalc:/vault/runtime
+    depends_on:
+      vault:
+        condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+
+  # ---- Application containers --------------------------------------------
+  # The `command` wrapper waits for the rendered runtime.env from the paired
+  # vault-agent sidecar, sources it (so RABBITMQ_USER / AMQP_PASSWORD etc.
+  # land in process env), and then execs the original command. PHP code is
+  # unchanged - getenv() returns the Vault-sourced value.
+
   anser-gateway:
     build:
       context: ./anser-gateway
       dockerfile: Dockerfile
     container_name: zt-anser-gateway
     working_dir: /app
-    command: ["sh", "-c", "composer install --no-interaction --prefer-dist && php anser serve start"]
+    command:
+      - "sh"
+      - "-c"
+      - >-
+        until [ -s /vault/runtime/runtime.env ]; do sleep 0.2; done;
+        set -a; . /vault/runtime/runtime.env; set +a;
+        exec sh -c 'composer install --no-interaction --prefer-dist && php anser serve start'
     environment:
       gateway.workerUser: root
       gateway.listeningPort: "8080"
       RABBITMQ_HOST: "rabbitmq"
       RABBITMQ_PORT: "5672"
-      RABBITMQ_USER: "zt"
-      RABBITMQ_PASS: "ztpass"
       gatewayregister.address: "anser-gateway"
       gatewayregister.healthRoute: "api/health"
       servicediscovery.address: "consul:8500"
@@ -64,6 +220,7 @@ services:
       servicediscovery.LBStrategy: "dynamic"
     volumes:
       - ./anser-gateway:/app
+      - vault_runtime_anser_gateway:/vault/runtime:ro
     ports:
       - "8080:8080"
     depends_on:
@@ -73,55 +230,69 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      vault-agent-anser-gateway:
+        condition: service_started
 
   app:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
     container_name: zt-anser-app
-    command: ["sh", "-c", "tail -f /dev/null"]
+    command:
+      - "sh"
+      - "-c"
+      - >-
+        until [ -s /vault/runtime/runtime.env ]; do sleep 0.2; done;
+        set -a; . /vault/runtime/runtime.env; set +a;
+        exec tail -f /dev/null
     environment:
       APP_SERVICE_NAME: anser-app
       AMQP_HOST: "rabbitmq"
       AMQP_PORT: "5672"
-      AMQP_USER: "zt"
-      AMQP_PASSWORD: "ztpass"
       RABBITMQ_HOST: "rabbitmq"
       RABBITMQ_PORT: "5672"
-      RABBITMQ_USER: "zt"
-      RABBITMQ_PASS: "ztpass"
+    volumes:
+      - vault_runtime_app:/vault/runtime:ro
     depends_on:
       rabbitmq:
         condition: service_healthy
+      vault-agent-app:
+        condition: service_started
 
   php-worker:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
     container_name: zt-php-worker
-    command: ["php", "bin/worker.php"]
+    command:
+      - "sh"
+      - "-c"
+      - >-
+        until [ -s /vault/runtime/runtime.env ]; do sleep 0.2; done;
+        set -a; . /vault/runtime/runtime.env; set +a;
+        exec php bin/worker.php
     environment:
       APP_SERVICE_NAME: php-worker
       AMQP_HOST: "rabbitmq"
       AMQP_PORT: "5672"
-      AMQP_USER: "zt"
-      AMQP_PASSWORD: "ztpass"
       RABBITMQ_HOST: "rabbitmq"
       RABBITMQ_PORT: "5672"
-      RABBITMQ_USER: "zt"
-      RABBITMQ_PASS: "ztpass"
       ORDER_SERVICE_HOST: "order-service"
       ORDER_SERVICE_PORT: "8080"
       PRODUCTION_SERVICE_HOST: "production-service"
       PRODUCTION_SERVICE_PORT: "8080"
       USER_SERVICE_HOST: "user-service"
       USER_SERVICE_PORT: "8080"
+    volumes:
+      - vault_runtime_php_worker:/vault/runtime:ro
     networks:
       - default
       - anser_project_network
     depends_on:
       rabbitmq:
         condition: service_healthy
+      vault-agent-php-worker:
+        condition: service_started
 
   monitor:
     build:
@@ -129,19 +300,26 @@ services:
       dockerfile: Dockerfile
     container_name: zt-lb-monitor
     working_dir: /app
-    command: ["sh", "-c", "composer install --no-interaction --prefer-dist && php monitor/monitor_trigger.php"]
+    command:
+      - "sh"
+      - "-c"
+      - >-
+        until [ -s /vault/runtime/runtime.env ]; do sleep 0.2; done;
+        set -a; . /vault/runtime/runtime.env; set +a;
+        exec sh -c 'composer install --no-interaction --prefer-dist && php monitor/monitor_trigger.php'
     environment:
       LOAD_BALANCE_AMQP_HOST: "rabbitmq"
       LOAD_BALANCE_AMQP_PORT: "5672"
-      LOAD_BALANCE_AMQP_USER: "zt"
-      LOAD_BALANCE_AMQP_PASSWORD: "ztpass"
     volumes:
       - ./anser-gateway:/app
+      - vault_runtime_monitor:/vault/runtime:ro
     depends_on:
       rabbitmq:
         condition: service_healthy
       redis:
         condition: service_healthy
+      vault-agent-monitor:
+        condition: service_started
     restart: unless-stopped
 
   recalc-worker:
@@ -150,24 +328,36 @@ services:
       dockerfile: Dockerfile
     container_name: zt-lb-recalc-worker
     working_dir: /app
-    command: ["sh", "-c", "composer install --no-interaction --prefer-dist && php worker/recalc_worker.php"]
+    command:
+      - "sh"
+      - "-c"
+      - >-
+        until [ -s /vault/runtime/runtime.env ]; do sleep 0.2; done;
+        set -a; . /vault/runtime/runtime.env; set +a;
+        exec sh -c 'composer install --no-interaction --prefer-dist && php worker/recalc_worker.php'
     environment:
       LOAD_BALANCE_AMQP_HOST: "rabbitmq"
       LOAD_BALANCE_AMQP_PORT: "5672"
-      LOAD_BALANCE_AMQP_USER: "zt"
-      LOAD_BALANCE_AMQP_PASSWORD: "ztpass"
     volumes:
       - ./anser-gateway:/app
+      - vault_runtime_recalc:/vault/runtime:ro
     depends_on:
       rabbitmq:
         condition: service_healthy
       redis:
         condition: service_healthy
+      vault-agent-recalc:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
   rabbitmq_data:
   redis_data:
+  vault_runtime_php_worker:
+  vault_runtime_anser_gateway:
+  vault_runtime_app:
+  vault_runtime_monitor:
+  vault_runtime_recalc:
 
 networks:
   default:

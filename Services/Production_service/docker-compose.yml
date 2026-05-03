@@ -1,6 +1,27 @@
 version: "3"
 
+# DB credentials and CI4 .env are produced by the vault-agent sidecar from
+# the shared docker/vault/creds bind mount (populated by the main compose's
+# vault-init). Run `bash scripts/vault-bootstrap.sh` from the repo root
+# before bringing this compose up.
+
 services:
+    vault-agent-production:
+        image: hashicorp/vault:1.18
+        container_name: production-vault-agent
+        entrypoint: ["/bin/sh", "-c"]
+        command:
+            - "chown -R vault:vault /vault/out; exec docker-entrypoint.sh agent -config=/vault/config.hcl"
+        environment:
+            VAULT_ADDR: "http://vault:8200"
+        networks:
+            - anser_project_network
+        volumes:
+            - ../../docker/vault/agent/production-svc.hcl:/vault/config.hcl:ro
+            - ../../docker/vault/templates:/vault/templates:ro
+            - ../../docker/vault/creds:/vault/creds:ro
+            - vault_ci4_production:/vault/out
+
     production-service:
         image: webdevops/php:8.1
         platform: linux/x86_64
@@ -17,8 +38,13 @@ services:
             - PHP_UPLOAD_MAX_FILESIZE=2048M
         volumes:
             - './app:/app'
+            - vault_ci4_production:/vault/out:ro
+        depends_on:
+            - vault-agent-production
         command: >
-            bash -c "chmod 776 ./start_service.sh && ./start_service.sh"
+            bash -c "until [ -s /vault/out/.env ]; do sleep 0.2; done;
+            cp /vault/out/.env /app/.env;
+            chmod 776 ./start_service.sh && ./start_service.sh"
     production_DB:
         image: postgres:11.12
         networks:
@@ -63,6 +89,8 @@ services:
     #             "-c",
     #             "max_connections=50000"
     #         ]
+volumes:
+    vault_ci4_production:
 networks:
     anser_project_network:
         external: true

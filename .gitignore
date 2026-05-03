@@ -21,5 +21,9 @@ Services/*/user-db-data/
 # Third-party repos with their own .git (treat as external deps)
 /swow/
 
+# Vault bootstrap creds (role_id/secret_id rendered by vault-init at runtime)
+docker/vault/creds/*
+!docker/vault/creds/.gitkeep
+
 # macOS
 .DS_Store
