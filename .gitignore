@@ -25,3 +25,6 @@
 
 # Symlinked external packages
 packages/php-lsvid/
+
+# Local Vault sandbox produced by docker compose (creds, file, logs)
+docker/vault/
