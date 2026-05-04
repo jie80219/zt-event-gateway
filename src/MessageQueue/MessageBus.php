@@ -6,15 +6,22 @@ use PhpAmqpLib\Message\AMQPMessage;
 use PhpAmqpLib\Channel\AMQPChannel;
 use SDPMlab\LSVID\LSVID;
 use SDPMlab\LSVID\LSVIDSigner;
+use Keycloak\TokenProvider;
 
 class MessageBus
 {
     private AMQPChannel $channel;
     private string $defaultExchange;
     private string $spiffeId;
+
+    // SPIFFE / LSVID side ──────────────────────────────────────────
     private ?LSVIDSigner $lsvidSigner;
     private string $downstreamAudience;
     private bool $lsvidRequired;
+
+    // Keycloak side ────────────────────────────────────────────────
+    private ?TokenProvider $tokenProvider;
+    private string $clientId;
 
     public function __construct(
         AMQPChannel $channel,
@@ -22,6 +29,7 @@ class MessageBus
         ?LSVIDSigner $lsvidSigner = null,
         string $downstreamAudience = '',
         bool $lsvidRequired = false,
+        ?TokenProvider $tokenProvider = null,
     ) {
         $this->channel = $channel;
         $this->defaultExchange = $defaultExchange;
@@ -29,11 +37,21 @@ class MessageBus
         $this->lsvidSigner = $lsvidSigner;
         $this->downstreamAudience = $downstreamAudience;
         $this->lsvidRequired = $lsvidRequired;
+        $this->tokenProvider = $tokenProvider;
+        $this->clientId = $tokenProvider?->getClientId() ?? (getenv('KEYCLOAK_CLIENT_ID') ?: '');
     }
 
     public function setLsvidSigner(?LSVIDSigner $signer): void
     {
         $this->lsvidSigner = $signer;
+    }
+
+    public function setTokenProvider(?TokenProvider $tokenProvider): void
+    {
+        $this->tokenProvider = $tokenProvider;
+        if ($tokenProvider !== null) {
+            $this->clientId = $tokenProvider->getClientId();
+        }
     }
 
     public function setupExchange(string $exchange, string $exchangeType = 'topic'): void
@@ -54,14 +72,24 @@ class MessageBus
     }
 
     /**
-     * Publish an event with SPIFFE identity chain.
+     * Publish an event with optional SPIFFE/LSVID identity chain and/or
+     * Keycloak service-account bearer token.
      *
-     * When an {@see LSVIDSigner} is configured:
+     * The two identity layers are independent — either, both, or neither
+     * may be present in the envelope depending on which {@see LSVIDSigner}
+     * and/or {@see TokenProvider} were injected at construction.
+     *
+     * SPIFFE side (when an LSVIDSigner is configured):
      *   - $priorLsvid !== null → calls extend() to wrap the prior token as
      *     the `nested` claim of a new level (L1, L2, …).
      *   - $priorLsvid === null → calls createBase() to mint a fresh L0.
      *     This is a migration-period fallback for when the gateway hasn't
      *     minted an L0 yet. When $lsvidRequired is true, this path throws.
+     *
+     * Keycloak side (when a TokenProvider is configured):
+     *   - Adds `authorization.jwt` + `authorization.client_id` to the
+     *     envelope, plus the current service's client_id is appended to
+     *     the `token_path` trace (flat, not chained).
      *
      * @param string      $eventType   Fully-qualified event class name
      * @param array       $eventData   Event payload
@@ -69,6 +97,7 @@ class MessageBus
      * @param array       $spiffePath  Previous SPIFFE identity chain from upstream
      * @param string|null $priorLsvid  Inbound LSVID raw token to nest (null = base level L0)
      * @param string|null $audience    Override next-hop SPIFFE ID (default: $downstreamAudience)
+     * @param array       $tokenPath   Previous Keycloak client_id trace from upstream
      */
     public function publishEvent(
         string $eventType,
@@ -77,16 +106,21 @@ class MessageBus
         array $spiffePath = [],
         ?string $priorLsvid = null,
         ?string $audience = null,
+        array $tokenPath = [],
     ): void {
         $routingKey = substr(strrchr($eventType, '\\'), 1);
 
-        // Append current service's SPIFFE ID to the identity path
+        // Append current service identifiers to the trace arrays.
         if ($this->spiffeId !== '') {
             $spiffePath[] = $this->spiffeId;
+        }
+        if ($this->clientId !== '') {
+            $tokenPath[] = $this->clientId;
         }
 
         $effectiveAudience = $audience ?? $this->downstreamAudience;
 
+        // ── SPIFFE/LSVID minting ──────────────────────────────────
         $lsvidRaw = null;
         if ($this->lsvidSigner !== null) {
             if ($priorLsvid !== null && $priorLsvid !== '') {
@@ -128,15 +162,23 @@ class MessageBus
             }
         }
 
+        // ── Envelope assembly ─────────────────────────────────────
         $envelope = [
             'type'        => $eventType,
             'data'        => $eventData,
             'spiffe_id'   => $this->spiffeId,
             'spiffe_path' => $spiffePath,
+            'token_path'  => $tokenPath,
             'timestamp'   => date(DATE_RFC3339),
         ];
         if ($lsvidRaw !== null) {
             $envelope['lsvid'] = $lsvidRaw;
+        }
+        if ($this->tokenProvider !== null) {
+            $envelope['authorization'] = [
+                'jwt'       => $this->tokenProvider->getAccessToken(),
+                'client_id' => $this->clientId,
+            ];
         }
 
         $message = new AMQPMessage(
@@ -150,5 +192,10 @@ class MessageBus
     public function getSpiffeId(): string
     {
         return $this->spiffeId;
+    }
+
+    public function getClientId(): string
+    {
+        return $this->clientId;
     }
 }

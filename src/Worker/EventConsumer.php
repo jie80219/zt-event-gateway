@@ -10,6 +10,8 @@ use SDPMlab\ZtEventGateway\MessageQueue\UnrecoverableMessageException;
 use SDPMlab\LSVID\LSVIDContext;
 use SDPMlab\LSVID\LSVIDException;
 use SDPMlab\LSVID\LSVIDValidator;
+use Keycloak\JwtValidator;
+use Keycloak\KeycloakTokenContext;
 
 /**
  * 事件消費者（Event Consumer）
@@ -33,18 +35,26 @@ final class EventConsumer
     /**
      * 建構子。
      *
-     * @param EventBus            $eventBus        事件總線，負責把事件分派給已註冊的 handler。
-     * @param LSVIDValidator|null $lsvidValidator  LSVID 驗證器；為 null 時代表此環境未啟用 LSVID，
-     *                                             envelope 若夾帶 lsvid 會被視為 wiring error。
-     * @param bool                $lsvidRequired   是否強制要求 envelope 必須帶有 LSVID（fail-closed）。
-     *                                             true 時缺少 lsvid 的事件會被拒絕，false 則在
-     *                                             遷移期（migration window）放行。
+     * 支援 SPIFFE/LSVID 與 Keycloak 兩種身份驗證並存或單獨運作 — 兩邊
+     * 各自的 validator 可選，並由對應的 require 旗標決定強制與否。
+     *
+     * @param EventBus            $eventBus               事件總線，負責把事件分派給已註冊的 handler。
+     * @param LSVIDValidator|null $lsvidValidator         LSVID 驗證器；為 null 時代表此環境未啟用 LSVID，
+     *                                                   envelope 若夾帶 lsvid 會被視為 wiring error。
+     * @param bool                $lsvidRequired          是否強制要求 envelope 必須帶有 LSVID（fail-closed）。
+     * @param bool                $requireSpiffeIdentity  是否啟用 SPIFFE 來源前綴檢查與 LSVID 驗證流程。
+     * @param JwtValidator|null   $jwtValidator           Keycloak JWT 驗證器；為 null 表示未啟用。
+     * @param string              $selfAudience           本服務在 Keycloak realm 中的 audience（client_id）。
+     * @param bool                $requireAuthorization   是否強制要求 envelope 必須帶有合法 JWT。
      */
     public function __construct(
         private readonly EventBus $eventBus,
         private readonly ?LSVIDValidator $lsvidValidator = null,
         private readonly bool $lsvidRequired = false,
         private readonly bool $requireSpiffeIdentity = true,
+        private readonly ?JwtValidator $jwtValidator = null,
+        private readonly string $selfAudience = '',
+        private readonly bool $requireAuthorization = false,
     ) {
     }
 
@@ -174,6 +184,44 @@ final class EventConsumer
             );
         }
 
+        // ── Keycloak JWT 驗證 ──────────────────────────────────
+        //   envelope 若帶有 authorization.jwt，且 requireAuthorization=true，
+        //   就以本服務的 selfAudience 驗證 token 並把 claims 放進
+        //   KeycloakTokenContext 供下游 publish 使用。SPIFFE 與 Keycloak
+        //   兩條驗證軸是獨立的 — 若某條 flag 關閉，對應驗證直接跳過。
+        $authorization = $payload['authorization'] ?? null;
+        $jwt           = is_array($authorization) && is_string($authorization['jwt'] ?? null)
+            ? (string) $authorization['jwt'] : '';
+        $kcClientId    = is_array($authorization) && is_string($authorization['client_id'] ?? null)
+            ? (string) $authorization['client_id'] : '';
+        $kcClaims      = [];
+
+        if ($this->requireAuthorization) {
+            if ($jwt === '') {
+                throw new UnrecoverableMessageException('Event envelope missing authorization.jwt');
+            }
+            if ($this->jwtValidator === null) {
+                throw new UnrecoverableMessageException(
+                    'Authorization required but no JwtValidator is configured (wiring error).',
+                );
+            }
+            try {
+                $kcClaims = $this->jwtValidator->validate($jwt, $this->selfAudience);
+            } catch (\Throwable $e) {
+                throw new UnrecoverableMessageException('JWT validation failed: ' . $e->getMessage());
+            }
+
+            $tokenPathLog = is_array($payload['token_path'] ?? null) ? $payload['token_path'] : [];
+            fwrite(STDOUT, sprintf(
+                "[event-consumer] JWT verified iss=%s azp=%s aud=%s event=%s path=[%s]\n",
+                (string) ($kcClaims['iss'] ?? ''),
+                (string) ($kcClaims['azp'] ?? $kcClaims['client_id'] ?? ''),
+                $this->selfAudience,
+                substr(strrchr($eventType, '\\') ?: $eventType, 1),
+                implode(' -> ', $tokenPathLog),
+            ));
+        }
+
         // 3. 把 envelope 還原為對應的事件物件。
         //    若類別不存在（例如路由到未知的事件類別），直接當成結構錯誤丟棄。
         $event = $this->buildEventInstance($eventType, $eventData);
@@ -181,16 +229,20 @@ final class EventConsumer
             throw new UnrecoverableMessageException(sprintf('Unknown event class: %s', $eventType));
         }
 
-        // 4. 把 raw LSVID 放進 coroutine-local context 後分派事件。
-        //    Saga handler 執行期間呼叫 publish() 時，會透過
-        //    LSVIDContext::current() 把這個 token 作為 nested 繼續往下傳。
-        //    無論 dispatch 成功或丟例外，finally 都會清空 context，
-        //    避免不同 coroutine 之間互相污染。
+        // 4. 把 raw LSVID + Keycloak JWT claims 都放進 coroutine-local
+        //    context 後分派事件。Saga handler 執行期間呼叫 publish() 時，
+        //    EventBus 會從 LSVIDContext + KeycloakTokenContext 抓上下文，
+        //    把兩種身份都鏈式傳遞下去。finally 一定會清掉，避免 coroutine
+        //    間污染。
         LSVIDContext::set($rawLsvid);
+        if ($jwt !== '') {
+            KeycloakTokenContext::set($jwt, $kcClientId, $kcClaims);
+        }
         try {
             $this->eventBus->dispatch($event);
         } finally {
             LSVIDContext::clear();
+            KeycloakTokenContext::clear();
         }
 
         fwrite(STDOUT, sprintf("[event-consumer] handled event=%s\n", $eventType));
