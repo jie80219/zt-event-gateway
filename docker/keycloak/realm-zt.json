@@ -1,0 +1,133 @@
+{
+  "realm": "zt",
+  "enabled": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "clients": [
+    {
+      "clientId": "gateway",
+      "name": "Gateway service account",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "gateway-dev-secret",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "attributes": {
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience-worker",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "worker",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "worker",
+      "name": "Worker service account",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "worker-dev-secret",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "attributes": {
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience-order-service",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "order-service",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "audience-production-service",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "production-service",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "audience-user-service",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "user-service",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "order-service",
+      "name": "Order service",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "order-dev-secret",
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "attributes": {
+        "access.token.lifespan": "300"
+      }
+    },
+    {
+      "clientId": "production-service",
+      "name": "Production service",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "production-dev-secret",
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "attributes": {
+        "access.token.lifespan": "300"
+      }
+    },
+    {
+      "clientId": "user-service",
+      "name": "User service",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "user-dev-secret",
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "attributes": {
+        "access.token.lifespan": "300"
+      }
+    }
+  ]
+}
