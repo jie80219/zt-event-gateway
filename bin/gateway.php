@@ -7,6 +7,7 @@
  *   - Native gRPC to SPIRE Agent (Swoole\Coroutine\Http2\Client)
  *   - Anser-Gateway Kernel: Router (FastRoute) → Filter → Controller → Filter
  *   - SPIFFE identity propagation in event envelope payloads
+ *   - Optional Keycloak service-account token minting (independent of SPIFFE)
  *
  * Usage:
  *   php bin/gateway.php
@@ -19,12 +20,15 @@ use Swoole\Http\Request;
 use Swoole\Http\Response;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeBootstrap;
 use Spiffe\SharedMemory\SpiffeTableReader;
+use Keycloak\KeycloakBootstrap;
+use Keycloak\SharedMemory\KeycloakTableReader;
 use AnserGateway\AnserGateway;
 use AnserGateway\Router\Router;
 use AnserGateway\Router\RouteCollector;
 use AnserGateway\Adapter\SwooleRequestAdapter;
 use AnserGateway\Adapter\SwooleResponseAdapter;
 use AnserGateway\Spiffe\GatewaySpiffeState;
+use AnserGateway\Keycloak\GatewayKeycloakState;
 use SDPMlab\Anser\Service\ServiceList;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
@@ -67,6 +71,7 @@ $server->set([
 $workerState = new class {
     public ?Router $router = null;
     public ?SpiffeTableReader $shmReader = null;
+    public ?KeycloakTableReader $kcShmReader = null;
 };
 
 // ── Worker start: initialize framework + SPIFFE ───────────────────
@@ -215,11 +220,100 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
         fwrite(STDOUT, "[gateway] LSVID disabled via LSVID_ENABLED=0\n");
     }
 
+    // ── 3. Keycloak bootstrap (SHM-backed, independent of SPIFFE) ──
+    //
+    //   Reads cached token + JWKS from $KEYCLOAK_SHM_DIR (populated by
+    //   the keycloak-watcher daemon). The TokenProvider returned falls
+    //   back to a synchronous refresh on cold start.
+    //
+    //   Disabled by default (KEYCLOAK_ENABLED=0). Enabling it adds an
+    //   `authorization` block to outbound RabbitMQ envelopes alongside
+    //   any existing SPIFFE identity — the two stacks are orthogonal.
+    $keycloakEnabled = $env('KEYCLOAK_ENABLED', '0') !== '0';
+    GatewayKeycloakState::setEnabled($keycloakEnabled);
+
+    if (!$keycloakEnabled) {
+        fwrite(STDOUT, "[gateway] Keycloak disabled via KEYCLOAK_ENABLED=0\n");
+    } else {
+        $kcEnvBag = [
+            'KEYCLOAK_ENABLED'            => $env('KEYCLOAK_ENABLED', '1'),
+            'KEYCLOAK_ISSUER'             => $env('KEYCLOAK_ISSUER', ''),
+            'KEYCLOAK_TOKEN_URI'          => $env('KEYCLOAK_TOKEN_URI', ''),
+            'KEYCLOAK_JWKS_URI'           => $env('KEYCLOAK_JWKS_URI', ''),
+            'KEYCLOAK_CLIENT_ID'          => $env('KEYCLOAK_CLIENT_ID', ''),
+            'KEYCLOAK_CLIENT_SECRET'      => $env('KEYCLOAK_CLIENT_SECRET', ''),
+            'KEYCLOAK_SHM_DIR'            => $env('KEYCLOAK_SHM_DIR', ''),
+            'KEYCLOAK_TOKEN_REFRESH_SKEW' => $env('KEYCLOAK_TOKEN_REFRESH_SKEW', '30'),
+        ];
+
+        try {
+            $kcState = KeycloakBootstrap::fromEnv($kcEnvBag, writable: false);
+            $workerState->kcShmReader = $kcState->reader;
+
+            GatewayKeycloakState::setTokenProvider($kcState->tokenProvider);
+            GatewayKeycloakState::setClientId($kcState->clientId);
+            GatewayKeycloakState::setIssuer($kcState->issuer);
+
+            fwrite(STDOUT, sprintf(
+                "[gateway] Keycloak bootstrap OK (iss=%s, client_id=%s, realm=%s, shm=%s)\n",
+                $kcState->issuer,
+                $kcState->clientId,
+                $kcState->realm,
+                $kcState->shmDir,
+            ));
+
+            $kcPollSec = (float) max(0.1, (float) (getenv('KEYCLOAK_SHM_POLL_MS') ?: 500) / 1000.0);
+            $kcCoSleep = static function (float $s): void {
+                if ($s < 1.0) {
+                    \OpenSwoole\Coroutine::usleep((int) ($s * 1_000_000));
+                } else {
+                    \OpenSwoole\Coroutine::sleep($s);
+                }
+            };
+
+            \go(static function () use ($kcState, $workerId, $kcPollSec, $kcCoSleep) {
+                $kcState->reader->watchVersion(
+                    static function (int $newV, int $oldV) use ($workerId) {
+                        fwrite(STDOUT, sprintf(
+                            "[gateway] Worker #%d Keycloak cache bumped v%d→v%d\n",
+                            $workerId,
+                            $oldV,
+                            $newV,
+                        ));
+                    },
+                    pollInterval: $kcPollSec,
+                    sleeper: $kcCoSleep,
+                );
+            });
+
+            $kcStaleThreshold = (int) $env('KEYCLOAK_STALE_THRESHOLD_SECS', '900');
+            \go(static function () use ($kcState, $workerId, $kcStaleThreshold) {
+                while (true) {
+                    if ($kcState->reader->isStale($kcStaleThreshold)) {
+                        fwrite(STDERR, sprintf(
+                            "[gateway] Worker #%d ERROR: Keycloak SHM stale — last update %ds ago (threshold %ds)\n",
+                            $workerId,
+                            $kcState->reader->secondsSinceLastUpdate(),
+                            $kcStaleThreshold,
+                        ));
+                    }
+                    \OpenSwoole\Coroutine::sleep(30);
+                }
+            });
+        } catch (\Throwable $e) {
+            fwrite(STDERR, sprintf(
+                "[gateway] Keycloak bootstrap FAILED: %s\n",
+                $e->getMessage(),
+            ));
+        }
+    }
+
     fwrite(STDOUT, sprintf(
-        "[gateway] Worker #%d started (pid=%d, spiffe_id=%s)\n",
+        "[gateway] Worker #%d started (pid=%d, spiffe_id=%s, kc_client_id=%s)\n",
         $workerId,
         getmypid(),
         GatewaySpiffeState::getSpiffeId() ?: '(none)',
+        GatewayKeycloakState::getClientId() ?: '(none)',
     ));
 });
 

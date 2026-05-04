@@ -13,6 +13,8 @@ use SDPMlab\ZtEventGateway\Spiffe\LSVIDValidatorRegistry;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeAudienceRegistry;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeBootstrap;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeMtlsRegistry;
+use Keycloak\AudienceRegistry as KeycloakAudienceRegistry;
+use Keycloak\KeycloakBootstrap;
 use SDPMlab\Anser\Service\ActionFilter;
 use SDPMlab\ZtEventGateway\EventStore\EventStoreDB;
 use ZtEventGateway\Worker\EventConsumer;
@@ -217,11 +219,111 @@ try {
             $scheme,
         ));
 
-        // Register Anser global filter — extends LSVID chain + injects mTLS
-        // into all outgoing SimpleService HTTP calls.
-        ActionFilter::setGlobalFilter(\Filters\SpiffeLsvidFilter::class);
     } else {
-        fwrite(STDOUT, "[worker] SpiffeAudienceRegistry + SpiffeLsvidFilter skipped (SPIFFE_ENABLED=0)\n");
+        fwrite(STDOUT, "[worker] SpiffeAudienceRegistry skipped (SPIFFE_ENABLED=0)\n");
+    }
+
+    // ── Keycloak wiring (SHM-backed, independent of SPIFFE) ────
+    //   Bootstrap the TokenProvider + JwtValidator from the shared-memory
+    //   store populated by the keycloak-watcher daemon. Every publishEvent()
+    //   re-reads the current access token from SHM (seqlock-consistent) so
+    //   the Worker automatically follows rotations without its own timer.
+    //
+    //   Opt-out: KEYCLOAK_ENABLED=0 (default). When off no token is fetched,
+    //   no JWT is validated, and CompositeAuthFilter skips the Keycloak hop.
+    $keycloakEnabled    = $env('KEYCLOAK_ENABLED', '0') !== '0';
+    $tokenProvider      = null;
+    $jwtValidator       = null;
+    $kcStaleThreshold   = (int) $env('KEYCLOAK_STALE_THRESHOLD_SECS', '900');
+    $kcSelfAudience     = $env('KEYCLOAK_CLIENT_ID', 'worker');
+
+    if ($keycloakEnabled) {
+        try {
+            $kcEnvBag = [
+                'KEYCLOAK_ENABLED'            => $env('KEYCLOAK_ENABLED', '1'),
+                'KEYCLOAK_ISSUER'             => $env('KEYCLOAK_ISSUER', ''),
+                'KEYCLOAK_TOKEN_URI'          => $env('KEYCLOAK_TOKEN_URI', ''),
+                'KEYCLOAK_JWKS_URI'           => $env('KEYCLOAK_JWKS_URI', ''),
+                'KEYCLOAK_CLIENT_ID'          => $env('KEYCLOAK_CLIENT_ID', ''),
+                'KEYCLOAK_CLIENT_SECRET'      => $env('KEYCLOAK_CLIENT_SECRET', ''),
+                'KEYCLOAK_SHM_DIR'            => $env('KEYCLOAK_SHM_DIR', ''),
+                'KEYCLOAK_TOKEN_REFRESH_SKEW' => $env('KEYCLOAK_TOKEN_REFRESH_SKEW', '30'),
+            ];
+            $kcState = KeycloakBootstrap::fromEnv($kcEnvBag, writable: false);
+            $tokenProvider = $kcState->tokenProvider;
+            $jwtValidator  = $kcState->jwtValidator;
+
+            fwrite(STDOUT, sprintf(
+                "[worker] Keycloak enabled — client_id=%s, issuer=%s, realm=%s, shm=%s\n",
+                $kcState->clientId,
+                $kcState->issuer,
+                $kcState->realm,
+                $kcState->shmDir,
+            ));
+
+            if ($kcState->reader->isStale($kcStaleThreshold)) {
+                fwrite(STDERR, sprintf(
+                    "[worker] WARN: Keycloak SHM is stale at boot — last update %ds ago (threshold %ds)\n",
+                    $kcState->reader->secondsSinceLastUpdate(),
+                    $kcStaleThreshold,
+                ));
+            }
+
+            // Audience registry — KeycloakBearerFilter consults this to
+            // tag the X-Keycloak-Audience header per outbound URL.
+            $defaultHost   = $env('SERVICE_HOST', 'host.docker.internal');
+            $orderHost2    = $env('ORDER_SERVICE_HOST', $defaultHost);
+            $orderPort2    = $env('ORDER_SERVICE_PORT', '8082');
+            KeycloakAudienceRegistry::register(
+                "http://{$orderHost2}:{$orderPort2}",
+                $env('KEYCLOAK_AUDIENCE_ORDER', 'order-service'),
+            );
+
+            $productionHost2 = $env('PRODUCTION_SERVICE_HOST', $defaultHost);
+            $productionPort2 = $env('PRODUCTION_SERVICE_PORT', '8083');
+            KeycloakAudienceRegistry::register(
+                "http://{$productionHost2}:{$productionPort2}",
+                $env('KEYCLOAK_AUDIENCE_PRODUCTION', 'production-service'),
+            );
+
+            $userHost2 = $env('USER_SERVICE_HOST', $defaultHost);
+            $userPort2 = $env('USER_SERVICE_PORT', '8084');
+            KeycloakAudienceRegistry::register(
+                "http://{$userHost2}:{$userPort2}",
+                $env('KEYCLOAK_AUDIENCE_USER', 'user-service'),
+            );
+
+            fwrite(STDOUT, sprintf(
+                "[worker] KeycloakAudienceRegistry: order=%s:%s, production=%s:%s, user=%s:%s\n",
+                $orderHost2, $orderPort2,
+                $productionHost2, $productionPort2,
+                $userHost2, $userPort2,
+            ));
+        } catch (\Throwable $e) {
+            fwrite(STDERR, sprintf("[worker] Keycloak bootstrap FAILED: %s\n", $e->getMessage()));
+            // Don't exit here — SPIFFE may still be operating. Fail-soft so
+            // a misconfigured Keycloak doesn't take out the SPIFFE pipeline.
+            $keycloakEnabled = false;
+            $tokenProvider = null;
+            $jwtValidator = null;
+        }
+    } else {
+        fwrite(STDOUT, "[worker] Keycloak disabled via KEYCLOAK_ENABLED=0\n");
+    }
+
+    // ── Global filter — composite of SPIFFE + Keycloak ─────────
+    //   Each sub-filter is internally guarded by its own enabled flag so
+    //   the composite is safe regardless of which combination of stacks
+    //   is active.
+    if ($spiffeEnabled || $keycloakEnabled) {
+        ActionFilter::setGlobalFilter(\Filters\CompositeAuthFilter::class);
+        fwrite(STDOUT, sprintf(
+            "[worker] CompositeAuthFilter registered (spiffe=%s, keycloak=%s)\n",
+            $spiffeEnabled ? 'on' : 'off',
+            $keycloakEnabled ? 'on' : 'off',
+        ));
+    } else {
+        fwrite(STDOUT, "[worker] no auth filter registered (both stacks disabled)\n");
     }
 
     $messageBus = new MessageBus(
@@ -230,6 +332,7 @@ try {
         $lsvidSigner,
         $downstreamAudience,
         $lsvidRequired,
+        $tokenProvider,
     );
 
     // ── EventStoreDB wiring ─────────────────────────────────────
@@ -251,12 +354,18 @@ try {
         $requestValidator ?? $lsvidValidator,
         $lsvidRequired,
         $spiffeEnabled,
+        $jwtValidator,
+        $kcSelfAudience,
+        $keycloakEnabled,
     );
     $eventConsumer = new EventConsumer(
         $eventBus,
         $eventValidator ?? $lsvidValidator,
         $lsvidRequired,
         $spiffeEnabled,
+        $jwtValidator,
+        $kcSelfAudience,
+        $keycloakEnabled,
     );
     $scanner = new HandlerScanner();
     $eventQueues = $scanner->scanEventTypesFromFile($sagaFilePath);
