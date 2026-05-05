@@ -92,11 +92,29 @@ seed_dbs() {
     # Top up user 1's wallet (load-driver hardcodes userKey="1") and replenish
     # the most-trafficked inventory rows so transactions can complete instead
     # of all rolling back due to insufficient funds / stock.
-    log "seeding wallet + inventory"
-    docker exec user_service-user_DB-1 psql -U root -d user -q -c \
-        "UPDATE wallet SET balance = 2000000000 WHERE u_key = 1;" >/dev/null 2>&1 || true
-    docker exec production_service-production_DB-1 psql -U root -d production -q -c \
-        "UPDATE inventory SET amount = 2000000000 WHERE p_key IN (1,2,3,4,5);" >/dev/null 2>&1 || true
+    #
+    # In multi-host deployments the user_DB and production_DB containers live
+    # on dedicated hosts. Set PERF_SEED_USER_HOST / PERF_SEED_PROD_HOST to the
+    # remote host (or alias) to seed via SSH; "local" keeps the original
+    # docker-exec path for single-host dev.
+    local user_host="${PERF_SEED_USER_HOST:-local}"
+    local prod_host="${PERF_SEED_PROD_HOST:-local}"
+    local ssh_opts="${PERF_SSH_OPTS:--o BatchMode=yes -o ConnectTimeout=5}"
+    log "seeding wallet (user_host=${user_host}) + inventory (prod_host=${prod_host})"
+
+    local user_sql="UPDATE wallet SET balance = 2000000000 WHERE u_key = 1;"
+    if [[ "$user_host" == "local" ]]; then
+        docker exec user_service-user_DB-1 psql -U root -d user -q -c "$user_sql" >/dev/null 2>&1 || true
+    else
+        ssh $ssh_opts "$user_host" "docker exec user_service-user_DB-1 psql -U root -d user -q -c \"$user_sql\"" >/dev/null 2>&1 || true
+    fi
+
+    local prod_sql="UPDATE inventory SET amount = 2000000000 WHERE p_key IN (1,2,3,4,5);"
+    if [[ "$prod_host" == "local" ]]; then
+        docker exec production_service-production_DB-1 psql -U root -d production -q -c "$prod_sql" >/dev/null 2>&1 || true
+    else
+        ssh $ssh_opts "$prod_host" "docker exec production_service-production_DB-1 psql -U root -d production -q -c \"$prod_sql\"" >/dev/null 2>&1 || true
+    fi
 }
 
 log "experiment start: scales=[${SCALES[*]}] concurrency=${CONCURRENCY} out=${OUT}"
@@ -122,14 +140,39 @@ for N in "${SCALES[@]}"; do
         --tag "perf${N}" \
         --out "$OUT/raw/load_${N}.csv"
 
-    log "draining ${DRAIN_SEC}s for in-flight sagas to complete"
-    sleep "$DRAIN_SEC"
+    log "draining (max ${DRAIN_SEC}s, poll all queues) for in-flight sagas to complete"
+    drain_elapsed=0
+    drain_poll=10
+    drain_idle=0
+    drain_idle_target="${PERF_DRAIN_IDLE:-60}"
+    while (( drain_elapsed < DRAIN_SEC )); do
+        sleep "$drain_poll"
+        drain_elapsed=$((drain_elapsed + drain_poll))
+        # Sum across ALL queues — sagas pass through order_queue *and* the
+        # OrderCreateRequestedEvent / OrderCreatedEvent / InventoryDeductedEvent
+        # / PaymentProcessedEvent / OrderSagaCompleted / RollbackInventoryEvent
+        # / RollbackOrderEvent queues. Watching only order_queue under-reports
+        # in-flight work and lets the drain exit while sagas are still firing.
+        depth=$(docker exec zt-rabbitmq rabbitmqctl --quiet list_queues name messages 2>/dev/null \
+            | awk '$2 ~ /^[0-9]+$/ {sum+=$2} END{print sum+0}')
+        depth="${depth:-0}"
+        log "  drain t=${drain_elapsed}s all_queues=${depth}"
+        if [[ "$depth" == "0" ]]; then
+            drain_idle=$((drain_idle + drain_poll))
+            if (( drain_idle >= drain_idle_target )); then
+                log "  all queues idle ${drain_idle}s — draining complete"
+                break
+            fi
+        else
+            drain_idle=0
+        fi
+    done
 
     LOG_FILE="$OUT/raw/worker_${N}.log"
     : >"$LOG_FILE"
     {
         docker compose logs --no-color --since "$SINCE_TS" php-worker 2>&1 \
-            | grep -E '\[perf-(saga-complete|saga-step1)\]' || true
+            | grep -E '\[perf-(saga-complete|saga-step1|saga-rolled-back)\]' || true
         docker compose logs --no-color --since "$SINCE_TS" gateway 2>&1 \
             | grep -E '\[perf-request-in\]' || true
     } >>"$LOG_FILE"
