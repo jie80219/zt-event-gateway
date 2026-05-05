@@ -52,9 +52,6 @@
     "test:unit": "vendor/bin/phpunit -c phpunit.xml",
     "test:failure-modes": "bash scripts/e2e-failure-modes.sh",
     "gateway:e2e": "bash scripts/e2e-gateway.sh",
-    "arch:e2e": "bash scripts/e2e-full-architecture.sh",
-    "experiment": "bash scripts/collect-experiment-data.sh",
-    "experiment:micro": "bash scripts/collect-experiment-data.sh --micro-only",
     "ci:verify": "bash scripts/ci-verify.sh",
     "ci:baseline": "CI_MODE=baseline bash scripts/ci-verify.sh"
   }

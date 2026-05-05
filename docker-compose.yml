@@ -31,142 +31,14 @@ services:
         EVENTSTORE_INSECURE: "true"
         EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: "true"
     ports:
-        - '1113:1113' # TCP 客戶端通信
-        - '2113:2113' # HTTP API 接口
+        - '1113:1113'
+        - '2113:2113'
     networks:
         - anser_project_network
 
-  # ── SPIFFE / SPIRE ──────────────────────────────────────────────
-
-  spire-server:
-    image: ghcr.io/spiffe/spire-server:1.12.0
-    container_name: zt-spire-server
-    user: "0:0"
-    command:
-      - -config
-      - /opt/spire/conf/server/server.conf
-    volumes:
-      - ./spiffe/spire-server-e2e/server.conf:/opt/spire/conf/server/server.conf:ro
-      - ./spiffe/certs/agent-ca.crt.pem:/opt/spire/conf/server/agent-ca.crt.pem:ro
-      - spire-server-socket:/tmp/spire-server/private
-      - spire-server-data:/tmp/spire-server/data
-    ports:
-      # Publish gRPC port so off-host SPIRE Agents can attest against
-      # this server over the LAN (kept for multi-host scenarios).
-      - "8081:8081"
-    healthcheck:
-      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 10s
-    restart: unless-stopped
-    networks:
-      - anser_project_network
-
-  spire-agent:
-    image: ghcr.io/spiffe/spire-agent:1.12.0
-    container_name: zt-spire-agent
-    user: "0:0"
-    command:
-      - -config
-      - /opt/spire/conf/agent/agent.conf
-    depends_on:
-      spire-server:
-        condition: service_healthy
-    volumes:
-      - ./spiffe/spire-agent-e2e/agent.conf:/opt/spire/conf/agent/agent.conf:ro
-      - ./spiffe/certs/agent.key.pem:/opt/spire/conf/agent/agent.key.pem:ro
-      - ./spiffe/certs/agent.crt.pem:/opt/spire/conf/agent/agent.crt.pem:ro
-      - spire-agent-sockets:/run/spire/sockets
-      - spire-agent-data:/opt/spire/data/agent
-    healthcheck:
-      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/sockets/agent.sock"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 15s
-    restart: unless-stopped
-    networks:
-      - anser_project_network
-
-  workload-registrar:
-    build:
-      context: .
-      dockerfile: docker/workload-registrar/Dockerfile
-    container_name: zt-workload-registrar
-    command: ["/bin/sh", "/opt/spire/conf/scripts/register-workloads-internal.sh"]
-    environment:
-      REGISTER_INTERVAL: "60"
-    volumes:
-      - ./spiffe/scripts/register-workloads-internal.sh:/opt/spire/conf/scripts/register-workloads-internal.sh:ro
-      - spire-server-socket:/tmp/spire-server/private:ro
-      # Bind-mount each agent's cert dir so the registrar can compute its
-      # x509pop fingerprint and use the correct parent ID per SPIFFE ID.
-      # Missing dirs (microservice stack not yet started) are tolerated —
-      # the registrar's 60s loop converges once the cert file appears.
-      - ./spiffe/certs:/agent-certs/zt:ro
-      - ./Services/Order_service/spiffe/certs:/agent-certs/order:ro
-      - ./Services/Production_service/spiffe/certs:/agent-certs/production:ro
-      - ./Services/User_service/spiffe/certs:/agent-certs/user:ro
-    depends_on:
-      spire-server:
-        condition: service_healthy
-      spire-agent:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "test -f /tmp/registrar-ready"]
-      interval: 3s
-      timeout: 2s
-      retries: 40
-      start_period: 5s
-    restart: unless-stopped
-    networks:
-      - anser_project_network
-
   # ── Application (OpenSwoole) ────────────────────────────────────
 
-  spiffe-watcher:
-    pid: "service:spire-agent"
-    build:
-      context: .
-      dockerfile: docker/php-openswoole/Dockerfile
-    container_name: zt-spiffe-watcher
-    command: ["php", "bin/spiffe-watcher.php"]
-    environment:
-      SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
-      SPIFFE_PEM_DIR: "/tmp/spiffe-certs"
-      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
-      SPIFFE_WATCHER_HEALTH_ADDR: "0.0.0.0:9901"
-      # Expose the same staleness threshold as gateway/worker so in-process
-      # logs and the healthcheck below share one tunable.
-      SPIFFE_STALE_THRESHOLD_SECS: "700"
-    volumes:
-      - spire-agent-sockets:/run/spire/sockets:ro
-      - spiffe-certs:/tmp/spiffe-certs
-      - spiffe-shared:/tmp/spiffe-shared
-    depends_on:
-      spire-agent:
-        condition: service_healthy
-      workload-registrar:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      # Staleness-based liveness: meta.json must exist, x509_state must be
-      # "ready", AND updated_at must be within 700s of now. If the watcher's
-      # gRPC stream wedges silently, updated_at stops advancing and Docker
-      # restarts the container (matched to SVID TTL=600s — agent renews at
-      # ~300s, so >700s without an update means something is wrong).
-      test: ["CMD-SHELL", "meta=/tmp/spiffe-shared/meta.json; [ -f $$meta ] && grep -q '\"x509_state\":\"ready\"' $$meta && now=$$(date +%s) && upd=$$(grep -oE '\"updated_at\":[[:space:]]*[0-9]+' $$meta | grep -oE '[0-9]+') && [ -n \"$$upd\" ] && [ $$((now - upd)) -lt 700 ]"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 45s
-    networks:
-      - anser_project_network
-
   gateway:
-    pid: "service:spire-agent"
     build:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
@@ -182,29 +54,11 @@ services:
       RABBITMQ_PASS: "ztpass"
       EVENTSTOREDB_HOST: eventstoredb
       EVENTSTOREDB_PORT: 2113
-      SPIFFE_ID: "spiffe://zt.local/php-gateway"
-      SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
-      SPIFFE_PEM_DIR: "/tmp/spiffe-certs"
-      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
-      WORKER_SPIFFE_ID: "spiffe://zt.local/php-worker"
-      SPIFFE_TRUST_DOMAIN: "zt.local"
-      # Tightened from default 7200s — must stay > SVID renewal interval
-      # (~300s at TTL=600) + slack, but low enough to surface wedged
-      # watcher quickly in logs.
-      SPIFFE_STALE_THRESHOLD_SECS: "700"
-      LSVID_ENABLED: "1"
-      LSVID_REQUIRED: "1"
-      LSVID_TTL_SECONDS: "1800"
-      LSVID_LOG_PAYLOAD: "0"
       PERF_METRIC_ENABLED: "${PERF_METRIC_ENABLED:-0}"
       # ── Downstream service for /products HTTP proxy (Anser ServiceList) ──
       PRODUCTION_SERVICE_HOST: "${PRODUCTION_SERVICE_HOST:-10.1.1.207}"
       PRODUCTION_SERVICE_PORT: "${PRODUCTION_SERVICE_PORT:-8083}"
       PRODUCTION_SERVICE_HTTPS: "${PRODUCTION_SERVICE_HTTPS:-0}"
-    volumes:
-      - spire-agent-sockets:/run/spire/sockets:ro
-      - spiffe-certs:/tmp/spiffe-certs:ro
-      - spiffe-shared:/tmp/spiffe-shared:ro
     ports:
       - "8080:8080"
     extra_hosts:
@@ -212,17 +66,12 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-      spire-agent:
-        condition: service_healthy
       eventstoredb:
-        condition: service_healthy
-      spiffe-watcher:
         condition: service_healthy
     networks:
       - anser_project_network
 
   php-worker:
-    pid: "service:spire-agent"
     build:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
@@ -238,47 +87,22 @@ services:
       RABBITMQ_PORT: "5672"
       RABBITMQ_USER: "zt"
       RABBITMQ_PASS: "ztpass"
-      SPIFFE_ID: "spiffe://zt.local/php-worker"
-      SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
-      SPIFFE_PEM_DIR: "/tmp/spiffe-certs"
-      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
-      DOWNSTREAM_SPIFFE_ID: "spiffe://zt.local/php-worker"
-      SPIFFE_TRUST_DOMAIN: "zt.local"
-      SPIFFE_STALE_THRESHOLD_SECS: "700"
-      LSVID_ENABLED: "1"
-      LSVID_REQUIRED: "1"
-      LSVID_TTL_SECONDS: "1800"
-      LSVID_LOG_PAYLOAD: "0"
       PERF_METRIC_ENABLED: "${PERF_METRIC_ENABLED:-0}"
-      # ── mTLS to downstream services ──
-      SPIFFE_MTLS_ENABLED: "0"
       ORDER_SERVICE_HOST: "${ORDER_SERVICE_HOST:-10.1.1.210}"
       ORDER_SERVICE_PORT: "${ORDER_SERVICE_PORT:-8082}"
       PRODUCTION_SERVICE_HOST: "${PRODUCTION_SERVICE_HOST:-10.1.1.207}"
       PRODUCTION_SERVICE_PORT: "${PRODUCTION_SERVICE_PORT:-8083}"
       USER_SERVICE_HOST: "${USER_SERVICE_HOST:-10.1.1.214}"
       USER_SERVICE_PORT: "${USER_SERVICE_PORT:-8084}"
-      ORDER_SPIFFE_ID: "spiffe://zt.local/order-service"
-      PRODUCTION_SPIFFE_ID: "spiffe://zt.local/production-service"
-      USER_SPIFFE_ID: "spiffe://zt.local/user-service"
-      # ── EventStoreDB ──
       EVENTSTOREDB_ENABLED: "1"
       EVENTSTOREDB_HOST: "eventstoredb"
       EVENTSTOREDB_PORT: "2113"
-    volumes:
-      - spire-agent-sockets:/run/spire/sockets:ro
-      - spiffe-certs:/tmp/spiffe-certs:ro
-      - spiffe-shared:/tmp/spiffe-shared:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       rabbitmq:
         condition: service_healthy
-      spire-agent:
-        condition: service_healthy
       eventstoredb:
-        condition: service_healthy
-      spiffe-watcher:
         condition: service_healthy
     networks:
       - anser_project_network
@@ -286,12 +110,6 @@ services:
 volumes:
   rabbitmq_data:
   eventstoredb_data:
-  spire-agent-sockets:
-  spire-server-socket:
-  spire-server-data:
-  spire-agent-data:
-  spiffe-certs:
-  spiffe-shared:
 
 networks:
   anser_project_network:

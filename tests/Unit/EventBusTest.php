@@ -184,13 +184,7 @@ class EventBusTest extends TestCase
     {
         $this->messageBus->expects($this->once())
             ->method('publishEvent')
-            ->with(
-                eventType: 'App\\Events\\TestEvent',
-                eventData: ['key' => 'value'],
-                exchange: null,
-                spiffePath: [],
-                priorLsvid: null,
-            );
+            ->with('App\\Events\\TestEvent', ['key' => 'value']);
 
         $this->eventBus->publish('App\\Events\\TestEvent', ['key' => 'value']);
     }

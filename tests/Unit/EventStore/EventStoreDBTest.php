@@ -53,8 +53,8 @@ class EventStoreDBTest extends TestCase
             'eventType' => 'OrderCreated',
             'data' => ['orderId' => '123'],
             'metadata' => [
-                'spiffe_id' => 'spiffe://zt.local/worker',
-                'spiffe_path' => ['spiffe://zt.local/gateway'],
+                'caller' => 'worker',
+                'origin' => 'gateway',
             ],
         ]);
 

@@ -63,10 +63,10 @@ _preflight_one() {
 
 preflight() {
     log "preflight: SSH-reachable + container check on all 4 hosts"
-    _preflight_one "$GATEWAY_ALIAS" "zt-gateway zt-php-worker zt-rabbitmq zt-spire-server zt-spire-agent zt-spiffe-watcher"
-    _preflight_one "$ORDER_ALIAS"   "order_service-order-service-1 order_service-order_DB-1 order-spire-agent"
-    _preflight_one "$PROD_ALIAS"    "production_service-production-service-1 production_service-production_DB-1 production-spire-agent"
-    _preflight_one "$USER_ALIAS"    "user_service-user-service-1 user_service-user_DB-1 user-spire-agent"
+    _preflight_one "$GATEWAY_ALIAS" "zt-gateway zt-php-worker zt-rabbitmq"
+    _preflight_one "$ORDER_ALIAS"   "order_service-order-service-1 order_service-order_DB-1"
+    _preflight_one "$PROD_ALIAS"    "production_service-production-service-1 production_service-production_DB-1"
+    _preflight_one "$USER_ALIAS"    "user_service-user-service-1 user_service-user_DB-1"
 
     log "preflight: gateway → service hosts inter-host SSH"
     ssh "$GATEWAY_ALIAS" "for h in 10.1.1.210 10.1.1.207 10.1.1.214; do ssh -o BatchMode=yes -o ConnectTimeout=5 root@\$h hostname >/dev/null 2>&1 || { echo \"gateway→\$h SSH FAIL\"; exit 1; }; done && echo OK" \

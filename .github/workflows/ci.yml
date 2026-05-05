@@ -1,16 +1,9 @@
 name: CI
 
 # Pipeline scope:
-#   • unit-tests      — fast PHPUnit feedback, no Docker.
-#   • e2e-baseline    — Baseline ablation: SPIFFE_ENABLED=0 (no SPIRE stack,
-#                        no LSVID, no mTLS). Exercises the canonical envelope
-#                        path and Saga compensation as a sanity baseline.
-#   • e2e-full-zt     — Full zero-trust: COMPOSE_PROFILES=zt boots SPIRE
-#                        server/agent/registrar/watcher. Runs the 7-phase
-#                        e2e-full-architecture.sh (SPIRE trust plane, LSVID
-#                        chain, Saga lifecycle, security, resilience, perf).
-#                        Also runs the standalone SPIRE integrity probe as
-#                        an independent fail-fast gate.
+#   • unit-tests   — fast PHPUnit feedback, no Docker.
+#   • e2e-baseline — Boots gateway + worker + RabbitMQ + EventStoreDB and
+#                     exercises the canonical envelope + Saga compensation.
 
 on:
   push:
@@ -25,7 +18,6 @@ on:
         required: false
 
 env:
-  # Keep the toolchain stable across jobs.
   PHP_VERSION: "8.3"
   COMPOSER_NO_INTERACTION: "1"
 
@@ -36,8 +28,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # packages/php-* are symlinks; harmless if no submodules
 
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
@@ -65,7 +55,7 @@ jobs:
         run: vendor/bin/phpunit -c phpunit.xml
 
   e2e-baseline:
-    name: E2E — Baseline (SPIFFE_ENABLED=0)
+    name: E2E — Baseline
     runs-on: ubuntu-latest
     needs: unit-tests
     timeout-minutes: 30
@@ -73,8 +63,7 @@ jobs:
       CI_MODE: baseline
       E2E_RUNS: ${{ github.event.inputs.e2e_runs || '1' }}
       E2E_DIAG_LEVEL: full
-      CI_SKIP_UNIT: "1"  # already ran in the dedicated job
-      SPIFFE_ENABLED: "0"
+      CI_SKIP_UNIT: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Set up PHP (host helpers in ci-verify.sh)
@@ -107,100 +96,18 @@ jobs:
         if: always()
         run: docker compose down -v --remove-orphans || true
 
-  e2e-full-zt:
-    name: E2E — Full ZT (SPIRE + LSVID + Saga)
-    runs-on: ubuntu-latest
-    needs: unit-tests
-    timeout-minutes: 45
-    env:
-      CI_MODE: full
-      CI_PROFILE: zt
-      COMPOSE_PROFILES: zt
-      E2E_RUNS: ${{ github.event.inputs.e2e_runs || '1' }}
-      E2E_DIAG_LEVEL: full
-      CI_SKIP_UNIT: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: ${{ env.PHP_VERSION }}
-          coverage: none
-          tools: composer:v2
-
-      - name: Docker info
-        run: |
-          docker version
-          docker compose version
-
-      - name: Create external network
-        run: docker network create anser_project_network || true
-
-      - name: Prebuild images (separate step for clearer logs)
-        run: |
-          docker compose -f docker-compose.yml build \
-            gateway php-worker spiffe-watcher workload-registrar
-
-      - name: Bring up full zt stack
-        run: |
-          docker compose -f docker-compose.yml --profile zt up -d
-          # Give SPIRE enough time to mint the first SVID before the probe.
-          for i in $(seq 1 40); do
-            state="$(docker compose ps --format json 2>/dev/null | grep -c '"Health":"healthy"' || echo 0)"
-            if [ "$state" -ge 4 ]; then
-              break
-            fi
-            sleep 3
-          done
-          docker compose -f docker-compose.yml ps
-
-      - name: SPIRE integrity probe (fail-fast gate)
-        run: bash scripts/verify-spire-integrity.sh
-
-      - name: Run full-architecture E2E via ci-verify.sh
-        # Reuses the already-running stack. E2E_BUILD_IMAGES=0 keeps it from
-        # rebuilding; CI_PREBUILD_IMAGES=0 likewise.
-        env:
-          E2E_BUILD_IMAGES: "0"
-          CI_PREBUILD_IMAGES: "0"
-        run: bash scripts/ci-verify.sh
-
-      - name: Collect diagnostics on failure
-        if: failure()
-        run: |
-          mkdir -p artifacts/ci/zt-diag
-          docker compose -f docker-compose.yml ps > artifacts/ci/zt-diag/ps.txt || true
-          docker compose -f docker-compose.yml logs --no-color > artifacts/ci/zt-diag/compose.log || true
-          for svc in spire-server spire-agent workload-registrar spiffe-watcher gateway php-worker rabbitmq eventstoredb; do
-            docker compose -f docker-compose.yml logs --no-color "$svc" > "artifacts/ci/zt-diag/${svc}.log" 2>&1 || true
-          done
-
-      - name: Upload artifacts on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-full-zt-artifacts
-          path: artifacts/ci/
-          retention-days: 14
-
-      - name: Tear down
-        if: always()
-        run: docker compose -f docker-compose.yml --profile zt down -v --remove-orphans || true
-
   ci-summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [unit-tests, e2e-baseline, e2e-full-zt]
+    needs: [unit-tests, e2e-baseline]
     if: always()
     steps:
       - name: Report aggregate status
         run: |
           u='${{ needs.unit-tests.result }}'
           b='${{ needs.e2e-baseline.result }}'
-          z='${{ needs.e2e-full-zt.result }}'
           echo "unit-tests: $u"
           echo "e2e-baseline: $b"
-          echo "e2e-full-zt: $z"
-          if [ "$u" != "success" ] || [ "$b" != "success" ] || [ "$z" != "success" ]; then
+          if [ "$u" != "success" ] || [ "$b" != "success" ]; then
             exit 1
           fi

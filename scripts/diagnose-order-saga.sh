@@ -8,7 +8,7 @@
 # which event made it through, which didn't, and the most likely culprit.
 #
 # Prereqs (all must already be running):
-#   - docker compose stack up (gateway, php-worker, rabbitmq, spiffe-watcher)
+#   - docker compose stack up (gateway, php-worker, rabbitmq)
 #   - order-service on $ORDER_URL, production-service on $PRODUCTION_URL,
 #     user-service on $USER_URL (used by the saga's HTTP calls)
 #
@@ -324,20 +324,6 @@ if [[ "$DROPPED_COUNT" -gt 0 ]]; then
     err "Consumer DROPPED ${DROPPED_COUNT} message(s) — envelope was unrecoverable:"
     grep '\[consumer\] dropped' "$TMPDIR/worker.log" 2>/dev/null | sort -u | sed 's/^/    /' | tail -10
 
-    if grep -q 'LSVID.*expired\|leaf certificate has expired' "$TMPDIR/worker.log" 2>/dev/null; then
-        echo ""
-        err "ROOT CAUSE: LSVID certificate expired."
-        info "The watcher isn't refreshing SVIDs. Check: docker logs zt-spiffe-watcher"
-        info "If watcher is stuck, rebuild the stack: docker compose up -d --build"
-    elif grep -q 'Untrusted SPIFFE source' "$TMPDIR/worker.log" 2>/dev/null; then
-        echo ""
-        err "ROOT CAUSE: envelope source SPIFFE ID doesn't match allowed trust domain."
-        info "Check gateway's SPIFFE_ID env var and the SHM primary SVID identity."
-    elif grep -q 'LSVID required but envelope carries none' "$TMPDIR/worker.log" 2>/dev/null; then
-        echo ""
-        err "ROOT CAUSE: LSVID_REQUIRED=1 but gateway didn't mint L0."
-        info "Likely: gateway LSVID signer failed at bootstrap. Check docker logs zt-gateway."
-    fi
 fi
 
 # Pinpoint stall

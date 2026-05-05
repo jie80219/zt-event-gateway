@@ -169,22 +169,10 @@ for N in "${SCALES[@]}"; do
             | grep -E '\[perf-request-in\]' || true
     } >>"$LOG_FILE"
 
-    # mTLS handshake probe: openssl s_server + curl with SPIFFE certs.
-    # Captures handshake cost on the same container/CPU running the saga.
-    log "running mTLS handshake probe (count=${MTLS_PROBE_COUNT})"
-    if docker compose exec -T php-worker bash /app/scripts/experiments/mtls-probe.sh "$MTLS_PROBE_COUNT" \
-        2>>"$OUT/raw/mtls_${N}.err" \
-        | grep -E '^\[perf-mtls\]' >>"$LOG_FILE"; then
-        :
-    else
-        log "  → mTLS probe failed (see $OUT/raw/mtls_${N}.err)"
-    fi
-
     saga_complete_count="$(grep -c '\[perf-saga-complete\]' "$LOG_FILE" || true)"
     saga_step1_count="$(grep -c '\[perf-saga-step1\]' "$LOG_FILE" || true)"
-    mtls_count="$(grep -c '\[perf-mtls\]' "$LOG_FILE" || true)"
     request_in_count="$(grep -c '\[perf-request-in\]' "$LOG_FILE" || true)"
-    log "  → captured: req_in=${request_in_count} saga_step1=${saga_step1_count} saga_complete=${saga_complete_count} mtls=${mtls_count}"
+    log "  → captured: req_in=${request_in_count} saga_step1=${saga_step1_count} saga_complete=${saga_complete_count}"
 done
 
 log "all scales complete — running analyzer"
