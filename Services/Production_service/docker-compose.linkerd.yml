@@ -1,0 +1,23 @@
+# Overlay: enable Linkerd 1.x incoming proxy on Host C (production).
+# Apply with:
+#   docker compose -f docker-compose.yml -f docker-compose.linkerd.yml up -d
+
+services:
+  linkerd:
+    image: buoyantio/linkerd:1.7.5
+    platform: linux/amd64
+    container_name: zt-linkerd-production
+    command: ["/io.buoyant/linkerd/config.yaml"]
+    volumes:
+      - ../../docker/linkerd/config/linkerd.host-c.yaml:/io.buoyant/linkerd/config.yaml:ro
+      - ../../docker/linkerd/disco/host-c:/var/linkerd/disco:ro
+      - ../../docker/linkerd/tls:/var/linkerd/tls:ro
+    environment:
+      JAVA_OPTS: "-Xms256m -Xmx512m -XX:+UseG1GC"
+    mem_limit: 768m
+    ports:
+      - "4141:4141"
+      - "9990:9990"
+    networks:
+      - anser_project_network
+    restart: unless-stopped

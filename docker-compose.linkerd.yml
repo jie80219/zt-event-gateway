@@ -1,0 +1,63 @@
+# Overlay: enable Linkerd 1.x mesh on Host A (gateway+worker side).
+# Apply with:
+#   docker compose -f docker-compose.yml -f docker-compose.linkerd.yml up -d
+#
+# Phase 1 = this file alone (Host A outgoing-only). Phase 2 also requires the
+# Services/*/docker-compose.linkerd.yml overlays to be applied on hosts B/C/D.
+# Phase 3 (mTLS) is enabled by uncommenting the `tls:` blocks in
+# docker/linkerd/config/linkerd.host-*.yaml after running tls/gen-certs.sh and
+# scripts/distribute-certs.sh.
+
+services:
+  linkerd:
+    image: buoyantio/linkerd:1.7.5
+    platform: linux/amd64
+    container_name: zt-linkerd
+    command: ["/io.buoyant/linkerd/config.yaml"]
+    volumes:
+      - ./docker/linkerd/config/linkerd.host-a.yaml:/io.buoyant/linkerd/config.yaml:ro
+      - ./docker/linkerd/disco/host-a:/var/linkerd/disco:ro
+      - ./docker/linkerd/tls:/var/linkerd/tls:ro
+    environment:
+      JAVA_OPTS: "-Xms256m -Xmx512m -XX:+UseG1GC"
+    mem_limit: 768m
+    ports:
+      - "9990:9990"
+    networks:
+      - anser_project_network
+    restart: unless-stopped
+
+  zipkin:
+    image: openzipkin/zipkin:2.24
+    container_name: zt-zipkin
+    ports:
+      - "9411:9411"
+    networks:
+      - anser_project_network
+    restart: unless-stopped
+
+  gateway:
+    environment:
+      LINKERD_ENABLED: "1"
+      LINKERD_HOST: "linkerd"
+      LINKERD_PORT: "4140"
+      PRODUCTION_SERVICE_HOST: "linkerd"
+      PRODUCTION_SERVICE_PORT: "4140"
+    depends_on:
+      linkerd:
+        condition: service_started
+
+  php-worker:
+    environment:
+      LINKERD_ENABLED: "1"
+      LINKERD_HOST: "linkerd"
+      LINKERD_PORT: "4140"
+      ORDER_SERVICE_HOST: "linkerd"
+      ORDER_SERVICE_PORT: "4140"
+      PRODUCTION_SERVICE_HOST: "linkerd"
+      PRODUCTION_SERVICE_PORT: "4140"
+      USER_SERVICE_HOST: "linkerd"
+      USER_SERVICE_PORT: "4140"
+    depends_on:
+      linkerd:
+        condition: service_started

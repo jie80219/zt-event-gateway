@@ -5,13 +5,23 @@
 
 use SDPMlab\Anser\Service\ServiceList;
 
+$linkerdHost = getenv('LINKERD_HOST');
+$linkerdPortRaw = getenv('LINKERD_PORT');
+$linkerdEnabled = ($linkerdHost !== false && $linkerdHost !== '');
+
 $productHost = getenv('PRODUCTION_SERVICE_HOST');
 if ($productHost === false || $productHost === '') {
-    $productHost = '10.1.1.207';
+    $productHost = $linkerdEnabled ? $linkerdHost : '10.1.1.207';
 }
 
 $productPortRaw = getenv('PRODUCTION_SERVICE_PORT');
-$productPort = ($productPortRaw === false || $productPortRaw === '') ? 8083 : (int) $productPortRaw;
+if ($productPortRaw === false || $productPortRaw === '') {
+    $productPort = $linkerdEnabled
+        ? (int) ($linkerdPortRaw !== false && $linkerdPortRaw !== '' ? $linkerdPortRaw : 4140)
+        : 8083;
+} else {
+    $productPort = (int) $productPortRaw;
+}
 
 $productHttps = filter_var(getenv('PRODUCTION_SERVICE_HTTPS') ?: '0', FILTER_VALIDATE_BOOLEAN);
 

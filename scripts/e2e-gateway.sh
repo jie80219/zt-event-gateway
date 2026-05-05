@@ -12,6 +12,14 @@
 # ============================================================================
 set -euo pipefail
 
+MODE="baseline"
+for arg in "$@"; do
+    case "$arg" in
+        --mode=*) MODE="${arg#--mode=}" ;;
+        *) echo "unknown arg: $arg" >&2; exit 2 ;;
+    esac
+done
+
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 GATEWAY_URL="${GATEWAY_URL:-http://127.0.0.1:8080}"
@@ -22,6 +30,15 @@ REQUEST_QUEUE="${REQUEST_QUEUE:-order_queue}"
 WAIT_TIMEOUT="${E2E_WAIT_TIMEOUT:-60}"
 BUILD_IMAGES="${E2E_BUILD_IMAGES:-1}"
 KEEP_ON_FAIL="${E2E_KEEP_ON_FAIL:-0}"
+
+# In linkerd mode we layer the mesh overlay on top of the base compose. The
+# base compose is unchanged — apps still talk over plain HTTP — but the
+# overlay introduces the linkerd + zipkin services and rewrites *_SERVICE_HOST
+# env to point at linkerd:4140.
+COMPOSE_ARGS=(-f "$COMPOSE_FILE")
+if [[ "$MODE" == "linkerd" ]]; then
+    COMPOSE_ARGS+=(-f docker-compose.linkerd.yml)
+fi
 
 cd "$PROJECT_DIR"
 
@@ -43,7 +60,7 @@ cleanup() {
         exit $rc
     fi
     log "tearing down compose stack"
-    docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
+    docker compose "${COMPOSE_ARGS[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
     exit $rc
 }
 trap cleanup EXIT
@@ -54,11 +71,27 @@ require_cmd jq
 
 if [[ "$BUILD_IMAGES" == "1" ]]; then
     log "building gateway + php-worker images"
-    docker compose -f "$COMPOSE_FILE" build gateway php-worker >/dev/null
+    docker compose "${COMPOSE_ARGS[@]}" build gateway php-worker >/dev/null
 fi
 
-log "starting compose stack"
-docker compose -f "$COMPOSE_FILE" up -d rabbitmq eventstoredb gateway php-worker >/dev/null
+log "starting compose stack (mode=${MODE})"
+if [[ "$MODE" == "linkerd" ]]; then
+    docker compose "${COMPOSE_ARGS[@]}" up -d rabbitmq eventstoredb linkerd zipkin gateway php-worker >/dev/null
+    log "waiting for linkerd admin port"
+    elapsed=0
+    until curl -fsS http://127.0.0.1:9990/admin/ping 2>/dev/null | grep -q pong; do
+        sleep 2
+        elapsed=$((elapsed + 2))
+        if (( elapsed >= WAIT_TIMEOUT )); then
+            fail "linkerd admin not responding after ${WAIT_TIMEOUT}s"
+            docker compose "${COMPOSE_ARGS[@]}" logs --no-color linkerd | tail -50 >&2
+            exit 1
+        fi
+    done
+    pass "linkerd admin reachable"
+else
+    docker compose "${COMPOSE_ARGS[@]}" up -d rabbitmq eventstoredb gateway php-worker >/dev/null
+fi
 
 log "waiting for gateway HTTP (timeout=${WAIT_TIMEOUT}s)"
 elapsed=0
@@ -68,7 +101,7 @@ until curl -fsS "${GATEWAY_URL}/healthz" >/dev/null 2>&1 \
     elapsed=$((elapsed + 2))
     if (( elapsed >= WAIT_TIMEOUT )); then
         fail "gateway HTTP not responding after ${WAIT_TIMEOUT}s"
-        docker compose -f "$COMPOSE_FILE" logs --no-color gateway | tail -50 >&2
+        docker compose "${COMPOSE_ARGS[@]}" logs --no-color gateway | tail -50 >&2
         exit 1
     fi
 done
@@ -152,10 +185,21 @@ pass "envelope is canonical (schema_version=1, type=gateway.request, route=${rou
 
 log "checking worker logs for trace_id"
 sleep 2
-if docker compose -f "$COMPOSE_FILE" logs --no-color php-worker 2>&1 | grep -q 'request-consumer'; then
+if docker compose "${COMPOSE_ARGS[@]}" logs --no-color php-worker 2>&1 | grep -q 'request-consumer'; then
     pass "worker invoked request-consumer"
 else
     log "WARN: no request-consumer log entry yet (may still be consuming)"
+fi
+
+if [[ "$MODE" == "linkerd" ]]; then
+    log "asserting linkerd outgoing observed traffic"
+    if curl -fsS http://127.0.0.1:9990/admin/metrics/prometheus 2>/dev/null \
+        | grep -q '^rt:outgoing'; then
+        pass "linkerd outgoing metrics emitted"
+    else
+        fail "linkerd outgoing router did not record any requests"
+        exit 1
+    fi
 fi
 
 log "E2E smoke test passed (trace_id=${trace_id})"

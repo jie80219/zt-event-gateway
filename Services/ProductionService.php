@@ -5,6 +5,7 @@ use SDPMlab\Anser\Service\SimpleService;
 use SDPMlab\Anser\Service\ActionInterface;
 use Filters\FailHandlerFilter;
 use Filters\JsonDoneHandlerFilter;
+use Filters\LinkerdHostHeaderFilter;
 use Services\Models\ModifyProduct;
 
 class ProductionService extends SimpleService
@@ -12,6 +13,7 @@ class ProductionService extends SimpleService
     protected $serviceName = "ProductionService";
     protected $filters = [
         "before" => [
+            LinkerdHostHeaderFilter::class,
             JsonDoneHandlerFilter::class,
             FailHandlerFilter::class
         ],

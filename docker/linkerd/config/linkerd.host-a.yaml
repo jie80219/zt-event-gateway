@@ -1,0 +1,56 @@
+admin:
+  ip: 0.0.0.0
+  port: 9990
+
+namers:
+  - kind: io.l5d.fs
+    rootDir: /var/linkerd/disco
+
+telemetry:
+  - kind: io.l5d.prometheus
+  - kind: io.l5d.zipkin
+    host: zipkin
+    port: 9411
+    sampleRate: 1.0
+
+usage:
+  enabled: false
+
+routers:
+  - protocol: http
+    label: outgoing
+    servers:
+      - port: 4140
+        ip: 0.0.0.0
+    identifier:
+      kind: io.l5d.header
+      header: Host
+    dtab: |
+      /svc => /#/io.l5d.fs ;
+      /svc/OrderService      => /#/io.l5d.fs/OrderService ;
+      /svc/ProductionService => /#/io.l5d.fs/ProductionService ;
+      /svc/UserService       => /#/io.l5d.fs/UserService ;
+      /svc/product_service   => /#/io.l5d.fs/ProductService ;
+    client:
+      retries:
+        budget:
+          minRetriesPerSec: 5
+          percentCanRetry: 0.2
+          ttlSecs: 10
+        backoff:
+          kind: jittered
+          minMs: 100
+          maxMs: 2000
+      # Phase 3 — uncomment once certs are distributed and Phase 2 is green.
+      # tls:
+      #   kind: io.l5d.boundPath
+      #   caCertPath: /var/linkerd/tls/ca.crt
+      #   names:
+      #     - { prefix: "/#/io.l5d.fs/OrderService",      commonNamePattern: "linkerd-host-b" }
+      #     - { prefix: "/#/io.l5d.fs/ProductionService", commonNamePattern: "linkerd-host-c" }
+      #     - { prefix: "/#/io.l5d.fs/UserService",       commonNamePattern: "linkerd-host-d" }
+      #     - { prefix: "/#/io.l5d.fs/ProductService",    commonNamePattern: "linkerd-host-c" }
+    service:
+      totalTimeoutMs: 5000
+      responseClassifier:
+        kind: io.l5d.http.retryableRead5XX

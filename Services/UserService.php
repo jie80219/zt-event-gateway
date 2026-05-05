@@ -5,12 +5,14 @@ use SDPMlab\Anser\Service\SimpleService;
 use SDPMlab\Anser\Service\ActionInterface;
 use Filters\FailHandlerFilter;
 use Filters\JsonDoneHandlerFilter;
+use Filters\LinkerdHostHeaderFilter;
 
 class UserService extends SimpleService
 {
     protected $serviceName = "UserService";
     protected $filters = [
         "before" => [
+            LinkerdHostHeaderFilter::class,
             JsonDoneHandlerFilter::class,
             FailHandlerFilter::class
         ],

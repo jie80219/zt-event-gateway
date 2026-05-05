@@ -10,25 +10,27 @@ $env = static function (string $key, string $default): string {
 };
 
 $defaultHost = $env('SERVICE_HOST', 'localhost');
+$linkerdHost = $env('LINKERD_HOST', $defaultHost);
+$linkerdPort = $env('LINKERD_PORT', '4140');
 
 ServiceList::addLocalService(
     name: "ProductionService",
-    address: $env('PRODUCTION_SERVICE_HOST', $defaultHost),
-    port: (int) $env('PRODUCTION_SERVICE_PORT', '8083'),
+    address: $env('PRODUCTION_SERVICE_HOST', $linkerdHost),
+    port: (int) $env('PRODUCTION_SERVICE_PORT', $linkerdHost === $defaultHost ? '8083' : $linkerdPort),
     isHttps: false,
 );
 
 ServiceList::addLocalService(
     name: "UserService",
-    address: $env('USER_SERVICE_HOST', $defaultHost),
-    port: (int) $env('USER_SERVICE_PORT', '8084'),
+    address: $env('USER_SERVICE_HOST', $linkerdHost),
+    port: (int) $env('USER_SERVICE_PORT', $linkerdHost === $defaultHost ? '8084' : $linkerdPort),
     isHttps: false,
 );
 
 ServiceList::addLocalService(
     name: "OrderService",
-    address: $env('ORDER_SERVICE_HOST', $defaultHost),
-    port: (int) $env('ORDER_SERVICE_PORT', '8082'),
+    address: $env('ORDER_SERVICE_HOST', $linkerdHost),
+    port: (int) $env('ORDER_SERVICE_PORT', $linkerdHost === $defaultHost ? '8082' : $linkerdPort),
     isHttps: false,
 );
 

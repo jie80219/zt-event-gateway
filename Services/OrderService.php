@@ -5,6 +5,7 @@ use SDPMlab\Anser\Service\SimpleService;
 use SDPMlab\Anser\Service\ActionInterface;
 use Filters\FailHandlerFilter;
 use Filters\JsonDoneHandlerFilter;
+use Filters\LinkerdHostHeaderFilter;
 use Services\Models\OrderProductDetail;
 
 class OrderService extends SimpleService
@@ -12,6 +13,7 @@ class OrderService extends SimpleService
     protected $serviceName = "OrderService";
     protected $filters = [
         "before" => [
+            LinkerdHostHeaderFilter::class,
             JsonDoneHandlerFilter::class,
             FailHandlerFilter::class
         ],

@@ -8,6 +8,7 @@ use SDPMlab\Anser\Service\Action;
 use Psr\Http\Message\ResponseInterface;
 use SDPMlab\Anser\Exception\ActionException;
 use AnserGateway\HTTPConnectionManager;
+use Filters\LinkerdHostHeaderFilter;
 
 
 
@@ -22,7 +23,8 @@ class Product extends BaseController
             path: "/api/v1/products"
         );
 
-        $action->setTimeout(60)
+        $action->addBeforeFilter(LinkerdHostHeaderFilter::class)
+            ->setTimeout(60)
             ->doneHandler(static function (
                 ResponseInterface $response,
                 Action $runtimeAction
