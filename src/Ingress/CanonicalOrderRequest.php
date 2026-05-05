@@ -28,21 +28,13 @@ final class CanonicalOrderRequest
 
     /**
      * @param array<string, mixed> $payload
-     * @param bool                 $requireSpiffeIdentity When true (default) the envelope
-     *        MUST carry a non-empty spiffe_id and spiffe_path. When false, both fields
-     *        become optional — used when the master SPIFFE_ENABLED toggle is off so the
-     *        canonical envelope can still be validated for schema/route/id/data while
-     *        the zero-trust identity layer is intentionally absent.
-     *
      * @return array{
      *     route: string,
      *     traceId: string,
-     *     spiffeId: string,
-     *     spiffePath: list<string>,
      *     eventData: array{userKey: string, productList: list<array{p_key: int, amount: int}>, total: int, traceId: string}
      * }
      */
-    public static function validateEnvelope(array $payload, bool $requireSpiffeIdentity = true): array
+    public static function validateEnvelope(array $payload): array
     {
         $schemaVersion = $payload['schema_version'] ?? null;
         if (!is_int($schemaVersion)) {
@@ -73,37 +65,6 @@ final class CanonicalOrderRequest
             throw new \InvalidArgumentException('Missing request id.');
         }
 
-        $rawSpiffeId = $payload['spiffe_id'] ?? null;
-        if ($requireSpiffeIdentity) {
-            if (!is_string($rawSpiffeId) || $rawSpiffeId === '') {
-                throw new \InvalidArgumentException('Missing source SPIFFE identity.');
-            }
-            $spiffeId = $rawSpiffeId;
-        } else {
-            $spiffeId = is_string($rawSpiffeId) ? $rawSpiffeId : '';
-        }
-
-        $spiffePath = $payload['spiffe_path'] ?? null;
-        $normalizedPath = [];
-        if ($requireSpiffeIdentity) {
-            if (!is_array($spiffePath) || $spiffePath === []) {
-                throw new \InvalidArgumentException('Missing SPIFFE path.');
-            }
-            foreach ($spiffePath as $segment) {
-                if (!is_string($segment) || $segment === '') {
-                    throw new \InvalidArgumentException('Invalid SPIFFE path segment.');
-                }
-                $normalizedPath[] = $segment;
-            }
-        } elseif (is_array($spiffePath)) {
-            foreach ($spiffePath as $segment) {
-                if (!is_string($segment) || $segment === '') {
-                    throw new \InvalidArgumentException('Invalid SPIFFE path segment.');
-                }
-                $normalizedPath[] = $segment;
-            }
-        }
-
         $data = $payload['data'] ?? null;
         if (!is_array($data)) {
             throw new \InvalidArgumentException('Invalid request data.');
@@ -115,8 +76,6 @@ final class CanonicalOrderRequest
         return [
             'route' => $route,
             'traceId' => $traceId,
-            'spiffeId' => $spiffeId,
-            'spiffePath' => $normalizedPath,
             'eventData' => $eventData,
         ];
     }

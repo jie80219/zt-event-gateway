@@ -7,8 +7,6 @@ use PhpAmqpLib\Connection\AMQPSocketConnection;
 use PhpAmqpLib\Message\AMQPMessage;
 use Workerman\Protocols\Http\Response;
 use SDPMlab\ZtEventGateway\Ingress\CanonicalOrderRequest;
-use SDPMlab\LSVID\LSVIDException;
-use AnserGateway\Spiffe\GatewaySpiffeState;
 
 class Order extends BaseController
 {
@@ -60,59 +58,13 @@ class Order extends BaseController
         $routingKey = $this->env('REQUEST_ROUTING_KEY', 'request.new');
         $targetEvent = $this->env('REQUEST_EVENT_TYPE', 'OrderCreateRequestedEvent');
 
-        $spiffeEnabled = ($this->env('SPIFFE_ENABLED', '1') !== '0');
-        $spiffeId = $spiffeEnabled ? GatewaySpiffeState::getSpiffeId() : '';
-
         $envelope = [
             'schema_version' => CanonicalOrderRequest::SCHEMA_VERSION,
-            'type'        => CanonicalOrderRequest::ENVELOPE_TYPE,
-            'route'       => $targetEvent,
-            'id'          => $traceId,
-            'spiffe_id'   => $spiffeId,
-            'spiffe_path' => $spiffeId !== '' ? [$spiffeId] : [],
-            'data'        => $data,
+            'type'  => CanonicalOrderRequest::ENVELOPE_TYPE,
+            'route' => $targetEvent,
+            'id'    => $traceId,
+            'data'  => $data,
         ];
-
-        if ($spiffeEnabled) {
-            // ── LSVID Step 1 — Creation (L0) ─────────────────────────
-            //   Default is fail-closed: if LSVID_REQUIRED is unset we treat it
-            //   as enabled and refuse to emit an envelope without an L0 token.
-            //   Operators can explicitly opt out (LSVID_REQUIRED=0) for
-            //   migration windows; see docs/lsvid-experiment.md §5.
-            $lsvidRequired = ($this->env('LSVID_REQUIRED', '1') === '1');
-            $lsvidSigner = GatewaySpiffeState::getLsvidSigner();
-            if ($lsvidSigner !== null) {
-                try {
-                    $l0 = $lsvidSigner->createBase(
-                        audience: GatewaySpiffeState::getDownstreamSpiffeId(),
-                        subject: null,
-                        extraClaims: [
-                            'traceId' => $traceId,
-                            'route'   => $targetEvent,
-                            'level'   => 'L0',
-                        ],
-                    );
-                    $envelope['lsvid'] = $l0->raw;
-                } catch (LSVIDException $e) {
-                    fwrite(STDERR, sprintf(
-                        "[gateway] LSVID L0 mint failed (trace=%s): %s\n",
-                        $traceId,
-                        $e->getMessage(),
-                    ));
-                    if ($lsvidRequired) {
-                        return $this->jsonResponse([
-                            'status' => 'Internal Server Error',
-                            'message' => 'Identity token creation failed.',
-                        ], 500);
-                    }
-                }
-            } elseif ($lsvidRequired) {
-                return $this->jsonResponse([
-                    'status' => 'Service Unavailable',
-                    'message' => 'LSVID signing is required but signer is not available.',
-                ], 503);
-            }
-        }
 
         // Serialize AMQP access across coroutines sharing this worker process
         $lock = self::getLock();

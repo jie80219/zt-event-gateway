@@ -1,6 +1,6 @@
 {
   "name": "zt/event-gateway",
-  "description": "PHP event-driven gateway starter with Envoy routing and SPIFFE/SPIRE-ready security",
+  "description": "PHP event-driven gateway with Saga orchestration",
   "type": "project",
   "license": "proprietary",
   "require": {
@@ -16,8 +16,6 @@
     "sdpmlab/anser": "^0.2.6",
     "prooph/event-store": "^7.9",
     "prooph/pdo-event-store": "^1.15",
-    "sdpmlab/php-spiffe": "^1.0@dev",
-    "jie80219/php-lsvid": "^1.0@dev",
     "workerman/workerman": "^4.1 || ^5.0"
   },
   "require-dev": {
@@ -30,22 +28,6 @@
       "Tests\\": "tests/"
     }
   },
-  "repositories": [
-    {
-      "type": "path",
-      "url": "packages/php-spiffe",
-      "options": {
-        "symlink": true
-      }
-    },
-    {
-      "type": "path",
-      "url": "packages/php-lsvid",
-      "options": {
-        "symlink": true
-      }
-    }
-  ],
   "autoload": {
     "psr-4": {
       "App\\": "",
@@ -58,7 +40,6 @@
       "App\\Sagas\\": "Sagas/",
       "Filters\\": "anser-gateway/Filters/",
       "Services\\": "Services/",
-      "Spiffe\\": "src/Spiffe/",
       "GPBMetadata\\": "src/GPBMetadata/"
     }
   },
@@ -68,25 +49,13 @@
     "app:init": "php init.php",
     "consumer": "php consumer.php OrderCreateRequestedEvent",
     "publish": "php publisher.php",
-    "spiffe:watch": "php bin/spiffe-watcher.php",
     "test:unit": "vendor/bin/phpunit -c phpunit.xml",
     "test:failure-modes": "bash scripts/e2e-failure-modes.sh",
-    "lsvid:matrix": "bash -c 'cd packages/php-lsvid && vendor/bin/phpunit --filter LSVIDNegativeMatrixTest'",
-    "bench:lsvid-size": "bash scripts/experiments/lsvid-size-benchmark.sh --samples=50 --write",
-    "bench:lsvid": "php tests/benchmark-lsvid.php",
-    "spiffe:e2e": "bash spiffe/e2e/run-e2e.sh",
-    "lsvid:e2e": "bash spiffe/e2e/test-lsvid-chain.sh",
     "gateway:e2e": "bash scripts/e2e-gateway.sh",
     "arch:e2e": "bash scripts/e2e-full-architecture.sh",
     "experiment": "bash scripts/collect-experiment-data.sh",
     "experiment:micro": "bash scripts/collect-experiment-data.sh --micro-only",
     "ci:verify": "bash scripts/ci-verify.sh",
-    "ci:zt": "CI_MODE=full CI_PROFILE=zt COMPOSE_PROFILES=zt bash scripts/ci-verify.sh",
-    "ci:baseline": "CI_MODE=baseline SPIFFE_ENABLED=0 bash scripts/ci-verify.sh",
-    "spiffe:verify": "bash scripts/verify-spire-integrity.sh",
-    "spiffe:split": "bash packages/php-spiffe/split.sh",
-    "security:suite": "bash scripts/security-suite/run-security-suite.sh",
-    "security:unit": "SEC_SKIP_HTTP=1 SEC_SKIP_AMQP=1 SEC_SKIP_ROTATE=1 SEC_SKIP_DOCKER=1 bash scripts/security-suite/run-security-suite.sh",
-    "security:plot": "bash -c 'LATEST=$(ls -dt artifacts/security-* 2>/dev/null | head -1); [[ -z \"$LATEST\" ]] && echo \"no artifacts/security-* found\" && exit 1; python3 scripts/security-suite/plot/plot_security.py \"$LATEST\"'"
+    "ci:baseline": "CI_MODE=baseline bash scripts/ci-verify.sh"
   }
 }

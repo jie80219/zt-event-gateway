@@ -205,11 +205,10 @@ class EventBusTest extends TestCase
                 $this->callback(function (array $data) {
                     return $data['eventType'] === 'TestEvent'
                         && $data['data'] === ['foo' => 'bar']
-                        && isset($data['metadata']['spiffe_id']);
+                        && array_key_exists('metadata', $data);
                 }),
             );
 
-        $this->messageBus->method('getSpiffeId')->willReturn('spiffe://test/svc');
         $this->messageBus->method('publishEvent');
 
         $bus = new EventBus($this->messageBus, $eventStore);

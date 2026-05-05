@@ -58,20 +58,12 @@ reset_stack() {
         log "FULL reset: docker compose down -v + up -d --build"
         PERF_METRIC_ENABLED=1 docker compose down -v --remove-orphans >/dev/null 2>&1 || true
         PERF_METRIC_ENABLED=1 docker compose up -d --build >/dev/null
-        # SPIRE workloads re-registered automatically by zt-workload-registrar
-        # (see registrar service in docker-compose.yml). Otherwise run:
-        #   bash spiffe/scripts/register-workloads.sh
         wait_health 240
     else
-        log "LIGHT reset: rebuild + recreate gateway + php-worker + spiffe-watcher"
-        # Need PERF env + latest code in containers — build then recreate.
-        # Also recreate spiffe-watcher: long-lived gRPC FetchX509SVID streams
-        # can wedge after stream-interrupt, leaving SHM frozen and gateway
-        # eventually rejecting all requests with "leaf X.509 certificate
-        # expired" once the cached SVID hits the grace window.
+        log "LIGHT reset: rebuild + recreate gateway + php-worker"
         PERF_METRIC_ENABLED=1 docker compose build gateway php-worker >/dev/null
         PERF_METRIC_ENABLED=1 docker compose up -d --no-deps --force-recreate \
-            spiffe-watcher gateway php-worker >/dev/null
+            gateway php-worker >/dev/null
         wait_health 180
     fi
     purge_queues

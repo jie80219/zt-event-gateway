@@ -2,7 +2,6 @@
 
 namespace Config;
 
-use App\Filters\SpiffeLsvidFilter;
 use App\Filters\UserDtmFilter;
 use CodeIgniter\Config\BaseConfig;
 use CodeIgniter\Filters\CSRF;
@@ -28,7 +27,6 @@ class Filters extends BaseConfig
         'secureheaders' => SecureHeaders::class,
         'user'          => UserFilter::class,
         'userDtm'       => UserDtmFilter::class,
-        'spiffeLsvid'   => SpiffeLsvidFilter::class
     ];
 
     /**
@@ -71,7 +69,6 @@ class Filters extends BaseConfig
      * @var array
      */
     public $filters = [
-        'spiffeLsvid' => ['before' => ['api/v1/order', 'api/v1/order/*']],
-        'user'        => ['before' => ['api/v1/order', 'api/v1/order/*']],
+        'user' => ['before' => ['api/v1/order', 'api/v1/order/*']],
     ];
 }
