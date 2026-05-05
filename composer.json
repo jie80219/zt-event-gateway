@@ -1,6 +1,6 @@
 {
   "name": "zt/event-gateway",
-  "description": "PHP event-driven gateway with SPIFFE/SPIRE + optional Keycloak (OAuth2) layer",
+  "description": "PHP event-driven gateway starter with Envoy routing and SPIFFE/SPIRE-ready security",
   "type": "project",
   "license": "proprietary",
   "require": {
@@ -18,7 +18,6 @@
     "prooph/pdo-event-store": "^1.15",
     "sdpmlab/php-spiffe": "^1.0@dev",
     "jie80219/php-lsvid": "^1.0@dev",
-    "firebase/php-jwt": "^6.10",
     "workerman/workerman": "^4.1 || ^5.0"
   },
   "require-dev": {
@@ -60,8 +59,7 @@
       "Filters\\": "anser-gateway/Filters/",
       "Services\\": "Services/",
       "Spiffe\\": "src/Spiffe/",
-      "GPBMetadata\\": "src/GPBMetadata/",
-      "Keycloak\\": "src/Keycloak/"
+      "GPBMetadata\\": "src/GPBMetadata/"
     }
   },
   "scripts": {
@@ -71,7 +69,6 @@
     "consumer": "php consumer.php OrderCreateRequestedEvent",
     "publish": "php publisher.php",
     "spiffe:watch": "php bin/spiffe-watcher.php",
-    "keycloak:watch": "php bin/keycloak-watcher.php",
     "test:unit": "vendor/bin/phpunit -c phpunit.xml",
     "test:failure-modes": "bash scripts/e2e-failure-modes.sh",
     "lsvid:matrix": "bash -c 'cd packages/php-lsvid && vendor/bin/phpunit --filter LSVIDNegativeMatrixTest'",
@@ -85,8 +82,7 @@
     "experiment:micro": "bash scripts/collect-experiment-data.sh --micro-only",
     "ci:verify": "bash scripts/ci-verify.sh",
     "ci:zt": "CI_MODE=full CI_PROFILE=zt COMPOSE_PROFILES=zt bash scripts/ci-verify.sh",
-    "ci:baseline": "CI_MODE=baseline SPIFFE_ENABLED=0 KEYCLOAK_ENABLED=0 bash scripts/ci-verify.sh",
-    "ci:keycloak": "CI_MODE=full CI_PROFILE=keycloak COMPOSE_PROFILES=keycloak bash scripts/ci-verify.sh",
+    "ci:baseline": "CI_MODE=baseline SPIFFE_ENABLED=0 bash scripts/ci-verify.sh",
     "spiffe:verify": "bash scripts/verify-spire-integrity.sh",
     "spiffe:split": "bash packages/php-spiffe/split.sh",
     "security:suite": "bash scripts/security-suite/run-security-suite.sh",

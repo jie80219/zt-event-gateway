@@ -27,41 +27,23 @@ final class CanonicalOrderRequest
     }
 
     /**
-     * Validate the canonical order request envelope.
-     *
-     * Supports two independent identity layers carried side-by-side on the
-     * same envelope schema (v1):
-     *   - SPIFFE: `spiffe_id` + `spiffe_path` + optional top-level `lsvid`
-     *   - Keycloak: `authorization.{jwt,client_id}` + `token_path`
-     *
-     * Each layer is gated by its own require flag — neither, either, or
-     * both may be required depending on which auth stacks are active. When
-     * a layer is not required, its fields become optional but still get
-     * normalized into the return shape (empty string / empty array) so
-     * downstream consumers can treat them uniformly.
-     *
      * @param array<string, mixed> $payload
      * @param bool                 $requireSpiffeIdentity When true (default) the envelope
-     *        MUST carry a non-empty spiffe_id and spiffe_path.
-     * @param bool                 $requireAuthorization  When true the envelope MUST carry
-     *        a non-empty authorization.jwt and authorization.client_id (Keycloak).
+     *        MUST carry a non-empty spiffe_id and spiffe_path. When false, both fields
+     *        become optional — used when the master SPIFFE_ENABLED toggle is off so the
+     *        canonical envelope can still be validated for schema/route/id/data while
+     *        the zero-trust identity layer is intentionally absent.
      *
      * @return array{
      *     route: string,
      *     traceId: string,
      *     spiffeId: string,
      *     spiffePath: list<string>,
-     *     jwt: string,
-     *     clientId: string,
-     *     tokenPath: list<string>,
      *     eventData: array{userKey: string, productList: list<array{p_key: int, amount: int}>, total: int, traceId: string}
      * }
      */
-    public static function validateEnvelope(
-        array $payload,
-        bool $requireSpiffeIdentity = true,
-        bool $requireAuthorization = false,
-    ): array {
+    public static function validateEnvelope(array $payload, bool $requireSpiffeIdentity = true): array
+    {
         $schemaVersion = $payload['schema_version'] ?? null;
         if (!is_int($schemaVersion)) {
             if (!is_string($schemaVersion) || !ctype_digit($schemaVersion)) {
@@ -91,7 +73,6 @@ final class CanonicalOrderRequest
             throw new \InvalidArgumentException('Missing request id.');
         }
 
-        // ── SPIFFE identity ─────────────────────────────────────
         $rawSpiffeId = $payload['spiffe_id'] ?? null;
         if ($requireSpiffeIdentity) {
             if (!is_string($rawSpiffeId) || $rawSpiffeId === '') {
@@ -123,45 +104,6 @@ final class CanonicalOrderRequest
             }
         }
 
-        // ── Keycloak authorization ──────────────────────────────
-        $authorization = $payload['authorization'] ?? null;
-        $jwt = '';
-        $clientId = '';
-        if ($requireAuthorization) {
-            if (!is_array($authorization)) {
-                throw new \InvalidArgumentException('Missing authorization block.');
-            }
-            $jwtRaw = $authorization['jwt'] ?? null;
-            if (!is_string($jwtRaw) || $jwtRaw === '') {
-                throw new \InvalidArgumentException('Missing authorization.jwt.');
-            }
-            $jwt = $jwtRaw;
-            $clientIdRaw = $authorization['client_id'] ?? null;
-            if (!is_string($clientIdRaw) || $clientIdRaw === '') {
-                throw new \InvalidArgumentException('Missing authorization.client_id.');
-            }
-            $clientId = $clientIdRaw;
-        } elseif (is_array($authorization)) {
-            // Optional: accept what's present but don't fail if missing/malformed.
-            if (is_string($authorization['jwt'] ?? null)) {
-                $jwt = (string) $authorization['jwt'];
-            }
-            if (is_string($authorization['client_id'] ?? null)) {
-                $clientId = (string) $authorization['client_id'];
-            }
-        }
-
-        $tokenPath = $payload['token_path'] ?? null;
-        $normalizedTokenPath = [];
-        if (is_array($tokenPath)) {
-            foreach ($tokenPath as $segment) {
-                if (!is_string($segment) || $segment === '') {
-                    throw new \InvalidArgumentException('Invalid token_path segment.');
-                }
-                $normalizedTokenPath[] = $segment;
-            }
-        }
-
         $data = $payload['data'] ?? null;
         if (!is_array($data)) {
             throw new \InvalidArgumentException('Invalid request data.');
@@ -175,9 +117,6 @@ final class CanonicalOrderRequest
             'traceId' => $traceId,
             'spiffeId' => $spiffeId,
             'spiffePath' => $normalizedPath,
-            'jwt' => $jwt,
-            'clientId' => $clientId,
-            'tokenPath' => $normalizedTokenPath,
             'eventData' => $eventData,
         ];
     }

@@ -9,7 +9,6 @@ use Workerman\Protocols\Http\Response;
 use SDPMlab\ZtEventGateway\Ingress\CanonicalOrderRequest;
 use SDPMlab\LSVID\LSVIDException;
 use AnserGateway\Spiffe\GatewaySpiffeState;
-use AnserGateway\Keycloak\GatewayKeycloakState;
 
 class Order extends BaseController
 {
@@ -111,45 +110,6 @@ class Order extends BaseController
                 return $this->jsonResponse([
                     'status' => 'Service Unavailable',
                     'message' => 'LSVID signing is required but signer is not available.',
-                ], 503);
-            }
-        }
-
-        // ── Keycloak — append authorization block (independent of SPIFFE) ──
-        //   When KEYCLOAK_ENABLED=1 we mint a service-account bearer token
-        //   for the gateway's own client_id (no per-user OAuth flow at this
-        //   layer) and stamp it on the envelope alongside any SPIFFE
-        //   identity already set above. Both stacks coexist on the same
-        //   schema_version=1 envelope; downstream picks whichever it's
-        //   configured to validate.
-        $keycloakEnabled = ($this->env('KEYCLOAK_ENABLED', '0') !== '0')
-            && GatewayKeycloakState::isEnabled();
-        if ($keycloakEnabled) {
-            $tokenProvider = GatewayKeycloakState::getTokenProvider();
-            if ($tokenProvider !== null) {
-                try {
-                    $jwt = $tokenProvider->getAccessToken();
-                    $kcClientId = GatewayKeycloakState::getClientId();
-                    $envelope['authorization'] = [
-                        'jwt'       => $jwt,
-                        'client_id' => $kcClientId,
-                    ];
-                    $envelope['token_path'] = $kcClientId !== '' ? [$kcClientId] : [];
-                } catch (\Throwable $e) {
-                    fwrite(STDERR, sprintf(
-                        "[gateway] Keycloak token mint failed (trace=%s): %s\n",
-                        $traceId,
-                        $e->getMessage(),
-                    ));
-                    return $this->jsonResponse([
-                        'status' => 'Service Unavailable',
-                        'message' => 'Authorization token unavailable — please retry later.',
-                    ], 503);
-                }
-            } else {
-                return $this->jsonResponse([
-                    'status' => 'Service Unavailable',
-                    'message' => 'Keycloak is enabled but no TokenProvider is wired.',
                 ], 503);
             }
         }
