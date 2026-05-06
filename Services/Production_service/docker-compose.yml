@@ -70,6 +70,10 @@ services:
             - LSVID_REQUIRED=0
         volumes:
             - './app:/app'
+            # Bind the host's packages/ tree so vendor/jie80219/php-lsvid
+            # symlink (../../../../../packages/php-lsvid) resolves inside the
+            # container.
+            - '../../packages:/packages:ro'
             - production-certs:/certs:ro
         command: >
             bash -c "chmod 776 ./start_service.sh && ./start_service.sh"

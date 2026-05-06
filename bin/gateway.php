@@ -308,12 +308,14 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
         }
     }
 
+    $ingressOn = (\AnserGateway\Filters\KeycloakIngressJwtFilter::isEnabled());
     fwrite(STDOUT, sprintf(
-        "[gateway] Worker #%d started (pid=%d, spiffe_id=%s, kc_client_id=%s)\n",
+        "[gateway] Worker #%d started (pid=%d, spiffe_id=%s, kc_client_id=%s, ingress_jwt=%s)\n",
         $workerId,
         getmypid(),
         GatewaySpiffeState::getSpiffeId() ?: '(none)',
         GatewayKeycloakState::getClientId() ?: '(none)',
+        $ingressOn ? 'on(aud=' . (\AnserGateway\Filters\KeycloakIngressJwtFilter::expectedAudience() ?: '?') . ')' : 'off',
     ));
 });
 

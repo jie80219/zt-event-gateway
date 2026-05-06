@@ -48,6 +48,7 @@ async def post_one(
     url: str,
     seq: int,
     trace_id: str,
+    token: str = "",
 ) -> Result:
     body = {
         "userKey": "1",
@@ -58,6 +59,8 @@ async def post_one(
         "Content-Type": "application/json",
         "X-Correlation-Id": trace_id,
     }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
 
     t_req = time.time()
     code = 0
@@ -92,7 +95,7 @@ async def run(args: argparse.Namespace) -> int:
         async def worker(seq: int) -> None:
             async with sem:
                 trace_id = f"exp-{args.tag}-{seq:06d}-{uuid.uuid4().hex[:8]}"
-                results[seq] = await post_one(session, args.url, seq, trace_id)
+                results[seq] = await post_one(session, args.url, seq, trace_id, args.token)
                 if seq % progress_every == 0 and seq > 0:
                     sys.stderr.write(f"[driver] {seq}/{args.count} sent\n")
 
@@ -112,6 +115,7 @@ async def run(args: argparse.Namespace) -> int:
             "t_resp_ms",
             "http_code",
             "gateway_latency_ms",
+            "round",
         ])
         for i, r in enumerate(results):
             w.writerow([
@@ -121,6 +125,7 @@ async def run(args: argparse.Namespace) -> int:
                 r.t_resp_ms,
                 r.http_code,
                 f"{r.gateway_latency_ms:.3f}",
+                args.round,
             ])
 
     accepted = sum(1 for r in results if r.http_code == 202)
@@ -139,6 +144,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--request-timeout", type=float, default=15.0)
     p.add_argument("--tag", default="loop")
     p.add_argument("--out", required=True)
+    p.add_argument(
+        "--token",
+        default=os.environ.get("LOAD_DRIVER_TOKEN", ""),
+        help="Optional Keycloak Bearer token to attach to every request "
+             "(needed when Gateway has KEYCLOAK_INGRESS_ENABLED=1).",
+    )
+    p.add_argument(
+        "--round",
+        default="warm",
+        choices=["warm", "cold"],
+        help="Round label written into output CSV for warm/cold A-B comparison.",
+    )
     return p.parse_args()
 
 

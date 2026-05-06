@@ -171,7 +171,8 @@
       "WebFetch(domain:www.researchgate.net)",
       "WebFetch(domain:www.computer.org)",
       "Bash(tar -x -C /tmp/)",
-      "Bash(awk ' *)"
+      "Bash(awk ' *)",
+      "Bash(ssh *)"
     ]
   }
 }

@@ -71,6 +71,8 @@ services:
             - LSVID_REQUIRED=0
         volumes:
             - './app:/app'
+            # Bind packages/ so vendor/jie80219/php-lsvid symlink resolves.
+            - '../../packages:/packages:ro'
             - order-certs:/certs:ro
         command: >
             bash -c "chmod 776 ./start_service.sh && ./start_service.sh"

@@ -128,6 +128,35 @@
       "attributes": {
         "access.token.lifespan": "300"
       }
+    },
+    {
+      "clientId": "client-app",
+      "name": "External client app (north-south caller)",
+      "description": "Represents an external caller hitting Gateway. Mints tokens whose aud=gateway so the ingress JwtValidator accepts them.",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "client-app-dev-secret",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "attributes": {
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience-gateway",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "gateway",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
     }
   ]
 }

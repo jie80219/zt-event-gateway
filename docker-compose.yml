@@ -295,6 +295,10 @@ services:
       KEYCLOAK_CLIENT_SECRET: "${KEYCLOAK_CLIENT_SECRET:-gateway-dev-secret}"
       KEYCLOAK_SHM_DIR: "${KEYCLOAK_SHM_DIR:-/tmp/keycloak-shared}"
       KEYCLOAK_STALE_THRESHOLD_SECS: "${KEYCLOAK_STALE_THRESHOLD_SECS:-900}"
+      # ── Keycloak ingress JWT (north-south validation) ──
+      KEYCLOAK_INGRESS_ENABLED: "${KEYCLOAK_INGRESS_ENABLED:-0}"
+      KEYCLOAK_INGRESS_AUDIENCE: "${KEYCLOAK_INGRESS_AUDIENCE:-gateway}"
+      KEYCLOAK_INGRESS_SKIP_PATHS: "${KEYCLOAK_INGRESS_SKIP_PATHS:-/api/health,/}"
     volumes:
       - spire-agent-sockets:/run/spire/sockets:ro
       - spiffe-certs:/tmp/spiffe-certs:ro
@@ -349,7 +353,8 @@ services:
       LSVID_LOG_PAYLOAD: "0"
       PERF_METRIC_ENABLED: "${PERF_METRIC_ENABLED:-0}"
       # ── mTLS to downstream services ──
-      SPIFFE_MTLS_ENABLED: "0"
+      SPIFFE_MTLS_ENABLED: "${SPIFFE_MTLS_ENABLED:-0}"
+      MTLS_PORT: "${MTLS_PORT:-8443}"
       ORDER_SERVICE_HOST: "${ORDER_SERVICE_HOST:-10.1.1.210}"
       ORDER_SERVICE_PORT: "${ORDER_SERVICE_PORT:-8082}"
       PRODUCTION_SERVICE_HOST: "${PRODUCTION_SERVICE_HOST:-10.1.1.207}"

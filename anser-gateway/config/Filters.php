@@ -3,6 +3,7 @@
 namespace Config;
 
 use AnserGateway\Filters\JsonResponseFilter;
+use AnserGateway\Filters\KeycloakIngressJwtFilter;
 use App\Filters\TestFilter;
 use App\Filters\TestFilter2;
 use App\Filters\GlobalFilter;
@@ -14,7 +15,8 @@ class Filters
      * make reading things nicer and simpler.
      */
     public array $aliases = [
-        'jsonResponse' => JsonResponseFilter::class,
+        'jsonResponse'  => JsonResponseFilter::class,
+        'kcIngressJwt'  => KeycloakIngressJwtFilter::class,
     ];
 
     /**
@@ -23,10 +25,14 @@ class Filters
      */
     public array $globals = [
         'before' => [
-            // 'global' => ['except' => 'api/*'],
+            // North-south Keycloak JWT ingress validation.
+            // Filter is itself a no-op when KEYCLOAK_INGRESS_ENABLED=0, so
+            // listing it globally is safe even in baseline deployments.
+            'kcIngressJwt',
         ],
         'after' => [
-            'jsonResponse'
+            'kcIngressJwt',
+            'jsonResponse',
         ],
     ];
 

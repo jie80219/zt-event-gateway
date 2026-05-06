@@ -31,11 +31,14 @@ final class KeycloakBootstrap
         }
 
         $issuer       = self::requireEnv($env, 'KEYCLOAK_ISSUER');
-        $tokenUri     = $env['KEYCLOAK_TOKEN_URI']   ?? rtrim($issuer, '/') . '/protocol/openid-connect/token';
-        $jwksUri      = $env['KEYCLOAK_JWKS_URI']    ?? rtrim($issuer, '/') . '/protocol/openid-connect/certs';
+        // Optional overrides — treat empty string the same as unset so the
+        // watcher / gateway can pass `KEYCLOAK_TOKEN_URI=''` without breaking
+        // discovery from the issuer URL.
+        $tokenUri     = self::optionalEnv($env, 'KEYCLOAK_TOKEN_URI', rtrim($issuer, '/') . '/protocol/openid-connect/token');
+        $jwksUri      = self::optionalEnv($env, 'KEYCLOAK_JWKS_URI',  rtrim($issuer, '/') . '/protocol/openid-connect/certs');
         $clientId     = self::requireEnv($env, 'KEYCLOAK_CLIENT_ID');
         $clientSecret = self::requireEnv($env, 'KEYCLOAK_CLIENT_SECRET');
-        $shmDir       = $env['KEYCLOAK_SHM_DIR']     ?? KeycloakTableSchema::DEFAULT_BASE_DIR;
+        $shmDir       = self::optionalEnv($env, 'KEYCLOAK_SHM_DIR', KeycloakTableSchema::DEFAULT_BASE_DIR);
         $refreshSkew  = (int) ($env['KEYCLOAK_TOKEN_REFRESH_SKEW'] ?? '30');
         $realm        = self::realmFromIssuer($issuer);
 
@@ -78,6 +81,12 @@ final class KeycloakBootstrap
             throw new \RuntimeException("Required env var {$key} is not set");
         }
         return $v;
+    }
+
+    private static function optionalEnv(array $env, string $key, string $default): string
+    {
+        $v = $env[$key] ?? '';
+        return is_string($v) && $v !== '' ? $v : $default;
     }
 
     /**

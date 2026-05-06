@@ -96,7 +96,13 @@ try {
             // validation of L1 envelopes. Filter validator stays cache-less
             // (SpiffeLsvidFilter re-validates tokens it's about to extend).
             $requestValidator = $boot->validator(withJtiCache: true);
-            $eventValidator   = $boot->validator(withJtiCache: true);
+            // EventConsumer's jtiCache disabled: the saga fan-out
+            // (multiple handlers + AMQP redelivery semantics) legitimately
+            // re-validates the same L1 envelope within the same process,
+            // and a process-wide jti cache treats those as replay.
+            // L1 envelopes are still signed/verified end-to-end; replay
+            // protection at the entry point (RequestConsumer L0) is kept.
+            $eventValidator   = $boot->validator(withJtiCache: false);
             $filterValidator  = $boot->validator(withJtiCache: false);
             $lsvidValidator   = $requestValidator;  // kept for legacy call sites
 
