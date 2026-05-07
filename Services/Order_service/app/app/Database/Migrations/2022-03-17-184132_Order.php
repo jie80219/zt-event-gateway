@@ -33,7 +33,12 @@ class Order extends Migration
             "deleted_at"    => [
 				'type'           => 'datetime',
 				'null'           => true
-			]
+			],
+            "status"        => [
+                'type'           => 'VARCHAR',
+                'constraint'     => 50,
+                'null'           => true
+            ]
         ]);
         $this->forge->addKey('o_key', TRUE);
         $this->forge->createTable('order');
@@ -41,6 +46,6 @@ class Order extends Migration
 
     public function down()
     {
-        //
+        $this->forge->dropTable('order', true);
     }
 }

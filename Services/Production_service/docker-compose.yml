@@ -30,6 +30,8 @@ services:
         image: postgres:11.12
         networks:
             - anser_project_network
+        security_opt:
+            - "apparmor=unconfined"
         restart: unless-stopped
         environment:
             POSTGRES_DB: production

@@ -50,6 +50,6 @@ class OrderProduct extends Migration
 
     public function down()
     {
-        //
+        $this->forge->dropTable('order_product', true);
     }
 }

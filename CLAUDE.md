@@ -89,6 +89,101 @@ Pipeline in `.github/workflows/ci.yml`:
 | `unit-tests` | `vendor/bin/phpunit` | Envelope, consumers, Saga, EventBus unit suite |
 | `e2e-baseline` | `scripts/ci-verify.sh` | Canonical envelope + Saga end-to-end |
 
+## Running Experiments
+
+> **此流程適用於所有分支**。每換到一個分支量測（baseline / feat/spiffe-keycloak / feat/linkerd / …），都必須照下方順序走完 §1→§5 才能執行 `scripts/experiments/` 下的負載腳本。**任一步失敗都要停下排查，不要硬跑**。
+
+### 1. 受測拓撲（SSH aliases）
+
+| Alias | 角色 | 容器位置 |
+|---|---|---|
+| `zt-gateway` | Gateway 主機 | `~/zt-event-gateway/` 主 stack（gateway + worker + RabbitMQ + EventStoreDB；branch-specific watcher 容器另計） |
+| `zt-order`   | 訂單服務     | `~/zt-event-gateway/Services/Order_service/` |
+| `zt-prod`    | 商品服務     | `~/zt-event-gateway/Services/Production_service/` |
+| `zt-user`    | 使用者服務   | `~/zt-event-gateway/Services/User_service/` |
+
+> `scripts/experiments/run-dualmode-distributed.sh` 內部使用 `-lan` 後綴別名（`zt-gateway-lan`、`zt-order-lan`…）走低延遲 LAN，本節列出的 WAN 別名只用於人工 preflight。
+
+### 2. Preflight：分支同步 + Healthy 檢查
+
+從本機 Mac 執行，照順序完成 (a)→(c)：
+
+```bash
+# (a) 將要測的分支同步到四台 host
+BR=main   # 換成你要測的分支：main / feat/spiffe-keycloak / feat/linkerd / ablation 分支
+for h in zt-gateway zt-prod zt-order zt-user; do
+  ssh "$h" "cd ~/zt-event-gateway && git fetch --all --prune && git checkout $BR && git pull --ff-only"
+done
+
+# (b) 起各 host 的 compose stack（profile 由分支 docker-compose 決定）
+ssh zt-gateway 'cd ~/zt-event-gateway && docker compose up -d'
+ssh zt-order   'cd ~/zt-event-gateway/Services/Order_service      && docker compose up -d'
+ssh zt-prod    'cd ~/zt-event-gateway/Services/Production_service && docker compose up -d'
+ssh zt-user    'cd ~/zt-event-gateway/Services/User_service       && docker compose up -d'
+
+# (c) 健康檢查 — 四個都要 200 才繼續
+ssh zt-gateway 'curl -fsS http://127.0.0.1:8080/api/health' && echo " gateway OK"
+ssh zt-order   'curl -fsS http://127.0.0.1:8082/api/health' && echo " order OK"
+ssh zt-prod    'curl -fsS http://127.0.0.1:8083/api/health' && echo " production OK"
+ssh zt-user    'curl -fsS http://127.0.0.1:8084/api/health' && echo " user OK"
+```
+
+> **Branch-specific 額外檢查**：若該分支引入身份層或 service mesh（SPIFFE/SPIRE、Keycloak、Linkerd…），請在進入 §3 之前另外確認對應 watcher / sidecar ready（例：`docker exec zt-spiffe-watcher cat /tmp/spiffe-shared/meta.json | jq .x509_state` 應為 `"ready"`）。具體檢查項由各分支自己的 README / 註解決定。
+
+任一步失敗就 **停下排查**，不要進入下一步。
+
+### 3. Smoke test：先跑一張完整訂單
+
+跑大量負載前必須確認單筆 saga 走完 Step 1→4，避免在已經壞掉的 build 上浪費數小時：
+
+```bash
+TRACE=smoke-$(date +%s)
+ssh zt-gateway "curl -sS -X POST http://127.0.0.1:8080/api/orders \
+  -H 'Content-Type: application/json' -H 'X-Correlation-Id: $TRACE' \
+  -d '{\"userKey\":\"1\",\"productList\":[{\"p_key\":1,\"amount\":1}],\"total\":100}'"
+# 預期：HTTP 202 + JSON 含 trace_id
+
+sleep 5
+ssh zt-gateway "docker logs --tail 200 zt-php-worker 2>&1 | grep -E '✅ Saga Step 4|RollbackSaga' | tail -5"
+# Pass 條件：看到 '✅ Saga Step 4: 訂單完成！'，且該 trace 沒有 RollbackSaga
+```
+
+只有 smoke 訂單成功完成才能進入 §4。若走到 RollbackSaga，常見原因：下游服務 build 過舊、DB seed 缺資料、branch-specific 身份/網路層未 ready。
+
+### 4. 執行實驗數據
+
+兩個 runner 擇一：
+
+**A. 分散式 runner（驅動隔離；正式量測一律用這個）** — `scripts/experiments/run-dualmode-distributed.sh`
+從本機 Mac 執行（內部用 `-lan` 別名）：
+
+```bash
+OUT=artifacts/$(date +%Y%m%d-%H%M%S)-${BR##*/}
+SCALES="5000 10000 20000" ROUNDS="warm cold" \
+  bash scripts/experiments/run-dualmode-distributed.sh "$OUT"
+```
+
+輸出在 `$OUT/raw/`：`load_<round>_<scale>.csv`、`worker_<round>_<scale>.log`、`mtls_<round>_<scale>.err`。Cold round 會在切換時對 `zt-gateway-lan` 上的 `zt-gateway` + `zt-php-worker` 做 docker restart。
+
+> 雖然檔名沿用 `dualmode` / `mtls`，這只是腳本歷史命名；對 baseline 等沒有 mTLS 的分支，`mtls_*.err` 仍會產出但內容可忽略。
+
+**B. 單機 runner（僅 debug 用）** — `scripts/experiments/run-dualmode-experiment.sh`
+驅動與 gateway 共用同一台 Mac，數值不可發表。
+
+### 5. 分析輸出
+
+```bash
+python3 scripts/experiments/analyze-dualmode-experiment.py --in "$OUT" --scales 5000,10000,20000
+# 在 $OUT/ 產出：
+#   Gateway接收請求時間.{xlsx,png}
+#   訂單完成時間.{xlsx,png}
+#   未完成交易率.{xlsx,png}
+#   mTLS花費時間.{xlsx,png}
+#   summary.xlsx, README.md
+```
+
+跨分支比較時，把每個分支跑出來的 `summary.xlsx` 並排彙整即可（建議 `$OUT` 目錄名稱含分支名以利後續對齊）。
+
 ## File Structure
 
 ```

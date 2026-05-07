@@ -31,7 +31,20 @@ routers:
       /svc/ProductionService => /#/io.l5d.fs/ProductionService ;
       /svc/UserService       => /#/io.l5d.fs/UserService ;
       /svc/product_service   => /#/io.l5d.fs/ProductService ;
-    client:
+    # Phase 3 — uncomment once certs are distributed and Phase 2 is green.
+    # client:
+    #   tls:
+    #     kind: io.l5d.boundPath
+    #     caCertPath: /var/linkerd/tls/ca.crt
+    #     names:
+    #       - { prefix: "/#/io.l5d.fs/OrderService",      commonNamePattern: "linkerd-host-b" }
+    #       - { prefix: "/#/io.l5d.fs/ProductionService", commonNamePattern: "linkerd-host-c" }
+    #       - { prefix: "/#/io.l5d.fs/UserService",       commonNamePattern: "linkerd-host-d" }
+    #       - { prefix: "/#/io.l5d.fs/ProductService",    commonNamePattern: "linkerd-host-c" }
+    service:
+      totalTimeoutMs: 5000
+      responseClassifier:
+        kind: io.l5d.http.retryableRead5XX
       retries:
         budget:
           minRetriesPerSec: 5
@@ -41,16 +54,3 @@ routers:
           kind: jittered
           minMs: 100
           maxMs: 2000
-      # Phase 3 — uncomment once certs are distributed and Phase 2 is green.
-      # tls:
-      #   kind: io.l5d.boundPath
-      #   caCertPath: /var/linkerd/tls/ca.crt
-      #   names:
-      #     - { prefix: "/#/io.l5d.fs/OrderService",      commonNamePattern: "linkerd-host-b" }
-      #     - { prefix: "/#/io.l5d.fs/ProductionService", commonNamePattern: "linkerd-host-c" }
-      #     - { prefix: "/#/io.l5d.fs/UserService",       commonNamePattern: "linkerd-host-d" }
-      #     - { prefix: "/#/io.l5d.fs/ProductService",    commonNamePattern: "linkerd-host-c" }
-    service:
-      totalTimeoutMs: 5000
-      responseClassifier:
-        kind: io.l5d.http.retryableRead5XX

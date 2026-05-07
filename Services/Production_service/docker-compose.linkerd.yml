@@ -14,6 +14,8 @@ services:
       - ../../docker/linkerd/tls:/var/linkerd/tls:ro
     environment:
       JAVA_OPTS: "-Xms256m -Xmx512m -XX:+UseG1GC"
+    security_opt:
+      - "apparmor=unconfined"
     mem_limit: 768m
     ports:
       - "4141:4141"
