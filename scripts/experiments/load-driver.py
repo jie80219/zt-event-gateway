@@ -50,11 +50,15 @@ async def post_one(
     trace_id: str,
     token: str = "",
 ) -> Result:
-    body = {
-        "userKey": "1",
+    # When a Bearer token is present, gateway derives userKey from the JWT `sub`
+    # claim (Keycloak ingress validation). Don't send userKey in the body — it
+    # would just be overwritten and adds bytes to every request.
+    body: dict = {
         "productList": [{"p_key": (seq % 5) + 1, "amount": 1}],
         "total": 100,
     }
+    if not token:
+        body["userKey"] = "1"
     headers = {
         "Content-Type": "application/json",
         "X-Correlation-Id": trace_id,
@@ -83,7 +87,47 @@ async def post_one(
     )
 
 
+async def fetch_token_ropc(
+    token_url: str,
+    client_id: str,
+    client_secret: str,
+    username: str,
+    password: str,
+    request_timeout: float,
+) -> str:
+    timeout = aiohttp.ClientTimeout(total=request_timeout)
+    data = {
+        "grant_type": "password",
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "username": username,
+        "password": password,
+    }
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(token_url, data=data) as resp:
+            body = await resp.json(content_type=None)
+            if resp.status != 200 or "access_token" not in body:
+                raise RuntimeError(f"ROPC failed: HTTP {resp.status} body={body}")
+            return body["access_token"]
+
+
 async def run(args: argparse.Namespace) -> int:
+    token = args.token
+    if args.keycloak_token_url and args.keycloak_username:
+        sys.stderr.write(
+            f"[driver] fetching Keycloak token via ROPC: client_id={args.keycloak_client_id} "
+            f"username={args.keycloak_username}\n",
+        )
+        token = await fetch_token_ropc(
+            token_url=args.keycloak_token_url,
+            client_id=args.keycloak_client_id,
+            client_secret=args.keycloak_client_secret,
+            username=args.keycloak_username,
+            password=args.keycloak_password,
+            request_timeout=args.request_timeout,
+        )
+        sys.stderr.write(f"[driver] got token len={len(token)}\n")
+
     sem = asyncio.Semaphore(args.concurrency)
     results: list[Result] = [None] * args.count  # type: ignore[list-item]
     progress_every = max(args.count // 20, 100)
@@ -95,7 +139,7 @@ async def run(args: argparse.Namespace) -> int:
         async def worker(seq: int) -> None:
             async with sem:
                 trace_id = f"exp-{args.tag}-{seq:06d}-{uuid.uuid4().hex[:8]}"
-                results[seq] = await post_one(session, args.url, seq, trace_id, args.token)
+                results[seq] = await post_one(session, args.url, seq, trace_id, token)
                 if seq % progress_every == 0 and seq > 0:
                     sys.stderr.write(f"[driver] {seq}/{args.count} sent\n")
 
@@ -148,8 +192,15 @@ def parse_args() -> argparse.Namespace:
         "--token",
         default=os.environ.get("LOAD_DRIVER_TOKEN", ""),
         help="Optional Keycloak Bearer token to attach to every request "
-             "(needed when Gateway has KEYCLOAK_INGRESS_ENABLED=1).",
+             "(needed when Gateway has KEYCLOAK_INGRESS_ENABLED=1). "
+             "Ignored if --keycloak-token-url + --keycloak-username are given.",
     )
+    p.add_argument("--keycloak-token-url", default=os.environ.get("KEYCLOAK_TOKEN_URL", ""),
+                   help="POST endpoint, e.g. http://keycloak:8080/realms/zt/protocol/openid-connect/token")
+    p.add_argument("--keycloak-client-id", default=os.environ.get("KEYCLOAK_USER_CLIENT_ID", "client-app"))
+    p.add_argument("--keycloak-client-secret", default=os.environ.get("KEYCLOAK_USER_CLIENT_SECRET", "client-app-dev-secret"))
+    p.add_argument("--keycloak-username", default=os.environ.get("KEYCLOAK_USER_USERNAME", ""))
+    p.add_argument("--keycloak-password", default=os.environ.get("KEYCLOAK_USER_PASSWORD", ""))
     p.add_argument(
         "--round",
         default="warm",

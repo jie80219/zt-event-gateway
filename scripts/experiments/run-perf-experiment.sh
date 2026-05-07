@@ -35,6 +35,16 @@ HEALTH_URL="${PERF_HEALTH_URL:-http://127.0.0.1:8080/api/health}"
 TODAY="$(date +%F)"
 OUT="${PERF_OUT:-artifacts/${TODAY}_Experimental}"
 
+# Keycloak ingress (when gateway has KEYCLOAK_INGRESS_ENABLED=1 — default on
+# feat/spiffe-keycloak). load-driver.py picks these up via env and does ROPC at
+# startup to obtain a Bearer JWT for `testuser`, then signs every /api/orders
+# call. Override any of these to point at a different Keycloak / user.
+export KEYCLOAK_TOKEN_URL="${KEYCLOAK_TOKEN_URL:-http://127.0.0.1:8180/realms/zt/protocol/openid-connect/token}"
+export KEYCLOAK_USER_CLIENT_ID="${KEYCLOAK_USER_CLIENT_ID:-client-app}"
+export KEYCLOAK_USER_CLIENT_SECRET="${KEYCLOAK_USER_CLIENT_SECRET:-client-app-dev-secret}"
+export KEYCLOAK_USER_USERNAME="${KEYCLOAK_USER_USERNAME:-testuser}"
+export KEYCLOAK_USER_PASSWORD="${KEYCLOAK_USER_PASSWORD:-testpass}"
+
 mkdir -p "$OUT/raw"
 
 log()  { printf '[perf] %s %s\n' "$(date +%T)" "$*" >&2; }

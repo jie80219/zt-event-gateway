@@ -231,7 +231,7 @@ class OrderSagaTest extends TestCase
     {
         $chargedWith = [];
         $this->userSvc->method('walletChargeAction')
-            ->willReturnCallback(function (int $userId, string $orderId, int $total) use (&$chargedWith) {
+            ->willReturnCallback(function (string $userId, string $orderId, int $total) use (&$chargedWith) {
                 $chargedWith = compact('userId', 'orderId', 'total');
                 return $this->mockAction(['code' => 200]);
             });
@@ -239,7 +239,7 @@ class OrderSagaTest extends TestCase
         $event = new InventoryDeductedEvent('order-xyz', '7', [], 999);
         $this->saga->onInventoryDeducted($event);
 
-        $this->assertSame(['userId' => 7, 'orderId' => 'order-xyz', 'total' => 999], $chargedWith);
+        $this->assertSame(['userId' => '7', 'orderId' => 'order-xyz', 'total' => 999], $chargedWith);
     }
 
     public function testStep3_paymentFails_triggersRollback(): void
@@ -315,7 +315,7 @@ class OrderSagaTest extends TestCase
     {
         $calledWith = [];
         $this->orderSvc->method('confirmOrderAction')
-            ->willReturnCallback(function (int $userId, string $orderId) use (&$calledWith) {
+            ->willReturnCallback(function (string $userId, string $orderId) use (&$calledWith) {
                 $calledWith = compact('userId', 'orderId');
                 return $this->mockAction(['code' => 200]);
             });
@@ -323,7 +323,7 @@ class OrderSagaTest extends TestCase
         $event = new PaymentProcessedEvent('order-abc', true, '99', 100, []);
         $this->saga->onPaymentProcessed($event);
 
-        $this->assertSame(['userId' => 99, 'orderId' => 'order-abc'], $calledWith);
+        $this->assertSame(['userId' => '99', 'orderId' => 'order-abc'], $calledWith);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -417,7 +417,7 @@ class OrderSagaTest extends TestCase
     {
         $calledWith = [];
         $this->orderSvc->method('compensateOrderAction')
-            ->willReturnCallback(function (int $userId, string $orderId) use (&$calledWith) {
+            ->willReturnCallback(function (string $userId, string $orderId) use (&$calledWith) {
                 $calledWith = compact('userId', 'orderId');
                 return $this->mockAction(['code' => 200]);
             });
@@ -425,7 +425,7 @@ class OrderSagaTest extends TestCase
         $event = new RollbackOrderEvent('order-001', '5');
         $this->saga->onRollbackOrder($event);
 
-        $this->assertSame(['userId' => 5, 'orderId' => 'order-001'], $calledWith);
+        $this->assertSame(['userId' => '5', 'orderId' => 'order-001'], $calledWith);
         $this->assertNothingPublished();
     }
 

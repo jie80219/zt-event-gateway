@@ -11,11 +11,14 @@ final class CanonicalOrderRequest
 
     /**
      * @param array<string, mixed> $input
+     * @param bool $requireUserKey When true, the body must carry userKey/user_id/etc.
+     *     Set false when the controller plans to inject userKey from a verified
+     *     identity source (e.g. Keycloak ingress JWT `sub`).
      * @return array{userKey: string, productList: list<array{p_key: int, amount: int}>, total: int}
      */
-    public static function normalizeOrderData(array $input): array
+    public static function normalizeOrderData(array $input, bool $requireUserKey = true): array
     {
-        $userKey = self::extractUserKey($input);
+        $userKey = self::extractUserKey($input, $requireUserKey);
         $productList = self::extractProductList($input);
         $total = self::extractTotal($input);
 
@@ -185,7 +188,7 @@ final class CanonicalOrderRequest
     /**
      * @param array<string, mixed> $input
      */
-    private static function extractUserKey(array $input): string
+    private static function extractUserKey(array $input, bool $required = true): string
     {
         foreach (['userKey', 'user_id', 'customerId', 'customer_id'] as $key) {
             if (!array_key_exists($key, $input)) {
@@ -201,7 +204,10 @@ final class CanonicalOrderRequest
             }
         }
 
-        throw new \InvalidArgumentException('Missing required field: userKey.');
+        if ($required) {
+            throw new \InvalidArgumentException('Missing required field: userKey.');
+        }
+        return '';
     }
 
     /**

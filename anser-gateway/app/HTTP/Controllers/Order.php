@@ -10,6 +10,7 @@ use SDPMlab\ZtEventGateway\Ingress\CanonicalOrderRequest;
 use SDPMlab\LSVID\LSVIDException;
 use AnserGateway\Spiffe\GatewaySpiffeState;
 use AnserGateway\Keycloak\GatewayKeycloakState;
+use Keycloak\KeycloakTokenContext;
 
 class Order extends BaseController
 {
@@ -48,13 +49,31 @@ class Order extends BaseController
             ], 400);
         }
 
+        // When ingress JWT validation is on, the body is not the source of
+        // identity — the verified `sub` claim from KeycloakIngressJwtFilter is.
+        // Tell the normaliser to skip its own userKey requirement; we'll inject
+        // it from KeycloakTokenContext below (and 401 if missing).
+        $ingressEnabled = ($this->env('KEYCLOAK_INGRESS_ENABLED', '0') !== '0');
+
         try {
-            $data = CanonicalOrderRequest::normalizeOrderData($requestPayload);
+            $data = CanonicalOrderRequest::normalizeOrderData($requestPayload, !$ingressEnabled);
         } catch (\InvalidArgumentException $e) {
             return $this->jsonResponse([
                 'status' => 'Unprocessable Entity',
                 'message' => $e->getMessage(),
             ], 422);
+        }
+
+        if ($ingressEnabled) {
+            $kcCtx = KeycloakTokenContext::get();
+            $sub = is_array($kcCtx) ? (string) ($kcCtx['claims']['sub'] ?? '') : '';
+            if ($sub === '') {
+                return $this->jsonResponse([
+                    'status' => 'Unauthorized',
+                    'message' => 'Authenticated user identity (sub) is missing.',
+                ], 401);
+            }
+            $data['userKey'] = $sub;
         }
 
         $traceId = $request->header('X-Correlation-ID') ?: uniqid('txn_', true);

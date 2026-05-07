@@ -101,4 +101,45 @@ final class CanonicalOrderRequestTest extends TestCase
             ],
         ], requireSpiffeIdentity: false);
     }
+
+    public function testNormalizeOrderDataRejectsMissingUserKeyByDefault(): void
+    {
+        // Default behavior (KEYCLOAK_INGRESS_ENABLED=0 or off) — body must
+        // still carry a userKey.
+        $this->expectException(\InvalidArgumentException::class);
+
+        CanonicalOrderRequest::normalizeOrderData([
+            'productList' => [['p_key' => 1, 'amount' => 1]],
+            'total' => 100,
+        ]);
+    }
+
+    public function testNormalizeOrderDataAllowsMissingUserKeyWhenIngressInjected(): void
+    {
+        // KEYCLOAK_INGRESS_ENABLED=1 path — controller will inject userKey
+        // from KeycloakTokenContext.sub, so the body need not carry one.
+        $normalized = CanonicalOrderRequest::normalizeOrderData([
+            'productList' => [['p_key' => 1, 'amount' => 1]],
+            'total' => 100,
+        ], requireUserKey: false);
+
+        $this->assertSame('', $normalized['userKey']);
+        $this->assertSame([['p_key' => 1, 'amount' => 1]], $normalized['productList']);
+        $this->assertSame(100, $normalized['total']);
+    }
+
+    public function testNormalizeOrderDataAcceptsKeycloakSubAsUserKey(): void
+    {
+        // When the controller injects a Keycloak `sub` UUID into the body
+        // before normaliser runs, the normaliser should preserve it as-is
+        // (no int coercion) so downstream Saga + downstream services receive
+        // the verified identity untouched.
+        $normalized = CanonicalOrderRequest::normalizeOrderData([
+            'userKey' => '11111111-1111-1111-1111-111111111111',
+            'productList' => [['p_key' => 1, 'amount' => 1]],
+            'total' => 100,
+        ]);
+
+        $this->assertSame('11111111-1111-1111-1111-111111111111', $normalized['userKey']);
+    }
 }

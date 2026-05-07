@@ -15,9 +15,8 @@ class Order extends Migration
                 'unique'         => true,
             ],
             'u_key'         => [
-                'type'           => 'INT',
-                'constraint'     => 5,
-                'unsigned'       => TRUE
+                'type'           => 'VARCHAR',
+                'constraint'     => 64
             ],
             'ext_price'           => [
                 'type'           => 'INT',

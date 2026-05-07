@@ -68,7 +68,7 @@ class UserService extends SimpleService
      * @param integer $userId
      * @return ActionInterface
      */
-    public function walletAction(int $userId): ActionInterface
+    public function walletAction(string $userId): ActionInterface
     {
         return $this->getAction(
             method: "GET",
@@ -87,7 +87,7 @@ class UserService extends SimpleService
      * @param integer $amount 儲值金額
      * @return ActionInterface
      */
-    public function walletDepositAction(int $userId, int $amount): ActionInterface
+    public function walletDepositAction(string $userId, int $amount): ActionInterface
     {
         return $this->getAction(
             method: "POST",
@@ -110,7 +110,7 @@ class UserService extends SimpleService
      * @param integer $total   扣款金額
      * @return ActionInterface
      */
-    public function walletChargeAction(int $userId, string $orderId, int $total): ActionInterface
+    public function walletChargeAction(string $userId, string $orderId, int $total): ActionInterface
     {
         return $this->getAction(
             method: "POST",
@@ -134,7 +134,7 @@ class UserService extends SimpleService
      * @param integer $amount  補償金額
      * @return ActionInterface
      */
-    public function walletCompensateAction(int $userId, string $orderId, int $amount): ActionInterface
+    public function walletCompensateAction(string $userId, string $orderId, int $amount): ActionInterface
     {
         return $this->getAction(
             method: "POST",

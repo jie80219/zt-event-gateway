@@ -35,7 +35,7 @@ class UserDtmFilter implements FilterInterface
     public function before(RequestInterface $request, $arguments = null)
     {
         $request = \Config\Services::request();
-        
+
         $data = $request->getJSON(true);
 
         $user_key = $data["u_key"] ?? null;
@@ -47,9 +47,31 @@ class UserDtmFilter implements FilterInterface
                 "error" => "使用者未驗證"
             ]
         ];
-        if (is_null($user_key)) return $this->response->setStatusCode(401, 'Unauthorized')->setJSON($failBody);
-        
-        User::setUserKey($user_key);
+        if (is_null($user_key) || $user_key === '') {
+            return $this->response->setStatusCode(401, 'Unauthorized')->setJSON($failBody);
+        }
+
+        // Incoming u_key is the Keycloak `sub` claim minted at the gateway.
+        // Map it to the internal users.id so wallet/history (still INT FK→users.id)
+        // can be operated on without further changes.
+        if (is_numeric($user_key)) {
+            User::setUserKey((string) $user_key);
+            return;
+        }
+
+        $db  = \Config\Database::connect();
+        $row = $db->table('users')->where('keycloak_sub', (string) $user_key)->get()->getRowArray();
+        if ($row === null) {
+            return $this->response->setStatusCode(401, 'Unauthorized')->setJSON([
+                "statuc"  => 401,
+                "error"   => 401,
+                "message" => [
+                    "error" => "使用者尚未對應到內部帳號 (keycloak_sub not registered)"
+                ],
+            ]);
+        }
+
+        User::setUserKey((string) $row['id']);
     }
 
     /**

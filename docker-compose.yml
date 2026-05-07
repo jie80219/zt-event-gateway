@@ -288,15 +288,15 @@ services:
       PRODUCTION_SERVICE_HOST: "${PRODUCTION_SERVICE_HOST:-10.1.1.207}"
       PRODUCTION_SERVICE_PORT: "${PRODUCTION_SERVICE_PORT:-8083}"
       PRODUCTION_SERVICE_HTTPS: "${PRODUCTION_SERVICE_HTTPS:-0}"
-      # ── Keycloak (only used when KEYCLOAK_ENABLED=1) ──
-      KEYCLOAK_ENABLED: "${KEYCLOAK_ENABLED:-0}"
+      # ── Keycloak (default ON for feat/spiffe-keycloak — must boot with --profile keycloak) ──
+      KEYCLOAK_ENABLED: "${KEYCLOAK_ENABLED:-1}"
       KEYCLOAK_ISSUER: "${KEYCLOAK_ISSUER:-http://keycloak:8080/realms/zt}"
       KEYCLOAK_CLIENT_ID: "${KEYCLOAK_CLIENT_ID:-gateway}"
       KEYCLOAK_CLIENT_SECRET: "${KEYCLOAK_CLIENT_SECRET:-gateway-dev-secret}"
       KEYCLOAK_SHM_DIR: "${KEYCLOAK_SHM_DIR:-/tmp/keycloak-shared}"
       KEYCLOAK_STALE_THRESHOLD_SECS: "${KEYCLOAK_STALE_THRESHOLD_SECS:-900}"
       # ── Keycloak ingress JWT (north-south validation) ──
-      KEYCLOAK_INGRESS_ENABLED: "${KEYCLOAK_INGRESS_ENABLED:-0}"
+      KEYCLOAK_INGRESS_ENABLED: "${KEYCLOAK_INGRESS_ENABLED:-1}"
       KEYCLOAK_INGRESS_AUDIENCE: "${KEYCLOAK_INGRESS_AUDIENCE:-gateway}"
       KEYCLOAK_INGRESS_SKIP_PATHS: "${KEYCLOAK_INGRESS_SKIP_PATHS:-/api/health,/}"
     volumes:
@@ -368,8 +368,8 @@ services:
       EVENTSTOREDB_ENABLED: "1"
       EVENTSTOREDB_HOST: "eventstoredb"
       EVENTSTOREDB_PORT: "2113"
-      # ── Keycloak (only used when KEYCLOAK_ENABLED=1) ──
-      KEYCLOAK_ENABLED: "${KEYCLOAK_ENABLED:-0}"
+      # ── Keycloak (default ON for feat/spiffe-keycloak — must boot with --profile keycloak) ──
+      KEYCLOAK_ENABLED: "${KEYCLOAK_ENABLED:-1}"
       KEYCLOAK_ISSUER: "${KEYCLOAK_ISSUER:-http://keycloak:8080/realms/zt}"
       KEYCLOAK_CLIENT_ID: "${KEYCLOAK_WORKER_CLIENT_ID:-worker}"
       KEYCLOAK_CLIENT_SECRET: "${KEYCLOAK_WORKER_CLIENT_SECRET:-worker-dev-secret}"

@@ -37,6 +37,17 @@ class OrderSaga extends Saga{
     #[EventHandler]
     public function onOrderCreateRequested(OrderCreateRequestedEvent $event){
         $this->log("Saga Step 1: 收到訂單建立請求");
+        // userKey can now be a Keycloak `sub` UUID (when ingress validation
+        // is on) or a numeric legacy id. Either way we propagate it as a
+        // string through the saga; downstream services map sub→users.id at
+        // their UserFilter/UserDtmFilter boundary.
+        $orderData = $event->orderData ?? [];
+        $incomingUserKey = $orderData['userKey'] ?? null;
+        if (is_string($incomingUserKey) && $incomingUserKey !== '') {
+            $this->userKey = $incomingUserKey;
+        } elseif (is_int($incomingUserKey)) {
+            $this->userKey = (string) $incomingUserKey;
+        }
         $productList = $event->productList;
         // 取得最新價格
         foreach ($productList as &$product) {
@@ -66,7 +77,7 @@ class OrderSaga extends Saga{
         }
         // 新增訂單
         $info = $this->orderService
-            ->createOrderAction((int) $this->userKey, $orderId, $this->productList)
+            ->createOrderAction((string) $this->userKey, $orderId, $this->productList)
             ->do()->getMeaningData();
         if (!is_array($info) || !$this->isSuccess($info)) {
             $this->log("[x] 訂單建立失敗，中止 Step 1");
@@ -189,7 +200,7 @@ class OrderSaga extends Saga{
         }
 
         $info = $this->orderService
-            ->confirmOrderAction((int)$event->userKey, $event->orderId)
+            ->confirmOrderAction((string)$event->userKey, $event->orderId)
             ->do()->getMeaningData();
 
         if (!$this->isSuccess($info)) {
@@ -232,7 +243,7 @@ class OrderSaga extends Saga{
 
         if ($event->paymentCompleted) {
             $this->userService->walletCompensateAction(
-                (int)$event->userKey, $event->orderId, $event->total
+                (string)$event->userKey, $event->orderId, $event->total
             )->do()->getMeaningData();
         }
 

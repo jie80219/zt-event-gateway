@@ -46,8 +46,25 @@ class UserFilter implements FilterInterface
             ]
         ];
         if ($user_key == "") return $this->response->setStatusCode(401, 'Unauthorized')->setJSON($failBody);
-        
-        User::setUserKey($user_key);
+
+        if (is_numeric($user_key)) {
+            User::setUserKey((string) $user_key);
+            return;
+        }
+
+        $db  = \Config\Database::connect();
+        $row = $db->table('users')->where('keycloak_sub', (string) $user_key)->get()->getRowArray();
+        if ($row === null) {
+            return $this->response->setStatusCode(401, 'Unauthorized')->setJSON([
+                "statuc"  => 401,
+                "error"   => 401,
+                "message" => [
+                    "error" => "使用者尚未對應到內部帳號 (keycloak_sub not registered)"
+                ],
+            ]);
+        }
+
+        User::setUserKey((string) $row['id']);
     }
 
     /**

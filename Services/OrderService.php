@@ -33,7 +33,7 @@ class OrderService extends SimpleService
      * @return ActionInterface
      */
     public function orderListAction(
-        int $userId,
+        string $userId,
         int $limit = 10,
         int $offest = 0,
         string $orderBy = "DESC",
@@ -62,7 +62,7 @@ class OrderService extends SimpleService
      * @param string $orderId
      * @return ActionInterface
      */
-    public function orderInfoAction(int $userId, string $orderId): ActionInterface
+    public function orderInfoAction(string $userId, string $orderId): ActionInterface
     {
         return $this->getAction(
             method: "GET",
@@ -83,7 +83,7 @@ class OrderService extends SimpleService
      * @return ActionInterface
      */
     public function createOrderAction(
-        int $userId,
+        string $userId,
         string $orderId,
         array $productDetailList
     ): ActionInterface {
@@ -112,7 +112,7 @@ class OrderService extends SimpleService
      * @param string $orderId
      * @return ActionInterface
      */
-    public function confirmOrderAction(int $userId, string $orderId): ActionInterface
+    public function confirmOrderAction(string $userId, string $orderId): ActionInterface
     {
         return $this->getAction(
             method: "PUT",
@@ -134,7 +134,7 @@ class OrderService extends SimpleService
      * @param string $orderId
      * @return ActionInterface
      */
-    public function compensateOrderAction(int $userId, string $orderId): ActionInterface
+    public function compensateOrderAction(string $userId, string $orderId): ActionInterface
     {
         return $this->getAction(
             method: "DELETE",
