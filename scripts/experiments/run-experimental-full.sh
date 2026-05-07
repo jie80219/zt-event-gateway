@@ -41,12 +41,15 @@ mkdir -p "$OUT/raw"
 
 # WAN aliases per CLAUDE.md (對應的 LAN -lan 別名由 distributed runner 自己用)
 HOSTS=(zt-gateway zt-order zt-prod zt-user)
-declare -A HEALTH_PORT=(
-    [zt-gateway]=8080
-    [zt-order]=8082
-    [zt-prod]=8083
-    [zt-user]=8084
-)
+health_port_for() {
+    case "$1" in
+        zt-gateway) echo 8080 ;;
+        zt-order)   echo 8082 ;;
+        zt-prod)    echo 8083 ;;
+        zt-user)    echo 8084 ;;
+        *) return 1 ;;
+    esac
+}
 
 BOLD='\033[1m'; GREEN='\033[32m'; RED='\033[31m'
 YELLOW='\033[33m'; CYAN='\033[36m'; RESET='\033[0m'
@@ -77,10 +80,12 @@ done
 # ── §A.2 Stack health probe ────────────────────────────────────────────────
 section "A.2 stack health probe"
 for h in "${HOSTS[@]}"; do
-    port="${HEALTH_PORT[$h]}"
-    ssh "$h" "curl -fsS -m 5 http://127.0.0.1:${port}/api/health >/dev/null" \
-        || fail "$h:${port} not healthy"
-    ok "$h:${port} healthy"
+    port="$(health_port_for "$h")"
+    # Gateway expose /api/health (200); downstream services do not — accept any
+    # 2xx–4xx as "HTTP server responsive" (matches docker healthcheck convention).
+    code=$(ssh "$h" "curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:${port}/api/health" || echo 000)
+    [[ "$code" =~ ^[234] ]] || fail "$h:${port} not healthy (HTTP $code)"
+    ok "$h:${port} responsive (HTTP $code)"
 done
 
 # SHM watcher state on gateway host (best-effort, non-fatal)
@@ -100,21 +105,48 @@ ok "keycloak-watcher token_state=$shm_token"
 section "A.3 smoke order (must complete Saga Step 4)"
 if [[ "${SKIP_SMOKE:-0}" != "1" ]]; then
     TRACE="smoke-${STAMP}"
+    # Gateway ingress requires user-level Keycloak JWT. Mint via ROPC against
+    # the docker-internal URL (http://keycloak:8080) so iss matches gateway's
+    # KEYCLOAK_ISSUER. We exec curl inside zt-gateway (on anser_project_network).
+    SMOKE_TOKEN=$(ssh zt-gateway "docker exec zt-gateway curl -fsS -m 5 -X POST \
+        -H 'Content-Type: application/x-www-form-urlencoded' \
+        --data-urlencode 'grant_type=password' \
+        --data-urlencode 'client_id=client-app' \
+        --data-urlencode 'client_secret=client-app-dev-secret' \
+        --data-urlencode 'username=testuser' \
+        --data-urlencode 'password=testpass' \
+        http://keycloak:8080/realms/zt/protocol/openid-connect/token" \
+        | python3 -c "import json,sys;print(json.load(sys.stdin).get('access_token',''))")
+    [[ -n "$SMOKE_TOKEN" ]] || fail "smoke: failed to mint Keycloak token"
+    ok "smoke: minted Keycloak token (len=${#SMOKE_TOKEN})"
+
     code=$(ssh zt-gateway "curl -sS -o /dev/null -w '%{http_code}' \
         -X POST http://127.0.0.1:8080/api/orders \
         -H 'Content-Type: application/json' \
+        -H 'Authorization: Bearer ${SMOKE_TOKEN}' \
         -H 'X-Correlation-Id: ${TRACE}' \
         -d '{\"userKey\":\"1\",\"productList\":[{\"p_key\":1,\"amount\":1}],\"total\":100}'")
     [[ "$code" == "202" ]] || fail "smoke order HTTP $code (expected 202)"
     sleep 5
-    ssh zt-gateway "docker logs --tail 500 zt-php-worker 2>&1 | grep '${TRACE}' \
-        | grep -E 'Saga Step 4|RollbackSaga'" > "$OUT/smoke.log" 2>/dev/null || true
-    if grep -q 'RollbackSaga' "$OUT/smoke.log" 2>/dev/null; then
+    # The "Saga Step 4" line carries only orderId (no traceId), so we first
+    # resolve our trace → orderId via the [perf-saga-step1] line, then collect
+    # all worker log lines mentioning that orderId.
+    ORDER_ID=$(ssh zt-gateway "docker logs --tail 500 zt-php-worker 2>&1 \
+        | grep -E '\[perf-saga-step1\].*traceId=${TRACE}'" \
+        | sed -E 's/.*orderId=([a-f0-9-]+).*/\1/' | head -1 || true)
+    if [[ -n "$ORDER_ID" ]]; then
+        ssh zt-gateway "docker logs --tail 500 zt-php-worker 2>&1 \
+            | grep -E '${ORDER_ID}|${TRACE}'" > "$OUT/smoke.log" 2>/dev/null || true
+    else
+        ssh zt-gateway "docker logs --tail 500 zt-php-worker 2>&1 \
+            | grep '${TRACE}'" > "$OUT/smoke.log" 2>/dev/null || true
+    fi
+    if grep -qE 'RollbackSaga|perf-saga-rolled-back' "$OUT/smoke.log" 2>/dev/null; then
         fail "smoke order rolled back; see $OUT/smoke.log"
     fi
-    grep -q 'Saga Step 4' "$OUT/smoke.log" 2>/dev/null \
+    grep -qE 'Saga Step 4|perf-saga-complete' "$OUT/smoke.log" 2>/dev/null \
         || fail "smoke order did not reach Saga Step 4 within 5s; see $OUT/smoke.log"
-    ok "smoke order complete (trace=$TRACE)"
+    ok "smoke order complete (trace=$TRACE orderId=$ORDER_ID)"
 else
     warn "SKIP_SMOKE=1, skipping smoke order"
 fi
@@ -142,20 +174,20 @@ lsvid_required=$(extract_env LSVID_REQUIRED);     lsvid_required="${lsvid_requir
 mtls_enabled=$(extract_env SPIFFE_MTLS_ENABLED);  mtls_enabled="${mtls_enabled:-0}"
 keycloak_enabled=$(extract_env KEYCLOAK_ENABLED); keycloak_enabled="${keycloak_enabled:-0}"
 
-declare -A SHAS
-for h in "${HOSTS[@]}"; do
-    SHAS[$h]=$(ssh "$h" 'cd ~/zt-event-gateway && git rev-parse HEAD')
-done
+SHA_GW=$(ssh zt-gateway 'cd ~/zt-event-gateway && git rev-parse HEAD')
+SHA_ORD=$(ssh zt-order   'cd ~/zt-event-gateway && git rev-parse HEAD')
+SHA_PROD=$(ssh zt-prod   'cd ~/zt-event-gateway && git rev-parse HEAD')
+SHA_USER=$(ssh zt-user   'cd ~/zt-event-gateway && git rev-parse HEAD')
 
 EXP_BRANCH="$EXPECTED_BRANCH" \
 EXP_STAMP="$STAMP" \
 EXP_SCALES="$SCALES" \
 EXP_ROUNDS="$ROUNDS" \
 EXP_OUT="$OUT/metadata.json" \
-EXP_GW_SHA="${SHAS[zt-gateway]}" \
-EXP_ORD_SHA="${SHAS[zt-order]}" \
-EXP_PROD_SHA="${SHAS[zt-prod]}" \
-EXP_USER_SHA="${SHAS[zt-user]}" \
+EXP_GW_SHA="$SHA_GW" \
+EXP_ORD_SHA="$SHA_ORD" \
+EXP_PROD_SHA="$SHA_PROD" \
+EXP_USER_SHA="$SHA_USER" \
 EXP_GW_WORKERS="$gw_workers" \
 EXP_NUMPROCS="$numprocs" \
 EXP_SPIFFE="$spiffe_enabled" \

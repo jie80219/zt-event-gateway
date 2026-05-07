@@ -19,12 +19,12 @@ set -euo pipefail
 
 OUT="${1:?usage: $0 <out-dir>}"
 SCALES=(${SCALES:-5000 10000 20000})
-DRAIN_SEC="${DRAIN_SEC:-90}"
+DRAIN_SEC="${DRAIN_SEC:-180}"
 MTLS_PROBE_COUNT="${MTLS_PROBE_COUNT:-200}"
 ROUNDS=(${ROUNDS:-warm cold})
 
-GATEWAY_HOST="zt-gateway-lan"
-DRIVER_HOST="zt-order-lan"
+GATEWAY_HOST="${GATEWAY_HOST:-zt-gateway}"
+DRIVER_HOST="${DRIVER_HOST:-zt-order}"
 GATEWAY_URL="http://10.1.1.209:8080/api/orders"
 HEALTH_URL="http://10.1.1.209:8080/api/health"
 
@@ -36,10 +36,20 @@ log() { printf '[exp] %s %s\n' "$(date +%T)" "$*" >&2; }
 # --- Helpers running on remote hosts ---------------------------------------
 
 mint_token() {
-    # Keycloak ingress is disabled in the current zt-gateway-lan deployment
-    # (no zt-keycloak-watcher container). Gateway accepts unauthenticated requests.
-    # Returning empty string makes load-driver skip the Authorization header.
-    echo ""
+    # Keycloak ingress (KEYCLOAK_INGRESS_ENABLED=1) requires a user-level
+    # Bearer JWT. Mint via ROPC. Must hit Keycloak through its docker-internal
+    # URL (http://keycloak:8080/...) so the issued `iss` matches what gateway's
+    # JwtValidator expects (KEYCLOAK_ISSUER=http://keycloak:8080/realms/zt).
+    # We exec the curl inside zt-gateway (which is on anser_project_network).
+    ssh "$GATEWAY_HOST" "docker exec zt-gateway curl -fsS -m 5 -X POST \
+        -H 'Content-Type: application/x-www-form-urlencoded' \
+        --data-urlencode 'grant_type=password' \
+        --data-urlencode 'client_id=client-app' \
+        --data-urlencode 'client_secret=client-app-dev-secret' \
+        --data-urlencode 'username=testuser' \
+        --data-urlencode 'password=testpass' \
+        http://keycloak:8080/realms/zt/protocol/openid-connect/token" \
+        | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))"
 }
 
 purge_queues() {
@@ -53,8 +63,12 @@ purge_queues() {
 }
 
 wait_health() {
+    # Mac driver isn't on the 10.1.1.x LAN; ssh-wrap the probe through
+    # GATEWAY_HOST (zt-gateway-lan) which has localhost access to :8080.
     for _ in $(seq 1 60); do
-        if curl -fsS -m 3 "$HEALTH_URL" >/dev/null 2>&1; then return 0; fi
+        if ssh "$GATEWAY_HOST" "curl -fsS -m 3 http://127.0.0.1:8080/api/health" >/dev/null 2>&1; then
+            return 0
+        fi
         sleep 2
     done
     log "gateway health check failed"
@@ -94,6 +108,7 @@ run_scale() {
     ssh "$DRIVER_HOST" "
         ulimit -n 65535 2>/dev/null || true
         docker run --rm --network host \\
+            --ulimit nofile=65535:65535 \\
             --security-opt apparmor=unconfined \\
             --security-opt seccomp=unconfined \\
             -v /root/load-driver.py:/load.py:ro \\
@@ -145,10 +160,10 @@ run_scale() {
 wait_health
 
 for round in "${ROUNDS[@]}"; do
-    if [[ "$round" == "cold" ]]; then
-        cold_restart_gateway
-    fi
     for n in "${SCALES[@]}"; do
+        if [[ "$round" == "cold" ]]; then
+            cold_restart_gateway
+        fi
         run_scale "$round" "$n"
     done
 done

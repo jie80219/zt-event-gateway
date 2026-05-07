@@ -152,7 +152,158 @@ TOTAL (gateway → downstream, 1 hop) ≈  3.1 ms
 
 ---
 
-## 5. 端到端壓測（Macro-benchmark）
+## 5. SVID vs Nested LSVID 對照
+
+§4 已經量出 LSVID 在不同鏈深度下的成本，本節進一步把它跟 **SPIFFE 標準的 JWT-SVID（單層、無巢狀）** 放在同一張桌上比較，回答兩個架構問題：
+
+1. 在同樣的零信任前提下，把 JWT-SVID 換成 nested LSVID，**換到了什麼能力**？
+2. **代價是什麼**？是 per-token 變貴，還是端到端的驗證次數變多？
+
+### 5.1 結構與威脅模型差異
+
+| 軸線 | JWT-SVID（SPIFFE 標準） | Nested LSVID（本專案） |
+|---|---|---|
+| Token 結構 | 單層 JWS：`header.payload.sig` | 巢狀 JWS：`Ln` 的 payload 內嵌 `Ln-1` 的 raw token |
+| 鏈深度 | 永遠 = 1（每跳獨立簽發） | = 跳數（Gateway L0 → Worker L1 → Filter L2 …） |
+| 簽發者 | SPIRE Agent (per-workload) | 各 hop 自己的 workload key（仍由 SPIRE 簽 cert） |
+| 信任根 | JWKS（JwtBundle，public key 集合） | X.509 trust bundle（CA bundle，每層自帶 x5c leaf cert） |
+| 鏈中前一跳的證據 | **不存在** —— 下游只看到「上一跳是誰」 | **每層 token 內嵌**，下游一次驗證可走完整條 caller chain |
+| 防篡改範圍 | 當前 token 的 claims | **整條鏈** —— 改任何一層，外層簽章立即失效 |
+| Replay 防護 | 當前 token 的 jti | 鏈中每層各自有 jti，可獨立或合併 cache |
+| Chain continuity 強制 | — | C1：`nested.aud === enclosing.iss`，由 validator 強制 |
+| Audience 強制 | C3：當前 token aud 比對 expected | C2 + C3：每層 aud 都要存在，且 outermost aud 比對 expected |
+| Trust domain 隔離 | 當前 token 的 sub/iss 限定 trust domain | 鏈中**每層**的 iss/sub/aud 都必須在同 trust domain 內（§6a） |
+
+關鍵差異不是 per-token 安全強度（兩者都靠 JWS + cert chain），而是**「跨 hop 的 caller provenance 是不是被密碼學保護」**：
+
+- **JWT-SVID**：Downstream 只能證明「呼叫我的人是 Worker」。Worker 自稱「我是被 Gateway 派遣的」是**口頭聲明**，沒有密碼學依據。攻擊者拿到 Worker 的 SVID 就能直接打 Downstream，並謊稱來自任意 Gateway。
+- **Nested LSVID**：Downstream 拿到的 L2 內嵌 L1 內嵌 L0；驗證鏈時 `aud/iss` 必須首尾相接，任一層被替換 → 簽章或 chain continuity 立即失敗。**「我是被 Gateway 經由 Worker 派遣的」變成可驗證事實**。
+
+### 5.2 安全能力對照矩陣
+
+| 能力 | JWT-SVID | Nested LSVID | 備註 |
+|---|:---:|:---:|---|
+| 當前 hop 身份證明 | ✓ | ✓ | 兩者都靠 SPIRE 簽發 |
+| Audience binding | ✓ | ✓ (每層) | LSVID 由 §C2/§C3 保證 |
+| Token 過期檢查 | ✓ | ✓ (每層) | LSVID 對鏈中每層 iat/exp/nbf 都檢 |
+| Trust domain 隔離 | ✓ | ✓ (每層) | LSVID 由 §6a 對 iss/sub/aud 全部檢 |
+| Replay 防護 | ✓ (jti) | ✓ (每層 jti) | 鏈深度愈深，jti cache 條目愈多 |
+| **Caller chain 證明** | ✗ | ✓ | LSVID 唯一獨享：篡改任一層失敗 |
+| **Chain continuity 強制** | ✗ | ✓ (§C1) | `nested.aud === enclosing.iss` |
+| **單一 token 攜帶整鏈** | ✗ | ✓ | envelope 只放一個 `lsvid` 欄位 |
+| 中間人接管後謊報來源 | 可發生 | 不可發生 | 攻擊者沒有上游 workload 的 key |
+| Defence-in-depth 重驗 | 需重撈 SVID | 已存在於 token 鏈中 | LSVID 只要再呼一次 `validate()` |
+
+### 5.3 等價成本模型
+
+`JwtSvidValidator::validate()`（`packages/php-spiffe/src/Spiffe/Validation/JwtSvidValidator.php:60-129`）與 `LSVIDValidator::verifyLevel()` 的核心熱路徑高度同構：
+
+```
+共同：base64url decode → JWS 簽章驗證 (openssl_verify) → claim 檢查 (exp/aud/sub)
+JWT-SVID 額外：JWKS kid 查表（O(1) hash lookup）
+LSVID  額外：x5c 解析 + cert notBefore/notAfter + openssl_x509_verify + cert SAN ↔ iss 對齊
+```
+
+從 §4 已量到的 primitive 數字推算（PHP 8.3 / arm64 / opcache off）：
+
+| 操作 | 量到的成本（μs） | 來源 |
+|---|---:|---|
+| `openssl_verify`（ES256 sig verify） | ~30 | §4 表「Crypto primitives」 |
+| `openssl_x509_verify`（leaf vs CA） | ~120 | §4 表「Crypto primitives」 |
+| `LSVID::parse()` — L0 | 5.98 | §4 表「Parsing」 |
+| Claim 檢查 + SpiffeId parse + SAN 對齊 | ~50–80 | 由 LSVID L0 - primitives 反推 |
+
+**JWT-SVID validate（單層）估算**：~30 (sig verify) + ~5–10 (header/payload decode) + ~50 (claim + SpiffeId parse) ≈ **~85–95 μs**
+
+注意這裡 JWT-SVID 不需要 `openssl_x509_verify`（因為它信任 JWKS 不是 X.509 cert chain）。如果改用「JWT-SVID + 每跳 X.509-SVID 做 mTLS」（業界常見組合），則 X.509 驗證成本被攤到 TLS 握手期，per-request 看不到，但 connection setup 多 ~120 μs。
+
+**LSVID L0 validate（單層）量到**：351 μs。對比 JWT-SVID 估算 ~90 μs，**LSVID 單層約貴 4×**，差在 `x5c` 內嵌 cert 的解析與驗證（每層自帶 leaf cert 是 LSVID 獨有的設計，讓 token 可獨立驗證、不需另外撈 JWKS）。
+
+### 5.4 端到端 3-hop 路徑對照
+
+把 Gateway → Worker → Downstream 整條路徑放在一起算（每 request 的累計加解密成本）。
+
+**情境 A：純 JWT-SVID（每跳獨立簽發 + 驗證）**
+
+```
+Gateway 簽 SVID-G → Worker 驗 SVID-G                ≈  90 μs
+Worker  簽 SVID-W → Downstream 驗 SVID-W            ≈  90 μs
+                                                    ─────────
+TOTAL crypto                                        ≈ 180 μs
+PROVENANCE                                          ✗ Downstream 不知道 Gateway 是誰
+```
+
+**情境 B：JWT-SVID + 每跳 forward 上游 SVID（試圖補 provenance）**
+
+```
+Gateway 簽 SVID-G → Worker 驗 SVID-G                ≈  90 μs
+Worker  簽 SVID-W → Downstream 驗 SVID-W + SVID-G   ≈ 180 μs
+                                                    ─────────
+TOTAL crypto                                        ≈ 270 μs
+PROVENANCE                                          ⚠ Downstream 信任 Worker forward 的內容
+                                                    （沒有 chain continuity，攻擊者拿 Worker
+                                                     key 後可任意填 SVID-G 欄位）
+```
+
+**情境 C：Nested LSVID（本專案實際部署）**
+
+```
+Gateway 鑄 L0                                       ≈ 144 μs
+Worker  驗 L0 (深度 1)                              ≈ 351 μs
+Worker  L0 → L1 extend                              ≈ 154 μs
+Worker  驗 L1 (深度 2，EventConsumer)               ≈ 677 μs
+Worker  驗 L1 (深度 2，filter 前置 re-validate)     ≈ 677 μs   ← DiD
+Worker  L1 → L2 extend                              ≈ 170 μs
+Downstream 驗 L0+L1+L2 (深度 3)                     ≈ 915 μs
+                                                    ─────────
+TOTAL crypto                                        ≈ 3.1 ms
+PROVENANCE                                          ✓ 整條鏈密碼學保證
+```
+
+**對照重點**：
+
+- **單看 crypto 成本**，LSVID 比裸 JWT-SVID 貴一個量級（3.1 ms vs 0.18 ms），主因是每層自帶 `x5c` 與 chain walk。
+- **看安全等價**：要讓 SVID 達到等價於 LSVID 的 caller-provenance 強度，必須在每跳驗 N 個獨立 SVID **並用某種 application-layer 簽章把它們綁在一起** —— 這實質上就是在重新發明 LSVID，而且沒有 chain continuity 的密碼學強制（C1）。
+- **看 3 ms 是否值得**：相對於 RabbitMQ publish + consume + DB query 的 I/O 成本（典型 10–50 ms），加 3 ms 換到「鏈不可偽造」，§6.3 從壓測角度給出量化結論。
+
+### 5.5 在端到端壓測中可觀測的差距
+
+§5（已改名為 §6）的四組 profile A/B/C/D 對 LSVID 三檔狀態（off / fail-open / fail-closed / + DiD）都有量。本節新增的 SVID 對照不在 profile 列表中，原因是 production gateway 不支援退化到「JWT-SVID only 模式」—— 一旦關掉 LSVID（profile A），實際上連 SPIFFE 身份檢查都只剩前綴比對。
+
+若日後要把「JWT-SVID only」加進壓測 profile，需要：
+
+- 在 Gateway 加一條 alternative path：發 JWT-SVID 到 envelope 而非 LSVID
+- Worker RequestConsumer / EventConsumer 改用 `JwtSvidValidator`
+- Downstream 接受 X-SVID header 並驗證
+
+這在本次工作範圍外，列為 §7.3 的 future work。
+
+### 5.6 為什麼選 nested LSVID
+
+1. **加密保證的 caller provenance**：在 multi-hop saga 場景（本專案 Gateway → Worker → Order/Production/User）中，downstream 服務可以對「呼叫實際從哪個 ingress 進來」做授權決策，而不只是相信中介層的口頭聲明。
+2. **單 token 攜帶整鏈**：envelope schema 只多一個 `lsvid` 欄位，不需要 N 個 X-SVID-* header，也避開 RabbitMQ 訊息 header 大小限制。
+3. **與 SPIFFE 工具鏈相容**：每層 token 仍是合法 JWS + x5c，可被 standard JWT 工具解析（雖然不會跑 chain walk）；遷移成本低。
+4. **可審計的鏈**：log 一條 LSVID 等於 log 整條 caller chain，故障排查時可從任一服務的日誌反推前因。
+5. **成本上限可控**：3-hop chain validate ≈ 1 ms，深度成長對驗證成本是線性的（每層 +280 μs，§4.1）。
+
+### 5.7 已知 trade-off
+
+| 維度 | JWT-SVID 較優 | Nested LSVID 較優 |
+|---|---|---|
+| 簽章/驗證 CPU 成本 | ✓（單跳 ~90 μs） | |
+| 跳數很少（≤2）的場景 | ✓ | |
+| Token / envelope 體積 | ✓（無 x5c 內嵌） | |
+| Caller chain 證明 | | ✓ |
+| 多 hop saga 編排 | | ✓ |
+| 跨 trust domain 鏈條 | | ✓（§6a 強制） |
+| 標準工具支援 | ✓（spec-defined） | △（自訂 nested 結構） |
+| 日後 Redis-backed jti | 條目少 | 條目隨鏈深成長 |
+
+若部署架構是「ingress 直接打 single backend」（無 saga / 無 fanout），JWT-SVID 已經夠用。本專案因為有 OrderSaga 的多步驟編排與 fanout 補償（rollback inventory / refund），**caller provenance 從可有可無變成關鍵**，這是選 LSVID 的決定性原因。
+
+---
+
+## 6. 端到端壓測（Macro-benchmark）
 
 資料來源：`scripts/lsvid-experiment.sh`（呼叫 `scripts/stress_test.sh` + `scripts/summarize-stress.php`）。
 
@@ -165,7 +316,7 @@ TOTAL (gateway → downstream, 1 hop) ≈  3.1 ms
 | **C** | 1 | 1 | 1 | **Fail-closed**：缺 lsvid 或驗證失敗一律拒絕 |
 | **D** | 1 | 1 | 1 | 同 C，額外驗證 SpiffeLsvidFilter 前置 re-validate 已生效 |
 
-### 5.1 執行方式
+### 6.1 執行方式
 
 ```bash
 # 完整跑（預設 TOTAL=500, CONC=10）
@@ -179,7 +330,7 @@ TOTAL=200 CONC=5 bash scripts/lsvid-experiment.sh
 - `docs/data/stress-{A,B,C,D}-{stamp}.json` — 每組原始指標
 - `docs/data/stress-summary.md` — 對照表（以 A 為基準計算 delta）
 
-### 5.2 對照表（示例格式）
+### 6.2 對照表（示例格式）
 
 實際數值請在目標主機執行後檢視 `docs/data/stress-summary.md`。以下示例展示報表格式（**非真實數據**，僅示意欄位結構與 delta 表示法）：
 
@@ -195,7 +346,7 @@ TOTAL=200 CONC=5 bash scripts/lsvid-experiment.sh
 - **B → C**：差異很小，因為 happy path 下 fail-closed 和 fail-open 走的是同樣的驗證路徑。C 的意義是**負面情境**會被拒絕，而不是 happy path 成本增加。
 - **C → D**：SpiffeLsvidFilter 的 re-validate 多一次 `validate()`（約 +680 μs），延遲最後一桶（p99）漲幅明顯。
 
-### 5.3 安全值的代價
+### 6.3 安全值的代價
 
 在示例數字（約 10% p99 漲幅、4-5% 吞吐損失）的量級下，LSVID 的零信任保護可以視為**在可接受的成本範圍內**，特別是相對於：
 - 取得跨服務身份冒用防護（由密碼學保證）
@@ -204,9 +355,9 @@ TOTAL=200 CONC=5 bash scripts/lsvid-experiment.sh
 
 ---
 
-## 6. 討論
+## 7. 討論
 
-### 6.1 已知限制
+### 7.1 已知限制
 
 1. **JTI replay 是 per-process**：`JtiReplayCache` 只在單一 PHP worker process 的記憶體中。OpenSwoole/Workerman 多 worker 的情況下，同一個 jti 可能在不同 worker 各被接受一次。**建議工作**：日後若有跨 worker replay 防護需求，改用 Redis 後端（把 `JtiReplayCache` 介面化）。
 2. **Trust bundle 從 SHM 讀取**：輪替時沒有主動 invalidate cache。目前靠 `bundleCacheKey = sha256(bundle_pem)` 被動觸發重新解析，在長時間執行的 worker 中這是可接受的。
@@ -214,30 +365,31 @@ TOTAL=200 CONC=5 bash scripts/lsvid-experiment.sh
 4. **ECDSA vs RSA**：目前 TestSvidReader 只覆蓋 EC P-256。若 SPIRE 簽發 RSA 憑證，benchmark 需再跑一次並記錄 RS256 數字（大致會比 ES256 慢 30-50%）。
 5. **Downstream service 這側的 LSVID 驗證** 不在本 repo 內；Order/Production/User Service 各自以獨立 Docker 跑，其 ingress 驗證邏輯在各自 repo 裡實作（PSR-15 `LSVIDMiddleware` 可以直接引入使用）。
 
-### 6.2 可優化方向
+### 7.2 可優化方向
 
 1. **Bundle cache 共用**：多個 validator 如果能共用 trust bundle 的解析結果，validate() 的 cold-start 成本可以抹平。
 2. **pre-compile 每個 CA 的 public key**：`openssl_pkey_get_public()` 在每次 `verifyLevel` 都會對所有 CA 呼叫一次，可以在 `loadTrustBundleCaCerts()` 裡預先提取。
 3. **簽章演算法選型**：EC P-256 在 ARM 上明顯快於 RSA；若 SPIRE 可以配置，建議固定 ES256。
 4. **Benchmark with opcache**：本次報告的數據是在 `opcache: off` 下跑的；實際生產環境會開 opcache，預期 overall 可再快 10-20%。
 
-### 6.3 日後工作（本次不含）
+### 7.3 日後工作（本次不含）
 
 - Redis-backed replay cache
 - 多 worker 共享 trust bundle 透過 APCu / SHM
 - Downstream service 端的 `LSVIDMiddleware` 集成與測試
 - 自動化 CI workflow：`ci:verify` 加入 `lsvid:matrix` 與 bench 的回歸
+- 加入「JWT-SVID only」壓測 profile（§5.5），讓 macro-bench 也能直接量到 SVID vs LSVID 的端到端差距
 
 ---
 
-## 7. 結論
+## 8. 結論
 
 - **驗證邏輯已完整**：15 個 negative case 全數通過，涵蓋簽章篡改、CA 偽造、trust domain 跨域、chain broken、replay、過期、nbf、audience / subject 違例等情境。
 - **Fail-closed 預設已開啟**：`docker-compose.yml` 中 Gateway/Worker 的 `LSVID_REQUIRED=1`、`SPIFFE_TRUST_DOMAIN=zt.local` 已同步。任何沒有有效 L0 的請求都會在 Gateway 入口或 Worker RequestConsumer 被拒絕。
 - **成本可控**：end-to-end 加解密開銷約 3 ms/request，在 100+ rps 的負載下 p95 漲幅 ~5-10%，低於 SLO 容差。
 - **防禦深度**：Worker 在 extend L2 前會再次驗證 prior token，任何 context 污染攻擊都會在第二次檢查時被攔截。
 
-### 7.1 生產建議設定
+### 8.1 生產建議設定
 
 ```yaml
 # docker-compose.yml 摘要
@@ -255,7 +407,7 @@ php-worker:
     DOWNSTREAM_SPIFFE_ID: "spiffe://zt.local/<target-service>"
 ```
 
-### 7.2 執行清單（交付前驗證）
+### 8.2 執行清單（交付前驗證）
 
 ```bash
 # 1. 單元回歸（含 15 個 negative matrix）
