@@ -26,7 +26,6 @@
 # Symlinked external packages
 packages/php-lsvid/
 
-# Linkerd 1.x mesh — keep cert *public* parts, never commit private keys.
-docker/linkerd/tls/ca/ca.key
-docker/linkerd/tls/certs/*.key
-docker/linkerd/tls/host-*.key
+# Linkerd 1.x mesh — generated per host via gen-certs.sh, never tracked.
+docker/linkerd/tls/*
+!docker/linkerd/tls/gen-certs.sh
