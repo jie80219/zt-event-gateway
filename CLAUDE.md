@@ -154,26 +154,26 @@ ssh zt-gateway "docker logs --tail 200 zt-php-worker 2>&1 | grep -E '✅ Saga St
 
 兩個 runner 擇一：
 
-**A. 分散式 runner（驅動隔離；正式量測一律用這個）** — `scripts/experiments/run-dualmode-distributed.sh`
+**A. 分散式 runner（驅動隔離；正式量測一律用這個）** — `scripts/experiments/run-perf-multihost.sh`
 從本機 Mac 執行（內部用 `-lan` 別名）：
 
 ```bash
 OUT=artifacts/$(date +%Y%m%d-%H%M%S)-${BR##*/}
 SCALES="5000 10000 20000" ROUNDS="warm cold" \
-  bash scripts/experiments/run-dualmode-distributed.sh "$OUT"
+  bash scripts/experiments/run-perf-multihost.sh "$OUT"
 ```
 
 輸出在 `$OUT/raw/`：`load_<round>_<scale>.csv`、`worker_<round>_<scale>.log`、`mtls_<round>_<scale>.err`。Cold round 會在切換時對 `zt-gateway-lan` 上的 `zt-gateway` + `zt-php-worker` 做 docker restart。
 
-> 雖然檔名沿用 `dualmode` / `mtls`，這只是腳本歷史命名；對 baseline 等沒有 mTLS 的分支，`mtls_*.err` 仍會產出但內容可忽略。
+> `mtls_*.err` 命名是腳本歷史殘留；對 baseline / linkerd-only 等沒有 mTLS 的分支，檔案仍會產出但內容可忽略。
 
-**B. 單機 runner（僅 debug 用）** — `scripts/experiments/run-dualmode-experiment.sh`
+**B. 單機 runner（僅 debug 用）** — `scripts/experiments/run-perf-experiment.sh`
 驅動與 gateway 共用同一台 Mac，數值不可發表。
 
 ### 5. 分析輸出
 
 ```bash
-python3 scripts/experiments/analyze-dualmode-experiment.py --in "$OUT" --scales 5000,10000,20000
+python3 scripts/experiments/analyze-perf-experiment.py --in "$OUT" --scales 5000,10000,20000
 # 在 $OUT/ 產出：
 #   Gateway接收請求時間.{xlsx,png}
 #   訂單完成時間.{xlsx,png}

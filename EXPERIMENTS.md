@@ -239,18 +239,16 @@ ssh zt-gateway 'cd ~/zt-event-gateway && docker compose up -d --force-recreate g
 ```bash
 # 先確認 §1 通過
 BR=$(git rev-parse --abbrev-ref HEAD)
-OUT="artifacts/$(date +%Y%m%d-%H%M%S)-${BR##*/}"
 
-# 分散式 runner（驅動隔離；正式量測一律用這個，內部走 -lan）
-SCALES="5000 10000 20000" ROUNDS="warm cold" \
-  bash scripts/experiments/run-dualmode-distributed.sh "$OUT"
-
-# 或多 host runner：兩 pass × 三 scale
-PERF_SCALES="5000 10000 20000" \
+# 多 host 分散式 runner（驅動隔離；正式量測一律用這個，內部走 -lan）
+PERF_SCALES="5000 10000 20000" PASSES=2 \
   bash scripts/experiments/run-perf-multihost.sh
+# → 輸出 rsync 回本機 ./artifacts/<TS>_Experimental/（PASSES=2 會產出兩個 timestamped 目錄）
 ```
 
 20k 那一輪開跑前再次確認 `workerCount=100`，跑完立刻改回 10。
+
+> **跨分支命名差異**（待 §6.4 follow-up 統一）：在 `feat/spiffe-keycloak` 上目前還沒 `run-perf-multihost.sh`，分散式 runner 仍叫 `run-dualmode-distributed.sh`，env 用 `SCALES` + `ROUNDS` 而非 `PERF_SCALES`。在那個分支跑時把上面命令替換成：`OUT=artifacts/$(date +%Y%m%d-%H%M%S)-${BR##*/}; SCALES="5000 10000 20000" ROUNDS="warm cold" bash scripts/experiments/run-dualmode-distributed.sh "$OUT"`。
 
 ### 2.3 輸出
 
@@ -263,7 +261,7 @@ $OUT/raw/mtls_<round>_<scale>.err          mTLS handshake 計時（在沒 mTLS �
 ### 2.4 分析
 
 ```bash
-python3 scripts/experiments/analyze-dualmode-experiment.py --in "$OUT" --scales 5000,10000,20000
+python3 scripts/experiments/analyze-perf-experiment.py --in "$OUT" --scales 5000,10000,20000
 # 產出：
 #   $OUT/Gateway接收請求時間.{xlsx,png}
 #   $OUT/訂單完成時間.{xlsx,png}
@@ -340,18 +338,18 @@ ssh zt-gateway 'cd ~/zt-event-gateway && LSVID_ENABLED=0 docker compose up -d --
 # 走 §1 通用 preflight + smoke
 OUT=artifacts/lsvid-off-$(date +%Y%m%d-%H%M%S)
 SCALES="5000 10000 20000 30000 50000" ROUNDS="warm" \
-  bash scripts/experiments/run-dualmode-distributed.sh "$OUT"
+  bash scripts/experiments/run-perf-multihost.sh "$OUT"
 
 # 4.3.2 ON 路徑
 ssh zt-gateway 'cd ~/zt-event-gateway && LSVID_ENABLED=1 docker compose up -d --force-recreate'
 # 重新 §1 preflight
 OUT=artifacts/lsvid-on-$(date +%Y%m%d-%H%M%S)
 SCALES="5000 10000 20000 30000 50000" ROUNDS="warm" \
-  bash scripts/experiments/run-dualmode-distributed.sh "$OUT"
+  bash scripts/experiments/run-perf-multihost.sh "$OUT"
 
 # 4.3.3 雙路徑分析
-python3 scripts/experiments/analyze-dualmode-experiment.py --in artifacts/lsvid-off-<ts> --scales 5000,10000,20000,30000,50000
-python3 scripts/experiments/analyze-dualmode-experiment.py --in artifacts/lsvid-on-<ts>  --scales 5000,10000,20000,30000,50000
+python3 scripts/experiments/analyze-perf-experiment.py --in artifacts/lsvid-off-<ts> --scales 5000,10000,20000,30000,50000
+python3 scripts/experiments/analyze-perf-experiment.py --in artifacts/lsvid-on-<ts>  --scales 5000,10000,20000,30000,50000
 
 # 4.3.4 並排對比（沿用 perf 的對比腳本）
 python3 scripts/experiments/compare-linkerd-vs-dualmode.py \
@@ -484,3 +482,20 @@ f22f7a3 feat(experiments): Keycloak token minting + drain 180s + bash 3.2 compat
 - **同一份手冊跨所有 branch 通用**。本檔在 `main` 與所有 feature branch 上應該維持同步（必要時 cherry-pick）；不要在某個 branch 上分岔。
 - **每次跑實驗 §0 都要重走**。即使 5 分鐘前才剛跑過另一輪，也要重看 branch / commit / 配置是否還對。
 - **每次切換 branch 都要 §1 重 smoke**。compose 重起後 Saga 第一張單常常會慢；smoke 不過絕對不要進 §2 §3 §4 §5。
+
+### 6.4 跨分支腳本命名 follow-up（pending）
+
+本手冊把分散式 perf runner 跟分析器都寫成 `run-perf-multihost.sh` / `analyze-perf-experiment.py`，這對應 `feat/Linkerd1` 上的實際檔名。`feat/spiffe-keycloak` 分支上對應的檔名仍是歷史的 `run-dualmode-distributed.sh` / `analyze-dualmode-experiment.py`，env scheme 也不同（`SCALES` + `ROUNDS` vs `PERF_SCALES`）。
+
+統一動作（待後續另開 PR 在 `feat/spiffe-keycloak` 上做）：
+
+```bash
+git checkout feat/spiffe-keycloak
+git mv scripts/experiments/run-dualmode-distributed.sh   scripts/experiments/run-perf-multihost.sh
+git mv scripts/experiments/run-dualmode-experiment.sh    scripts/experiments/run-perf-experiment.sh   # 若無同名衝突
+git mv scripts/experiments/analyze-dualmode-experiment.py scripts/experiments/analyze-perf-experiment.py
+# 更新該分支內部交叉引用（grep -rn dualmode scripts/ docs/）
+# 連同 compare-linkerd-vs-dualmode.py 一起評估是否更名為 compare-perf-cross-branch.py
+```
+
+完成後可把本節跟 §2.2 的「跨分支命名差異」、§4.3 的舊 dualmode 註記一起拿掉。

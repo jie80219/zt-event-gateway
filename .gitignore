@@ -25,3 +25,8 @@
 # Linkerd 1.x mesh — generated per host via gen-certs.sh, never tracked.
 docker/linkerd/tls/*
 !docker/linkerd/tls/gen-certs.sh
+
+# Python bytecode / packaging artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
