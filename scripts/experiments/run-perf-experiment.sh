@@ -24,10 +24,17 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$PROJECT_DIR"
 
+# Auto-detect Linkerd overlay so reset_stack does not strip the sidecar
+# integration when recreating gateway + php-worker between scales.
+COMPOSE_ARGS=(-f docker-compose.yml)
+if [[ -f docker-compose.linkerd.yml ]]; then
+    COMPOSE_ARGS+=(-f docker-compose.linkerd.yml)
+fi
+
 SCALES_RAW="${PERF_SCALES:-5000 10000 20000}"
 read -r -a SCALES <<<"$SCALES_RAW"
 CONCURRENCY="${PERF_CONCURRENCY:-100}"
-DRAIN_SEC="${PERF_DRAIN_SEC:-60}"
+DRAIN_SEC="${PERF_DRAIN_SEC:-600}"
 FULL_RESET="${PERF_FULL_RESET:-0}"
 MTLS_PROBE_COUNT="${PERF_MTLS_PROBE_COUNT:-200}"
 GATEWAY_URL="${PERF_GATEWAY_URL:-http://127.0.0.1:8080/api/orders}"
@@ -56,13 +63,13 @@ wait_health() {
 reset_stack() {
     if [[ "$FULL_RESET" == "1" ]]; then
         log "FULL reset: docker compose down -v + up -d --build"
-        PERF_METRIC_ENABLED=1 docker compose down -v --remove-orphans >/dev/null 2>&1 || true
-        PERF_METRIC_ENABLED=1 docker compose up -d --build >/dev/null
+        PERF_METRIC_ENABLED=1 docker compose "${COMPOSE_ARGS[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+        PERF_METRIC_ENABLED=1 docker compose "${COMPOSE_ARGS[@]}" up -d --build >/dev/null
         wait_health 240
     else
         log "LIGHT reset: rebuild + recreate gateway + php-worker"
-        PERF_METRIC_ENABLED=1 docker compose build gateway php-worker >/dev/null
-        PERF_METRIC_ENABLED=1 docker compose up -d --no-deps --force-recreate \
+        PERF_METRIC_ENABLED=1 docker compose "${COMPOSE_ARGS[@]}" build gateway php-worker >/dev/null
+        PERF_METRIC_ENABLED=1 docker compose "${COMPOSE_ARGS[@]}" up -d --no-deps --force-recreate \
             gateway php-worker >/dev/null
         wait_health 180
     fi
@@ -163,9 +170,9 @@ for N in "${SCALES[@]}"; do
     LOG_FILE="$OUT/raw/worker_${N}.log"
     : >"$LOG_FILE"
     {
-        docker compose logs --no-color --since "$SINCE_TS" php-worker 2>&1 \
+        docker compose "${COMPOSE_ARGS[@]}" logs --no-color --since "$SINCE_TS" php-worker 2>&1 \
             | grep -E '\[perf-(saga-complete|saga-step1|saga-rolled-back)\]' || true
-        docker compose logs --no-color --since "$SINCE_TS" gateway 2>&1 \
+        docker compose "${COMPOSE_ARGS[@]}" logs --no-color --since "$SINCE_TS" gateway 2>&1 \
             | grep -E '\[perf-request-in\]' || true
     } >>"$LOG_FILE"
 
