@@ -23,7 +23,7 @@ routers:
       - port: 4140
         ip: 0.0.0.0
     identifier:
-      kind: io.l5d.header
+      kind: io.l5d.header.token
       header: Host
     dtab: |
       /svc => /#/io.l5d.fs ;
