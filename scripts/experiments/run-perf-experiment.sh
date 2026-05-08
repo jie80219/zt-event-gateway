@@ -34,7 +34,23 @@ fi
 SCALES_RAW="${PERF_SCALES:-5000 10000 20000}"
 read -r -a SCALES <<<"$SCALES_RAW"
 CONCURRENCY="${PERF_CONCURRENCY:-100}"
-DRAIN_SEC="${PERF_DRAIN_SEC:-600}"
+# DRAIN budget is computed per-scale via compute_drain_sec() unless the user
+# pins it explicitly via PERF_DRAIN_SEC. Worker sustains ~30 saga events/sec
+# regardless of N, so the time to flush all in-flight sagas after load-driver
+# finishes scales linearly with N. The default formula (N/25 + 120) gives:
+#   N=5000  → 320s   N=10000 → 520s   N=20000 → 920s
+# plus the 60s idle window before capture, with ~60s safety margin baked in.
+DRAIN_SEC_OVERRIDE="${PERF_DRAIN_SEC:-}"
+DRAIN_SEC_PER_REQ="${PERF_DRAIN_SEC_PER_REQ:-25}"   # seconds per (req / divisor)
+DRAIN_SEC_BASE="${PERF_DRAIN_SEC_BASE:-120}"
+compute_drain_sec() {
+    local n=$1
+    if [[ -n "$DRAIN_SEC_OVERRIDE" ]]; then
+        printf '%s' "$DRAIN_SEC_OVERRIDE"
+    else
+        printf '%s' "$(( n / DRAIN_SEC_PER_REQ + DRAIN_SEC_BASE ))"
+    fi
+}
 FULL_RESET="${PERF_FULL_RESET:-0}"
 MTLS_PROBE_COUNT="${PERF_MTLS_PROBE_COUNT:-200}"
 GATEWAY_URL="${PERF_GATEWAY_URL:-http://127.0.0.1:8080/api/orders}"
@@ -139,12 +155,13 @@ for N in "${SCALES[@]}"; do
         --tag "perf${N}" \
         --out "$OUT/raw/load_${N}.csv"
 
-    log "draining (max ${DRAIN_SEC}s, poll all queues) for in-flight sagas to complete"
+    drain_sec=$(compute_drain_sec "$N")
+    log "draining (max ${drain_sec}s, poll all queues) for in-flight sagas to complete"
     drain_elapsed=0
     drain_poll=10
     drain_idle=0
     drain_idle_target="${PERF_DRAIN_IDLE:-60}"
-    while (( drain_elapsed < DRAIN_SEC )); do
+    while (( drain_elapsed < drain_sec )); do
         sleep "$drain_poll"
         drain_elapsed=$((drain_elapsed + drain_poll))
         # Sum across ALL queues — sagas pass through order_queue *and* the
