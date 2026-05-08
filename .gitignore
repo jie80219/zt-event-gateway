@@ -17,14 +17,10 @@
 /docs/thesis/*
 !/docs/thesis/ch2.5-shm-svid-delivery.md
 !/docs/thesis/4.md
-/.lsvid-experiment.override.yml
 
 .claude/
 .claude-logs/
 .phpunit.cache/
-
-# Symlinked external packages
-packages/php-lsvid/
 
 # Linkerd 1.x mesh — generated per host via gen-certs.sh, never tracked.
 docker/linkerd/tls/*

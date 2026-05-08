@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Gateway E2E smoke test (post-SPIFFE removal).
+# Gateway E2E smoke test.
 #
 # Brings up gateway + worker + RabbitMQ + EventStoreDB and verifies:
 #   1. Gateway HTTP /api/orders returns 202.
 #   2. Canonical envelope lands in order_queue.
 #   3. Worker consumes the request and dispatches the saga.
-#
-# This is intentionally lightweight — the SPIFFE/LSVID-specific assertions
-# from the previous version were removed alongside the identity layer.
 # ============================================================================
 set -euo pipefail
 

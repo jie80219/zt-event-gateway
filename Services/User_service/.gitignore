@@ -4,16 +4,8 @@
 # Environment / secrets
 app/.env
 
-# SPIFFE certs & keys (do NOT commit)
-spiffe/certs/*.key.pem
-spiffe/certs/*.crt.pem
-spiffe/certs/*.srl
-
 # Database data (dev volume)
 user-db-data/
-
-# SPIRE persistent data (dev volume)
-.spire-data/
 
 # Composer dependencies
 app/vendor/

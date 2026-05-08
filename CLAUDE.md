@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 系統目標
 
-在微服務架構中，透過 Saga 模式協調跨服務的分散式交易（建立訂單→扣庫存→扣款→完成）。先前的 SPIFFE/SPIRE/LSVID 與 Keycloak 身份層已移除，準備接入 **Linkerd 1.x**（Docker-native service mesh）作為觀測層與服務發現。
+在微服務架構中，透過 Saga 模式協調跨服務的分散式交易（建立訂單→扣庫存→扣款→完成），並以 **Linkerd 1.x**（Docker-native service mesh）作為觀測層與服務發現。
 
 ### 部署架構（4 台獨立 Docker）
 
@@ -91,18 +91,18 @@ Pipeline in `.github/workflows/ci.yml`:
 
 ## Running Experiments
 
-> **此流程適用於所有分支**。每換到一個分支量測（baseline / feat/spiffe-keycloak / feat/linkerd / …），都必須照下方順序走完 §1→§5 才能執行 `scripts/experiments/` 下的負載腳本。**任一步失敗都要停下排查，不要硬跑**。
+> **此流程適用於所有分支**。每換到一個分支量測（main / feat/Linkerd1 / ablation 分支 / …），都必須照下方順序走完 §1→§5 才能執行 `scripts/experiments/` 下的負載腳本。**任一步失敗都要停下排查，不要硬跑**。
 
 ### 1. 受測拓撲（SSH aliases）
 
 | Alias | 角色 | 容器位置 |
 |---|---|---|
-| `zt-gateway` | Gateway 主機 | `~/zt-event-gateway/` 主 stack（gateway + worker + RabbitMQ + EventStoreDB；branch-specific watcher 容器另計） |
+| `zt-gateway` | Gateway 主機 | `~/zt-event-gateway/` 主 stack（gateway + worker + RabbitMQ + EventStoreDB；branch-specific sidecar 另計） |
 | `zt-order`   | 訂單服務     | `~/zt-event-gateway/Services/Order_service/` |
 | `zt-prod`    | 商品服務     | `~/zt-event-gateway/Services/Production_service/` |
 | `zt-user`    | 使用者服務   | `~/zt-event-gateway/Services/User_service/` |
 
-> `scripts/experiments/run-dualmode-distributed.sh` 內部使用 `-lan` 後綴別名（`zt-gateway-lan`、`zt-order-lan`…）走低延遲 LAN，本節列出的 WAN 別名只用於人工 preflight。
+> 分散式 runner 內部使用 `-lan` 後綴別名（`zt-gateway-lan`、`zt-order-lan`…）走低延遲 LAN，本節列出的 WAN 別名只用於人工 preflight。
 
 ### 2. Preflight：分支同步 + Healthy 檢查
 
@@ -110,7 +110,7 @@ Pipeline in `.github/workflows/ci.yml`:
 
 ```bash
 # (a) 將要測的分支同步到四台 host
-BR=main   # 換成你要測的分支：main / feat/spiffe-keycloak / feat/linkerd / ablation 分支
+BR=main   # 換成你要測的分支：main / feat/Linkerd1 / ablation 分支
 for h in zt-gateway zt-prod zt-order zt-user; do
   ssh "$h" "cd ~/zt-event-gateway && git fetch --all --prune && git checkout $BR && git pull --ff-only"
 done
@@ -128,7 +128,7 @@ ssh zt-prod    'curl -fsS http://127.0.0.1:8083/api/health' && echo " production
 ssh zt-user    'curl -fsS http://127.0.0.1:8084/api/health' && echo " user OK"
 ```
 
-> **Branch-specific 額外檢查**：若該分支引入身份層或 service mesh（SPIFFE/SPIRE、Keycloak、Linkerd…），請在進入 §3 之前另外確認對應 watcher / sidecar ready（例：`docker exec zt-spiffe-watcher cat /tmp/spiffe-shared/meta.json | jq .x509_state` 應為 `"ready"`）。具體檢查項由各分支自己的 README / 註解決定。
+> **Branch-specific 額外檢查**：若該分支引入 service mesh（例：Linkerd），請在進入 §3 之前另外確認對應 sidecar ready（Linkerd 1.x 用 `curl :9990/admin/ping` 應回 `pong`、`curl :9411/health` 應回 `up`）。具體檢查項由各分支自己的 README / 註解決定。
 
 任一步失敗就 **停下排查**，不要進入下一步。
 

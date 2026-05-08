@@ -10,10 +10,6 @@
 
 # Secrets
 app/.env
-*.pem
-spiffe/certs/*.key.pem
-spiffe/certs/*.crt.pem
-spiffe/certs/*.srl
 
 # Database volume
 production-db-data/
