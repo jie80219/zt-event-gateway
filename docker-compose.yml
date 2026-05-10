@@ -277,12 +277,17 @@ services:
       AMQP_PORT: "5672"
       RABBITMQ_HOST: "rabbitmq"
       RABBITMQ_PORT: "5672"
-      ORDER_SERVICE_HOST: "order-service"
-      ORDER_SERVICE_PORT: "8080"
-      PRODUCTION_SERVICE_HOST: "production-service"
-      PRODUCTION_SERVICE_PORT: "8080"
-      USER_SERVICE_HOST: "user-service"
-      USER_SERVICE_PORT: "8080"
+      # Defaults are docker DNS for the single-host setup. To run the CI4
+      # services on dedicated remote hosts, set these in a per-host .env at
+      # the repo root: ORDER_SERVICE_HOST=10.1.1.210 ORDER_SERVICE_PORT=8082,
+      # PRODUCTION_SERVICE_HOST=10.1.1.207 PRODUCTION_SERVICE_PORT=8081,
+      # USER_SERVICE_HOST=10.1.1.214 USER_SERVICE_PORT=8080.
+      ORDER_SERVICE_HOST: "${ORDER_SERVICE_HOST:-order-service}"
+      ORDER_SERVICE_PORT: "${ORDER_SERVICE_PORT:-8080}"
+      PRODUCTION_SERVICE_HOST: "${PRODUCTION_SERVICE_HOST:-production-service}"
+      PRODUCTION_SERVICE_PORT: "${PRODUCTION_SERVICE_PORT:-8080}"
+      USER_SERVICE_HOST: "${USER_SERVICE_HOST:-user-service}"
+      USER_SERVICE_PORT: "${USER_SERVICE_PORT:-8080}"
     volumes:
       - vault_runtime_php_worker:/vault/runtime:ro
     networks:

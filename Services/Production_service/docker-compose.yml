@@ -13,7 +13,10 @@ services:
         command:
             - "chown -R vault:vault /vault/out; exec docker-entrypoint.sh agent -config=/vault/config.hcl"
         environment:
-            VAULT_ADDR: "http://vault:8200"
+            # Default = docker DNS (single-host). Set VAULT_ADDR in this
+            # host's .env (e.g. http://10.1.1.209:8200) to point at the
+            # gateway-host vault server when running cross-host.
+            VAULT_ADDR: "${VAULT_ADDR:-http://vault:8200}"
         networks:
             - anser_project_network
         volumes:
