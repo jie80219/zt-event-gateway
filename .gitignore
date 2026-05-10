@@ -17,6 +17,7 @@
 /docs/thesis/*
 !/docs/thesis/ch2.5-shm-svid-delivery.md
 !/docs/thesis/4.md
+!/docs/linkerd-flow.md
 
 .claude/
 .claude-logs/
