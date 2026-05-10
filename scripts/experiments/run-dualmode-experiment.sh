@@ -18,11 +18,27 @@ cd "$PROJECT_DIR"
 OUT="${OUT:?must set OUT=artifacts/<dir>}"
 SCALES=(${SCALES:-5000 10000 20000})
 CONCURRENCY="${CONCURRENCY:-50}"
-DRAIN_SEC="${DRAIN_SEC:-60}"
+# Drain budget mirrors feat/Linkerd1's run-perf-experiment.sh: N/25+120 with
+# idle-exit at PERF_DRAIN_IDLE (60s). Same env vars as the perf runner so
+# cross-branch comparisons share one knob.
+DRAIN_SEC_OVERRIDE="${PERF_DRAIN_SEC:-${DRAIN_SEC:-}}"
+DRAIN_SEC_PER_REQ="${PERF_DRAIN_SEC_PER_REQ:-25}"
+DRAIN_SEC_BASE="${PERF_DRAIN_SEC_BASE:-120}"
+DRAIN_IDLE_TARGET="${PERF_DRAIN_IDLE:-60}"
+DRAIN_POLL="${PERF_DRAIN_POLL:-10}"
 MTLS_PROBE_COUNT="${MTLS_PROBE_COUNT:-200}"
 ROUND="${ROUND:-warm}"
 GATEWAY_URL="http://127.0.0.1:8080/api/orders"
 HEALTH_URL="http://127.0.0.1:8080/api/health"
+
+compute_drain_sec() {
+    local n=$1
+    if [[ -n "$DRAIN_SEC_OVERRIDE" ]]; then
+        printf '%s' "$DRAIN_SEC_OVERRIDE"
+    else
+        printf '%s' "$(( n / DRAIN_SEC_PER_REQ + DRAIN_SEC_BASE ))"
+    fi
+}
 
 log() { printf '[exp] %s %s\n' "$(date +%T)" "$*" >&2; }
 
@@ -78,8 +94,26 @@ run_scale() {
         --out "$csv" \
         2>&1 | tail -5
 
-    log "scale=$n round=$ROUND — draining ${DRAIN_SEC}s"
-    sleep "$DRAIN_SEC"
+    local drain_sec; drain_sec=$(compute_drain_sec "$n")
+    log "scale=$n round=$ROUND — draining (max ${drain_sec}s, poll all queues)"
+    local drain_elapsed=0 drain_idle=0 depth
+    while (( drain_elapsed < drain_sec )); do
+        sleep "$DRAIN_POLL"
+        drain_elapsed=$((drain_elapsed + DRAIN_POLL))
+        depth=$(docker exec zt-rabbitmq rabbitmqctl --quiet list_queues name messages 2>/dev/null \
+            | awk '$2 ~ /^[0-9]+$/ {sum+=$2} END{print sum+0}') || depth=0
+        depth="${depth:-0}"
+        log "  drain t=${drain_elapsed}s all_queues=${depth}"
+        if [[ "$depth" == "0" ]]; then
+            drain_idle=$((drain_idle + DRAIN_POLL))
+            if (( drain_idle >= DRAIN_IDLE_TARGET )); then
+                log "  all queues idle ${drain_idle}s — draining complete"
+                break
+            fi
+        else
+            drain_idle=0
+        fi
+    done
 
     # Capture only this scale's worker + gateway logs
     local woff goff

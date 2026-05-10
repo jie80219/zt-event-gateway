@@ -19,9 +19,25 @@ set -euo pipefail
 
 OUT="${1:?usage: $0 <out-dir>}"
 SCALES=(${SCALES:-5000 10000 20000})
-DRAIN_SEC="${DRAIN_SEC:-180}"
+# Drain budget mirrors feat/Linkerd1's run-perf-experiment.sh so cross-branch
+# Incomplete-transaction-rate uses the same window: N/25+120 (320/520/920s for
+# 5k/10k/20k), poll exits early once all queues idle for PERF_DRAIN_IDLE (60s).
+DRAIN_SEC_OVERRIDE="${PERF_DRAIN_SEC:-${DRAIN_SEC:-}}"
+DRAIN_SEC_PER_REQ="${PERF_DRAIN_SEC_PER_REQ:-25}"
+DRAIN_SEC_BASE="${PERF_DRAIN_SEC_BASE:-120}"
+DRAIN_IDLE_TARGET="${PERF_DRAIN_IDLE:-60}"
+DRAIN_POLL="${PERF_DRAIN_POLL:-10}"
 MTLS_PROBE_COUNT="${MTLS_PROBE_COUNT:-200}"
 ROUNDS=(${ROUNDS:-warm cold})
+
+compute_drain_sec() {
+    local n=$1
+    if [[ -n "$DRAIN_SEC_OVERRIDE" ]]; then
+        printf '%s' "$DRAIN_SEC_OVERRIDE"
+    else
+        printf '%s' "$(( n / DRAIN_SEC_PER_REQ + DRAIN_SEC_BASE ))"
+    fi
+}
 
 GATEWAY_HOST="${GATEWAY_HOST:-zt-gateway}"
 DRIVER_HOST="${DRIVER_HOST:-zt-order}"
@@ -127,8 +143,27 @@ run_scale() {
     scp -q "$DRIVER_HOST:/root/load.csv" "$csv_local"
     log "round=$round scale=$n — load.csv pulled ($(wc -l < "$csv_local") lines)"
 
-    log "round=$round scale=$n — draining ${DRAIN_SEC}s"
-    sleep "$DRAIN_SEC"
+    local drain_sec; drain_sec=$(compute_drain_sec "$n")
+    log "round=$round scale=$n — draining (max ${drain_sec}s, poll all queues)"
+    local drain_elapsed=0 drain_idle=0 depth
+    while (( drain_elapsed < drain_sec )); do
+        sleep "$DRAIN_POLL"
+        drain_elapsed=$((drain_elapsed + DRAIN_POLL))
+        # Sum across ALL queues — sagas pass through order_queue + the 7 event
+        # queues; watching only order_queue under-reports in-flight work.
+        depth=$(ssh "$GATEWAY_HOST" "docker exec zt-rabbitmq rabbitmqctl --quiet list_queues name messages 2>/dev/null | awk '\$2 ~ /^[0-9]+\$/ {sum+=\$2} END{print sum+0}'") || depth=0
+        depth="${depth:-0}"
+        log "  drain t=${drain_elapsed}s all_queues=${depth}"
+        if [[ "$depth" == "0" ]]; then
+            drain_idle=$((drain_idle + DRAIN_POLL))
+            if (( drain_idle >= DRAIN_IDLE_TARGET )); then
+                log "  all queues idle ${drain_idle}s — draining complete"
+                break
+            fi
+        else
+            drain_idle=0
+        fi
+    done
 
     # Capture only this scale's perf lines from gateway+worker logs.
     log "round=$round scale=$n — pulling worker/gateway perf logs"
