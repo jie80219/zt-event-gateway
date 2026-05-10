@@ -95,6 +95,13 @@ for role in php-worker anser-gateway order-svc user-svc production-svc; do
     echo "[vault-init] secret_id for ${role} already present, leaving alone"
   fi
 
+  # vault-init runs as root (image USER=root) so the rendered creds end up
+  # root:root by default. The sidecar vault-agent containers drop to uid 100
+  # (gid 1000, "vault") in docker-entrypoint.sh, so they can't read root:root
+  # 0640 files. Hand ownership to vault:vault before exit so all sidecars
+  # — including the ones on remote service hosts that bind-mount this dir —
+  # can authenticate via AppRole.
+  chown 100:1000 "/vault/creds/${role}/role_id" "/vault/creds/${role}/secret_id"
   chmod 0640 "/vault/creds/${role}/role_id" "/vault/creds/${role}/secret_id"
 done
 
