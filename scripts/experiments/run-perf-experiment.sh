@@ -34,21 +34,19 @@ fi
 SCALES_RAW="${PERF_SCALES:-5000 10000 20000}"
 read -r -a SCALES <<<"$SCALES_RAW"
 CONCURRENCY="${PERF_CONCURRENCY:-100}"
-# DRAIN budget is computed per-scale via compute_drain_sec() unless the user
-# pins it explicitly via PERF_DRAIN_SEC. Worker sustains ~30 saga events/sec
-# regardless of N, so the time to flush all in-flight sagas after load-driver
-# finishes scales linearly with N. The default formula (N/25 + 120) gives:
-#   N=5000  → 320s   N=10000 → 520s   N=20000 → 920s
-# plus the 60s idle window before capture, with ~60s safety margin baked in.
+# Drain budget = N * PER_KILO/1000 + BASE. Default 48s per 1000 requests gives
+# 240/480/960s for 5k/10k/20k (matched with feat/spiffe-keycloak so cross-branch
+# Incomplete-transaction-rate uses the same window). PERF_DRAIN_SEC pins a
+# fixed budget; idle-exit at PERF_DRAIN_IDLE (60s).
 DRAIN_SEC_OVERRIDE="${PERF_DRAIN_SEC:-}"
-DRAIN_SEC_PER_REQ="${PERF_DRAIN_SEC_PER_REQ:-25}"   # seconds per (req / divisor)
-DRAIN_SEC_BASE="${PERF_DRAIN_SEC_BASE:-120}"
+DRAIN_SEC_PER_KILO="${PERF_DRAIN_SEC_PER_KILO:-48}"
+DRAIN_SEC_BASE="${PERF_DRAIN_SEC_BASE:-0}"
 compute_drain_sec() {
     local n=$1
     if [[ -n "$DRAIN_SEC_OVERRIDE" ]]; then
         printf '%s' "$DRAIN_SEC_OVERRIDE"
     else
-        printf '%s' "$(( n / DRAIN_SEC_PER_REQ + DRAIN_SEC_BASE ))"
+        printf '%s' "$(( n * DRAIN_SEC_PER_KILO / 1000 + DRAIN_SEC_BASE ))"
     fi
 }
 FULL_RESET="${PERF_FULL_RESET:-0}"
