@@ -19,12 +19,12 @@ set -euo pipefail
 
 OUT="${1:?usage: $0 <out-dir>}"
 SCALES=(${SCALES:-5000 10000 20000})
-# Drain budget mirrors feat/Linkerd1's run-perf-experiment.sh so cross-branch
-# Incomplete-transaction-rate uses the same window: N/25+120 (320/520/920s for
-# 5k/10k/20k), poll exits early once all queues idle for PERF_DRAIN_IDLE (60s).
+# Drain budget = N * PER_KILO/1000 + BASE. Default 48s per 1000 requests gives
+# 240/480/960s for 5k/10k/20k. Poll exits early once all queues idle for
+# PERF_DRAIN_IDLE (60s). PERF_DRAIN_SEC pins a fixed budget for all scales.
 DRAIN_SEC_OVERRIDE="${PERF_DRAIN_SEC:-${DRAIN_SEC:-}}"
-DRAIN_SEC_PER_REQ="${PERF_DRAIN_SEC_PER_REQ:-25}"
-DRAIN_SEC_BASE="${PERF_DRAIN_SEC_BASE:-120}"
+DRAIN_SEC_PER_KILO="${PERF_DRAIN_SEC_PER_KILO:-48}"
+DRAIN_SEC_BASE="${PERF_DRAIN_SEC_BASE:-0}"
 DRAIN_IDLE_TARGET="${PERF_DRAIN_IDLE:-60}"
 DRAIN_POLL="${PERF_DRAIN_POLL:-10}"
 MTLS_PROBE_COUNT="${MTLS_PROBE_COUNT:-200}"
@@ -35,7 +35,7 @@ compute_drain_sec() {
     if [[ -n "$DRAIN_SEC_OVERRIDE" ]]; then
         printf '%s' "$DRAIN_SEC_OVERRIDE"
     else
-        printf '%s' "$(( n / DRAIN_SEC_PER_REQ + DRAIN_SEC_BASE ))"
+        printf '%s' "$(( n * DRAIN_SEC_PER_KILO / 1000 + DRAIN_SEC_BASE ))"
     fi
 }
 

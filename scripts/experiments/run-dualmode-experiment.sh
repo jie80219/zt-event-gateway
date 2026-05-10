@@ -18,12 +18,11 @@ cd "$PROJECT_DIR"
 OUT="${OUT:?must set OUT=artifacts/<dir>}"
 SCALES=(${SCALES:-5000 10000 20000})
 CONCURRENCY="${CONCURRENCY:-50}"
-# Drain budget mirrors feat/Linkerd1's run-perf-experiment.sh: N/25+120 with
-# idle-exit at PERF_DRAIN_IDLE (60s). Same env vars as the perf runner so
-# cross-branch comparisons share one knob.
+# Drain budget = N * PER_KILO/1000 + BASE. Default 48s per 1000 requests gives
+# 240/480/960s for 5k/10k/20k; idle-exit at PERF_DRAIN_IDLE (60s).
 DRAIN_SEC_OVERRIDE="${PERF_DRAIN_SEC:-${DRAIN_SEC:-}}"
-DRAIN_SEC_PER_REQ="${PERF_DRAIN_SEC_PER_REQ:-25}"
-DRAIN_SEC_BASE="${PERF_DRAIN_SEC_BASE:-120}"
+DRAIN_SEC_PER_KILO="${PERF_DRAIN_SEC_PER_KILO:-48}"
+DRAIN_SEC_BASE="${PERF_DRAIN_SEC_BASE:-0}"
 DRAIN_IDLE_TARGET="${PERF_DRAIN_IDLE:-60}"
 DRAIN_POLL="${PERF_DRAIN_POLL:-10}"
 MTLS_PROBE_COUNT="${MTLS_PROBE_COUNT:-200}"
@@ -36,7 +35,7 @@ compute_drain_sec() {
     if [[ -n "$DRAIN_SEC_OVERRIDE" ]]; then
         printf '%s' "$DRAIN_SEC_OVERRIDE"
     else
-        printf '%s' "$(( n / DRAIN_SEC_PER_REQ + DRAIN_SEC_BASE ))"
+        printf '%s' "$(( n * DRAIN_SEC_PER_KILO / 1000 + DRAIN_SEC_BASE ))"
     fi
 }
 
