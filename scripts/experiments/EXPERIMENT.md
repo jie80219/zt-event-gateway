@@ -10,14 +10,14 @@
 
 | 參數 | 值 | 對應位置 | 套用方式 |
 |---|---|---|---|
-| Gateway worker 數（`$worker->count`） | **10** | OpenSwoole `worker_num`，由 `GATEWAY_WORKERS` env 注入（`bin/gateway.php:57`） | `export GATEWAY_WORKERS=10` 後 `docker compose up -d --force-recreate gateway` |
-| php-worker 容器副本數（`numprocs`） | **1** | `docker-compose.yml` 的 `php-worker` 服務（單一 container） | 不啟用多副本、不 `docker compose scale` |
+| Gateway worker 數（`$worker->count`） | **記錄實際值**（compose 預設 32，可由 `GATEWAY_WORKERS` env 覆寫） | OpenSwoole `worker_num`，由 `GATEWAY_WORKERS` env 注入（`bin/gateway.php`） | `export GATEWAY_WORKERS=<N>` 後 `docker compose up -d --force-recreate gateway` |
+| php-worker 容器內 fork 出的 process 數（`WORKER_PROCESSES`） | **記錄實際值**（compose 預設 4） | `docker/php-openswoole/zt-worker-entrypoint.sh` 依 `WORKER_PROCESSES` env fork N 個 `php bin/worker.php` | `export WORKER_PROCESSES=<N>` 後 `docker compose up -d --force-recreate php-worker` |
 | AMQP `prefetch_count` | **1** | `bin/worker.php:388` 寫死（`basic_qos(null,1,null)`） | 本實驗不改，僅紀錄 |
 | 受測分支 | `feat/spiffe-keycloak`（可由 `EXPECTED_BRANCH` 覆寫） | 四台 host 同步 | wrapper §A.1 強制檢查 |
 | 請求量級 | 5000、10000、20000 | 由 `SCALES` env 控制 | `run-dualmode-distributed.sh` 內部循環 |
 | 輪次 | warm（暖機後）+ cold（restart gateway/php-worker 後第一波） | 由 `ROUNDS` env 控制 | cold 由 runner 自動 `docker restart` |
 
-> wrapper `§A.4` 在落 metadata 時會驗證 `gateway_workers == 10` 且 `worker_consumer_processes == 1`，不一致直接 `exit 1`。
+> wrapper `§A.4` 在落 metadata 時只 sanity check `gateway_workers >= 1` 和 `worker_consumer_processes >= 1`。若要 strict pin（例如不同 run 都用同樣的 worker 數），設 `EXPECTED_GW_WORKERS=<N>` / `EXPECTED_NUMPROCS=<N>` 顯式指定，不符就 fail。同一批要比較的 run 必須使用相同 worker 數。
 
 ---
 
@@ -67,12 +67,12 @@ docker logs --tail 500 zt-php-worker 2>&1 | grep $TRACE | grep -E 'Saga Step 4|R
 - `SKIP_SMOKE=1` 可跳過（debug only）。
 
 ### §A.4 Metadata 落檔到 `$OUT/metadata.json`
-- 從 `docker inspect zt-gateway` 抓 `GATEWAY_WORKERS`，**驗證 == 10**。
-- 從 `docker exec zt-php-worker pgrep -fc 'php bin/worker.php'` 抓 `numprocs`，**驗證 == 1**。
+- 從 `docker inspect zt-gateway` 抓 `GATEWAY_WORKERS`，**驗證為正整數**（≥ 1）；若 `EXPECTED_GW_WORKERS` 有設值再做 strict pin。
+- 從 `docker exec zt-php-worker pgrep -fc 'php bin/worker.php'` 抓 `numprocs`（= 容器內 fork 出來的 `php bin/worker.php` 數量），**驗證為正整數**；若 `EXPECTED_NUMPROCS` 有設值再做 strict pin。
 - 抓四台 host 的 `git rev-parse HEAD` 寫入 `commit_sha`。
 - 抓 profile flag（`SPIFFE_ENABLED`、`LSVID_REQUIRED`、`SPIFFE_MTLS_ENABLED`、`KEYCLOAK_ENABLED`）。
 
-`metadata.json` 範例：
+`metadata.json` 範例（數字隨實際 compose 設定而異）：
 ```json
 {
   "stamp": "20260508-153422",
@@ -81,8 +81,8 @@ docker logs --tail 500 zt-php-worker 2>&1 | grep $TRACE | grep -E 'Saga Step 4|R
     "zt-gateway": "<sha>", "zt-order": "<sha>",
     "zt-prod": "<sha>",    "zt-user": "<sha>"
   },
-  "gateway_workers": 10,
-  "worker_consumer_processes": 1,
+  "gateway_workers": 32,
+  "worker_consumer_processes": 4,
   "amqp_prefetch_count": 1,
   "spiffe_enabled": 1,
   "lsvid_required": 1,

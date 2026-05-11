@@ -33,6 +33,31 @@ final class EventConsumer
     ];
 
     /**
+     * Time (seconds) a previously-verified LSVID stays cached for.
+     * Same shape as SpiffeLsvidFilter's own memoize; 60 s is shorter than
+     * any sensible LSVID TTL (1800 s) and bounded by the same saga's
+     * publish-to-publish gap.
+     */
+    private const VERIFIED_TTL = 60.0;
+
+    /** Hard cap to bound memory; cheap drain to half when exceeded. */
+    private const VERIFIED_CAP = 1024;
+
+    /**
+     * Process-local memoize for `lsvidValidator->validate()`. A saga walks
+     * 4–5 events through this consumer; each carries (mostly) the same
+     * LSVID chain. ECDSA chain verification dominates per-event CPU, so
+     * caching by (rawLsvid, expectedAudience) is a meaningful win.
+     *
+     * Multi-process worker safety: a saga's events all flow through the
+     * same AMQP consumer process (a consumer doesn't migrate mid-chain
+     * unless it crashes), so per-process cache is sufficient.
+     *
+     * @var array<string, array{at: float, parsed: object}>
+     */
+    private array $verifiedTokens = [];
+
+    /**
      * 建構子。
      *
      * 支援 SPIFFE/LSVID 與 Keycloak 兩種身份驗證並存或單獨運作 — 兩邊
@@ -147,10 +172,33 @@ final class EventConsumer
                 // 被誤送進這個佇列。
                 $workerSpiffeId = getenv('SPIFFE_ID') ?: null;
 
-                $parsed = $this->lsvidValidator->validate(
-                    $rawLsvid,
-                    expectedAudience: $workerSpiffeId,
-                );
+                // Memoize: same token+audience → skip full ECDSA chain
+                // verification within VERIFIED_TTL. Token itself still
+                // carries an exp claim; once that expires, the next miss
+                // will re-validate and reject. Cache key bakes in the
+                // audience so token-for-A can't satisfy a check for B.
+                $cacheKey = hash('sha256', $rawLsvid . '|' . ($workerSpiffeId ?? ''));
+                $cached = $this->verifiedTokens[$cacheKey] ?? null;
+                if ($cached !== null && (microtime(true) - $cached['at']) <= self::VERIFIED_TTL) {
+                    $parsed = $cached['parsed'];
+                } else {
+                    $parsed = $this->lsvidValidator->validate(
+                        $rawLsvid,
+                        expectedAudience: $workerSpiffeId,
+                    );
+                    if (count($this->verifiedTokens) >= self::VERIFIED_CAP) {
+                        $this->verifiedTokens = array_slice(
+                            $this->verifiedTokens,
+                            (int) (self::VERIFIED_CAP / 2),
+                            null,
+                            true,
+                        );
+                    }
+                    $this->verifiedTokens[$cacheKey] = [
+                        'at'     => microtime(true),
+                        'parsed' => $parsed,
+                    ];
+                }
 
                 // 驗證成功：把整條鏈的 issuer 依序印出，方便追蹤
                 // L0 → L1 → L2 的身份來源。

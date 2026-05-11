@@ -6,7 +6,8 @@
 #   §A.1 四台 host 分支同步檢查（feat/spiffe-keycloak）
 #   §A.2 stack health probe（:8080/:8082/:8083/:8084）
 #   §A.3 smoke 訂單 — 必須走完 Saga Step 4
-#   §A.4 蒐集 metadata.json（驗證 GATEWAY_WORKERS=10、numprocs=1）
+#   §A.4 蒐集 metadata.json（驗證 GATEWAY_WORKERS / numprocs 是正整數；
+#        若 EXPECTED_GW_WORKERS / EXPECTED_NUMPROCS 明確設值才做 strict pin）
 #   §B   呼叫 run-dualmode-distributed.sh 跑 warm/cold × 5000/10000/20000
 #   §B.3 呼叫 analyze-dualmode-experiment.py 產 4 組 xlsx/png + summary.xlsx
 #
@@ -20,8 +21,9 @@
 #   EXPECTED_BRANCH       default: feat/spiffe-keycloak
 #   SCALES                default: "5000 10000 20000"
 #   ROUNDS                default: "warm cold"
-#   EXPECTED_GW_WORKERS   default: 10  (固定條件，不符直接 fail)
-#   EXPECTED_NUMPROCS     default: 1   (固定條件，不符直接 fail)
+#   EXPECTED_GW_WORKERS   default: ""  empty → 只 sanity check (>0)
+#                                       設值 → strict pin（不符 fail）
+#   EXPECTED_NUMPROCS     default: ""  同上 — 從 1 改成多 process 後不再固定
 #   SKIP_BRANCH_SYNC=1    跳過 git fetch/pull（debug only）
 #   SKIP_SMOKE=1          跳過 smoke 訂單（debug only）
 #   OUT_OVERRIDE          自訂輸出目錄，否則自動產生 artifacts/<stamp>_Experimental
@@ -31,8 +33,8 @@ set -euo pipefail
 EXPECTED_BRANCH="${EXPECTED_BRANCH:-feat/spiffe-keycloak}"
 SCALES="${SCALES:-5000 10000 20000}"
 ROUNDS="${ROUNDS:-warm cold}"
-EXPECTED_GW_WORKERS="${EXPECTED_GW_WORKERS:-10}"
-EXPECTED_NUMPROCS="${EXPECTED_NUMPROCS:-1}"
+EXPECTED_GW_WORKERS="${EXPECTED_GW_WORKERS:-}"
+EXPECTED_NUMPROCS="${EXPECTED_NUMPROCS:-}"
 
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -151,22 +153,32 @@ else
     warn "SKIP_SMOKE=1, skipping smoke order"
 fi
 
-# ── §A.4 Metadata 落檔（必須 GATEWAY_WORKERS=10、numprocs=1）─────────────
+# ── §A.4 Metadata 落檔（記錄實際抓到的值；可選 strict pin） ───────────────
 section "A.4 collecting metadata.json"
 
 gw_envs=$(ssh zt-gateway 'docker inspect zt-gateway --format "{{range .Config.Env}}{{println .}}{{end}}"')
 extract_env() { awk -F= -v k="$1" '$1==k{print $2; exit}' <<< "$gw_envs"; }
 
-gw_workers=$(extract_env GATEWAY_WORKERS); gw_workers="${gw_workers:-2}"
-[[ "$gw_workers" == "$EXPECTED_GW_WORKERS" ]] || fail \
-"GATEWAY_WORKERS=$gw_workers, expected $EXPECTED_GW_WORKERS.
+gw_workers=$(extract_env GATEWAY_WORKERS); gw_workers="${gw_workers:-32}"
+if ! [[ "$gw_workers" =~ ^[0-9]+$ ]] || (( gw_workers < 1 )); then
+    fail "GATEWAY_WORKERS resolved to '$gw_workers'; expected positive integer."
+fi
+if [[ -n "$EXPECTED_GW_WORKERS" && "$gw_workers" != "$EXPECTED_GW_WORKERS" ]]; then
+    fail "GATEWAY_WORKERS=$gw_workers, EXPECTED_GW_WORKERS=$EXPECTED_GW_WORKERS pin failed.
    Fix: 'export GATEWAY_WORKERS=$EXPECTED_GW_WORKERS' (或寫進 .env)
         然後 'docker compose up -d --force-recreate gateway'"
+fi
 ok "GATEWAY_WORKERS=$gw_workers"
 
 numprocs=$(ssh zt-gateway 'docker exec zt-php-worker pgrep -fc "php bin/worker.php" 2>/dev/null' || echo "0")
-[[ "$numprocs" == "$EXPECTED_NUMPROCS" ]] || \
-    fail "php-worker numprocs=$numprocs, expected $EXPECTED_NUMPROCS"
+if ! [[ "$numprocs" =~ ^[0-9]+$ ]] || (( numprocs < 1 )); then
+    fail "php-worker numprocs=$numprocs; no 'php bin/worker.php' process found in zt-php-worker."
+fi
+if [[ -n "$EXPECTED_NUMPROCS" && "$numprocs" != "$EXPECTED_NUMPROCS" ]]; then
+    fail "php-worker numprocs=$numprocs, EXPECTED_NUMPROCS=$EXPECTED_NUMPROCS pin failed.
+   Fix: 'export WORKER_PROCESSES=$EXPECTED_NUMPROCS' (寫進 .env)
+        然後 'docker compose up -d --force-recreate php-worker'"
+fi
 ok "numprocs=$numprocs"
 
 spiffe_enabled=$(extract_env SPIFFE_ENABLED);     spiffe_enabled="${spiffe_enabled:-0}"
