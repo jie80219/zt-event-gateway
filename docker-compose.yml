@@ -81,7 +81,7 @@ services:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
     container_name: zt-php-worker
-    command: ["sh", "/usr/local/bin/zt-worker-entrypoint.sh"]
+    command: ["bash", "/usr/local/bin/zt-worker-entrypoint.sh"]
     environment:
       APP_SERVICE_NAME: php-worker
       WORKER_PROCESSES: "${WORKER_PROCESSES:-4}"
