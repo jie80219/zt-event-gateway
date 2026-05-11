@@ -54,7 +54,7 @@ $env = static function (string $key, string $default): string {
 
 $host = $env('GATEWAY_HOST', '0.0.0.0');
 $port = (int) $env('GATEWAY_PORT', '8080');
-$workerNum = (int) $env('GATEWAY_WORKERS', '2');
+$workerNum = (int) $env('GATEWAY_WORKERS', '32');
 
 $server = new Server($host, $port);
 $server->set([

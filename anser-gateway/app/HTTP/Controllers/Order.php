@@ -15,17 +15,20 @@ use Keycloak\KeycloakTokenContext;
 class Order extends BaseController
 {
     /**
-     * Persistent connection shared across all requests within this
-     * worker process. Survives thousands of requests without opening
-     * new TCP sockets.
+     * Per worker-process AMQP connection + channel pool. Coroutines pop a
+     * channel for the duration of a single basic_publish and push it back
+     * when done — letting independent coroutines publish in parallel
+     * instead of serialising through one channel behind a Swoole\Lock.
      *
-     * A coroutine-level lock serializes access so concurrent Swoole
-     * coroutines don't interleave AMQP frames on the same channel.
+     * One AMQPSocketConnection multiplexes the pool; the socket write
+     * itself is still serial at the kernel level, but the AMQP frame
+     * assembly and coroutine yields are not — so the publish latency
+     * tail drops compared to lock + single-channel.
      */
     private static ?AMQPSocketConnection $persistentConn = null;
-    private static ?AMQPChannel $persistentCh = null;
+    private static ?\Swoole\Coroutine\Channel $channelPool = null;
+    private static int $poolSize = 0;
     private static bool $topologyDeclared = false;
-    private static ?\Swoole\Lock $channelLock = null;
 
     public function create()
     {
@@ -173,16 +176,24 @@ class Order extends BaseController
             }
         }
 
-        // Serialize AMQP access across coroutines sharing this worker process
-        $lock = self::getLock();
-        $lock->lock();
-        try {
-            $channel = $this->getChannel();
+        // Pop one channel out of the worker-process pool for this publish.
+        // The pool is bootstrapped lazily; subsequent requests are O(1).
+        $this->ensurePool();
 
-            $msg = new AMQPMessage(json_encode($envelope), [
-                'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
-            ]);
+        $deliveryMode = getenv('AMQP_PERSISTENT') === '1'
+            ? AMQPMessage::DELIVERY_MODE_PERSISTENT
+            : AMQPMessage::DELIVERY_MODE_NON_PERSISTENT;
+
+        $msg = new AMQPMessage(json_encode($envelope), [
+            'delivery_mode' => $deliveryMode,
+        ]);
+
+        $channel = self::$channelPool->pop();
+        $returned = false;
+        try {
             $channel->basic_publish($msg, 'events', $routingKey);
+            self::$channelPool->push($channel);
+            $returned = true;
 
             if ($perfEnabled) {
                 $perfEnd = microtime(true);
@@ -201,7 +212,21 @@ class Order extends BaseController
                 'trace_id' => $traceId,
             ], 202);
         } catch (\Exception $e) {
-            $this->resetConnection();
+            // Don't push a poisoned channel back into the pool. If the
+            // socket is gone, drop the whole pool so the next request
+            // rebuilds it; otherwise just replace the lost channel.
+            if (!$returned) {
+                try { $channel->close(); } catch (\Throwable) {}
+            }
+            if (self::$persistentConn === null || !self::$persistentConn->isConnected()) {
+                $this->resetConnection();
+            } else {
+                try {
+                    self::$channelPool->push(self::$persistentConn->channel());
+                } catch (\Throwable) {
+                    $this->resetConnection();
+                }
+            }
             fwrite(STDERR, '[RabbitMQ Error] ' . $e->getMessage() . "\n");
 
             $payload = [
@@ -213,40 +238,48 @@ class Order extends BaseController
             }
 
             return $this->jsonResponse($payload, 500);
-        } finally {
-            $lock->unlock();
         }
     }
 
     /**
-     * Get or create the persistent AMQP channel.
+     * Lazily bootstrap one AMQPSocketConnection plus a pool of channels
+     * for this worker process. Idempotent — only the very first publish
+     * per worker pays the bootstrap cost; subsequent ones are O(1).
      *
-     * One TCP connection + one AMQP channel per Workerman worker process,
-     * reused across all HTTP requests. Reconnects automatically if the
-     * connection drops.
+     * Pool size defaults to 8 (overridable via GATEWAY_AMQP_POOL_SIZE);
+     * that's roughly the number of in-flight publish coroutines a single
+     * gateway worker tends to see at our peak SCALES, and going higher
+     * just costs broker channel state.
      */
-    private function getChannel(): AMQPChannel
+    private function ensurePool(): void
     {
-        // Fast path: reuse existing connection
-        if (self::$persistentConn !== null && self::$persistentConn->isConnected()
-            && self::$persistentCh !== null && self::$persistentCh->is_open()) {
-            return self::$persistentCh;
+        if (self::$channelPool !== null
+            && self::$persistentConn !== null
+            && self::$persistentConn->isConnected()) {
+            return;
         }
 
-        // Connection lost or first call — (re)connect
+        // State is partially gone — wipe everything and rebuild cleanly.
         $this->resetConnection();
 
         $host = $this->envAny(['RABBITMQ_HOST', 'AMQP_HOST'], 'rabbitmq');
         $port = (int) $this->envAny(['RABBITMQ_PORT', 'AMQP_PORT'], '5672');
 
         self::$persistentConn = $this->connectRabbitMq($host, $port);
-        self::$persistentCh = self::$persistentConn->channel();
-        self::$topologyDeclared = false;
 
-        // Declare topology once per connection
-        $this->ensureTopology(self::$persistentCh);
-
-        return self::$persistentCh;
+        $poolSize = (int) $this->env('GATEWAY_AMQP_POOL_SIZE', '8');
+        if ($poolSize < 1) {
+            $poolSize = 1;
+        }
+        self::$poolSize = $poolSize;
+        self::$channelPool = new \Swoole\Coroutine\Channel($poolSize);
+        for ($i = 0; $i < $poolSize; $i++) {
+            $ch = self::$persistentConn->channel();
+            if ($i === 0) {
+                $this->ensureTopology($ch);
+            }
+            self::$channelPool->push($ch);
+        }
     }
 
     /**
@@ -269,25 +302,28 @@ class Order extends BaseController
         self::$topologyDeclared = true;
     }
 
-    private static function getLock(): \Swoole\Lock
-    {
-        if (self::$channelLock === null) {
-            self::$channelLock = new \Swoole\Lock(SWOOLE_MUTEX);
-        }
-        return self::$channelLock;
-    }
-
     private function resetConnection(): void
     {
-        try {
-            self::$persistentCh?->close();
-        } catch (\Throwable) {}
+        if (self::$channelPool !== null) {
+            // Drain anything sitting in the pool before tearing down the
+            // socket. Channels in-flight (popped but not yet pushed back)
+            // are owned by their coroutine; that coroutine's catch block
+            // is responsible for not putting them back.
+            while (!self::$channelPool->isEmpty()) {
+                $ch = self::$channelPool->pop(0.001);
+                if ($ch === false) {
+                    break;
+                }
+                try { $ch->close(); } catch (\Throwable) {}
+            }
+            self::$channelPool = null;
+        }
+        self::$poolSize = 0;
 
         try {
             self::$persistentConn?->close();
         } catch (\Throwable) {}
 
-        self::$persistentCh = null;
         self::$persistentConn = null;
         self::$topologyDeclared = false;
     }

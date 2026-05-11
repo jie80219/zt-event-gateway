@@ -67,8 +67,21 @@ class MessageBus
 
     public function publishMessage(string $exchange, string $message, string $routingKey = 'OrderCreateRequestedEvent'): void
     {
-        $msg = new AMQPMessage($message, ['delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT]);
+        $msg = new AMQPMessage($message, ['delivery_mode' => $this->deliveryMode()]);
         $this->channel->basic_publish($msg, $exchange, $routingKey);
+    }
+
+    /**
+     * Per-message delivery mode toggle. Defaults to NON_PERSISTENT
+     * (latency-optimised) — set AMQP_PERSISTENT=1 to fall back to the
+     * old "survive broker restart" semantics. Queue durability is
+     * declared independently in setupQueue() and is not affected here.
+     */
+    private function deliveryMode(): int
+    {
+        return getenv('AMQP_PERSISTENT') === '1'
+            ? AMQPMessage::DELIVERY_MODE_PERSISTENT
+            : AMQPMessage::DELIVERY_MODE_NON_PERSISTENT;
     }
 
     /**
@@ -183,7 +196,7 @@ class MessageBus
 
         $message = new AMQPMessage(
             json_encode($envelope),
-            ['delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT],
+            ['delivery_mode' => $this->deliveryMode()],
         );
 
         $this->channel->basic_publish($message, $exchange ?? $this->defaultExchange, $routingKey);

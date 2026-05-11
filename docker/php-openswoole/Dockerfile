@@ -34,6 +34,13 @@ COPY --from=vendor /app/vendor /app/vendor
 # Copy application
 COPY . .
 
+# Multi-process worker entrypoint. Forks WORKER_PROCESSES copies of
+# `php bin/worker.php` under one stable container name, sidestepping
+# compose `--scale`'s container-renaming (which would break every script
+# that hard-codes `zt-php-worker`).
+COPY docker/php-openswoole/zt-worker-entrypoint.sh /usr/local/bin/zt-worker-entrypoint.sh
+RUN chmod +x /usr/local/bin/zt-worker-entrypoint.sh
+
 EXPOSE 8080
 
 CMD ["php", "bin/gateway.php"]

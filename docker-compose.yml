@@ -262,7 +262,7 @@ services:
     environment:
       GATEWAY_HOST: "0.0.0.0"
       GATEWAY_PORT: "8080"
-      GATEWAY_WORKERS: "2"
+      GATEWAY_WORKERS: "${GATEWAY_WORKERS:-32}"
       RABBITMQ_HOST: "rabbitmq"
       RABBITMQ_PORT: "5672"
       RABBITMQ_USER: "zt"
@@ -284,6 +284,11 @@ services:
       LSVID_TTL_SECONDS: "1800"
       LSVID_LOG_PAYLOAD: "0"
       PERF_METRIC_ENABLED: "${PERF_METRIC_ENABLED:-0}"
+      # AMQP message persistence — default 0 (transient, latency-optimised).
+      # Set AMQP_PERSISTENT=1 to write every message to disk; queues remain
+      # durable either way, so broker restart only loses in-flight messages.
+      AMQP_PERSISTENT: "${AMQP_PERSISTENT:-0}"
+      GATEWAY_AMQP_POOL_SIZE: "${GATEWAY_AMQP_POOL_SIZE:-8}"
       # ── Downstream service for /products HTTP proxy (Anser ServiceList) ──
       PRODUCTION_SERVICE_HOST: "${PRODUCTION_SERVICE_HOST:-10.1.1.207}"
       PRODUCTION_SERVICE_PORT: "${PRODUCTION_SERVICE_PORT:-8083}"
@@ -329,9 +334,10 @@ services:
       context: .
       dockerfile: docker/php-openswoole/Dockerfile
     container_name: zt-php-worker
-    command: ["php", "bin/worker.php"]
+    command: ["sh", "/usr/local/bin/zt-worker-entrypoint.sh"]
     environment:
       APP_SERVICE_NAME: php-worker
+      WORKER_PROCESSES: "${WORKER_PROCESSES:-4}"
       AMQP_HOST: "rabbitmq"
       AMQP_PORT: "5672"
       AMQP_USER: "zt"
@@ -352,6 +358,8 @@ services:
       LSVID_TTL_SECONDS: "1800"
       LSVID_LOG_PAYLOAD: "0"
       PERF_METRIC_ENABLED: "${PERF_METRIC_ENABLED:-0}"
+      # AMQP message persistence — see comment under `gateway` service.
+      AMQP_PERSISTENT: "${AMQP_PERSISTENT:-0}"
       # ── mTLS to downstream services ──
       SPIFFE_MTLS_ENABLED: "${SPIFFE_MTLS_ENABLED:-0}"
       MTLS_PORT: "${MTLS_PORT:-8443}"
