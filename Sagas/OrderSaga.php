@@ -8,9 +8,6 @@ use SDPMlab\ZtEventGateway\Saga;
 
 use App\Events\OrderCreateRequestedEvent;
 use App\Events\OrderCreatedEvent;
-use App\Events\InventoryDeductedEvent;
-use App\Events\PaymentProcessedEvent;
-use App\Events\OrderCompletedEvent;
 use App\Events\OrderSagaCompletedEvent;
 use App\Events\RollbackOrderEvent;
 use App\Events\RollbackInventoryEvent;
@@ -20,12 +17,19 @@ use Services\OrderService;
 use Services\ProductionService;
 use Services\Models\OrderProductDetail;
 
+/**
+ * OrderSaga — orchestrator mode.
+ *
+ * Step 1→4 跑在同一個 handler 內，避免每步走一次 AMQP 跳轉。
+ * 仍 publish `OrderCreatedEvent` 與 `OrderSagaCompletedEvent` 供 EventStore
+ * projection 計算訂單處理時間；中間態（庫存扣減、付款完成）只在 saga 內部
+ * 流轉，不再經過 broker。補償路徑保留事件鏈以便持久化。
+ */
 class OrderSaga extends Saga{
     private UserService $userService;
     private OrderService $orderService;
     private ProductionService $productionService;
     private string $userKey = '1';
-    private string $orderId;
     private array $productList = [];
     public function __construct(EventBus $eventBus){
         parent::__construct($eventBus);
@@ -35,52 +39,221 @@ class OrderSaga extends Saga{
     }
 
     #[EventHandler]
-    public function onOrderCreateRequested(OrderCreateRequestedEvent $event){
-        $this->log("Saga Step 1: 收到訂單建立請求");
-        $productList = $event->productList;
-        // 取得最新價格
-        foreach ($productList as &$product) {
-            $info = $this->productionService
-                ->productInfoAction((int)$product['p_key'])
-                ->do()->getMeaningData();
+    public function onOrderCreateRequested(OrderCreateRequestedEvent $event): void
+    {
+        $this->log("Saga: 收到訂單請求，進入 orchestrator");
+
+        // 從 envelope 讀 userKey；step 3/4 內用 $this->userKey 呼叫下游。
+        $orderData = $event->orderData ?? [];
+        $incomingUserKey = $orderData['userKey'] ?? null;
+        if (is_string($incomingUserKey) && $incomingUserKey !== '') {
+            $this->userKey = $incomingUserKey;
+        } elseif (is_int($incomingUserKey)) {
+            $this->userKey = (string) $incomingUserKey;
+        }
+
+        // ── Step 1: 並行查價 + 建單 ──
+        $step1 = $this->doStep1($event->productList, $event->getTraceId() ?? '');
+        if ($step1 === null) {
+            return;
+        }
+        [$orderId, $total] = $step1;
+
+        // EventStore projection 依賴 OrderCreatedEvent 的 timestamp 作為
+        // 訂單處理時間的起點，所以這一筆仍走 publish (AMQP + EventStore)。
+        $this->publish(OrderCreatedEvent::class, [
+            'orderId'     => $orderId,
+            'userKey'     => $this->userKey,
+            'productList' => $this->productList,
+            'total'       => $total,
+        ]);
+
+        // ── Step 2: 並行扣庫存 ──
+        $step2 = $this->doStep2($orderId);
+        if (!$step2['ok']) {
+            $this->compensate(RollbackInventoryEvent::class, [
+                'orderId'              => $orderId,
+                'userKey'              => $this->userKey,
+                'successfulDeductions' => $step2['successful'],
+                'paymentCompleted'     => false,
+                'total'                => 0,
+            ]);
+            return;
+        }
+        $successfulDeductions = $step2['successful'];
+
+        // ── Step 3: 扣款 ──
+        if (!$this->doStep3($orderId, $total)) {
+            $this->compensate(RollbackInventoryEvent::class, [
+                'orderId'              => $orderId,
+                'userKey'              => $this->userKey,
+                'successfulDeductions' => $successfulDeductions,
+                'paymentCompleted'     => false,
+                'total'                => 0,
+            ]);
+            return;
+        }
+
+        // ── Step 4: 確認訂單 ──
+        if (!$this->doStep4($orderId)) {
+            $this->compensate(RollbackInventoryEvent::class, [
+                'orderId'              => $orderId,
+                'userKey'              => $this->userKey,
+                'successfulDeductions' => $successfulDeductions,
+                'paymentCompleted'     => true,
+                'total'                => $total,
+            ]);
+            return;
+        }
+
+        $this->log("✅ Saga Step 4: 訂單完成！");
+        if (getenv('PERF_METRIC_ENABLED') === '1') {
+            fwrite(STDOUT, sprintf(
+                "[perf-saga-complete] ts=%.6f orderId=%s\n",
+                microtime(true),
+                $orderId
+            ));
+        }
+
+        $this->publish(OrderSagaCompletedEvent::class, [
+            'orderId' => $orderId,
+            'userKey' => $this->userKey,
+            'total'   => $total,
+            'status'  => 'completed',
+        ]);
+    }
+
+    /**
+     * Step 1: 並行查商品價格 + 建單。
+     *
+     * @return array{0:string,1:int}|null  [orderId, total]，失敗則 null
+     */
+    protected function doStep1(array $productList, string $traceId): ?array
+    {
+        $this->log("Saga Step 1: 查商品價格 + 建單");
+
+        // 並行查價（取代原本的 foreach 同步序列呼叫）
+        $actions = [];
+        $keyToIndex = [];
+        foreach ($productList as $index => $product) {
+            $key = "info_{$index}";
+            $actions[$key] = $this->productionService->productInfoAction((int) $product['p_key']);
+            $keyToIndex[$key] = $index;
+        }
+        $results = $this->runConcurrent($actions);
+
+        foreach ($results as $key => $info) {
             if (!is_array($info) || !$this->isSuccess($info)) {
                 $this->log("[x] 商品資訊查詢失敗，中止 Step 1");
-                return;
+                return null;
             }
             $price = $info['data']['price'] ?? null;
             if (is_numeric($price)) {
-                $product['price'] = (int) $price;
+                $productList[$keyToIndex[$key]]['price'] = (int) $price;
             }
         }
-        unset($product);
+
         $this->generateProductList($productList);
-        // 產生 orderId
         $orderId = $this->generateOrderId();
+
         if (getenv('PERF_METRIC_ENABLED') === '1') {
             fwrite(STDOUT, sprintf(
                 "[perf-saga-step1] ts=%.6f orderId=%s traceId=%s\n",
                 microtime(true),
                 $orderId,
-                $event->getTraceId() ?? ''
+                $traceId
             ));
         }
-        // 新增訂單
+
         $info = $this->orderService
             ->createOrderAction((int) $this->userKey, $orderId, $this->productList)
             ->do()->getMeaningData();
         if (!is_array($info) || !$this->isSuccess($info)) {
             $this->log("[x] 訂單建立失敗，中止 Step 1");
-            return;
+            return null;
         }
         $total = isset($info['total']) ? (int) $info['total'] : $this->calculateTotal($this->productList);
         $this->log("[x] 訂單建立成功");
-          // 發送下一步消息
-        $this->publish(OrderCreatedEvent::class, [
-            'orderId' => $orderId,
-            'userKey' => $this->userKey,
-            'productList' => $this->productList,
-            'total' => $total
-        ]);
+
+        return [$orderId, $total];
+    }
+
+    /**
+     * Step 2: 並行扣庫存。
+     *
+     * @return array{ok:bool,successful:list<array>}
+     */
+    protected function doStep2(string $orderId): array
+    {
+        $this->log("Saga Step 2: 扣庫存");
+
+        $actions = [];
+        $keyToIndex = [];
+        foreach ($this->productList as $index => $product) {
+            $key = "ded_{$index}";
+            $pKey = $product instanceof OrderProductDetail ? $product->p_key : $product['p_key'];
+            $amount = $product instanceof OrderProductDetail ? $product->amount : $product['amount'];
+            $actions[$key] = $this->productionService->reduceInventory($pKey, $orderId, $amount);
+            $keyToIndex[$key] = $index;
+        }
+        $results = $this->runConcurrent($actions);
+
+        $successful = [];
+        $failed = false;
+        foreach ($results as $key => $info) {
+            $idx = $keyToIndex[$key];
+            $product = $this->productList[$idx];
+            $row = $product instanceof OrderProductDetail
+                ? ['p_key' => $product->p_key, 'amount' => $product->amount, 'price' => $product->price]
+                : $product;
+            if (is_array($info) && $this->isSuccess($info)) {
+                $successful[] = $row;
+            } else {
+                $failed = true;
+            }
+        }
+
+        if ($failed) {
+            $this->log("[x] 扣減庫存失敗，觸發補償");
+            return ['ok' => false, 'successful' => $successful];
+        }
+        $this->log("[x] 扣減庫存成功");
+        return ['ok' => true, 'successful' => $successful];
+    }
+
+    protected function doStep3(string $orderId, int $total): bool
+    {
+        $this->log("Saga Step 3: 開始支付");
+        $info = $this->userService
+            ->walletChargeAction((int) $this->userKey, $orderId, $total)
+            ->do()->getMeaningData();
+        if (!is_array($info) || !$this->isSuccess($info)) {
+            $this->log("[x] 支付失敗，開始回滾");
+            return false;
+        }
+        $this->log("[x] 支付成功");
+        return true;
+    }
+
+    protected function doStep4(string $orderId): bool
+    {
+        $info = $this->orderService
+            ->confirmOrderAction((int) $this->userKey, $orderId)
+            ->do()->getMeaningData();
+        return is_array($info) && $this->isSuccess($info);
+    }
+
+    /**
+     * 抽出 ConcurrentAction 執行步驟，方便測試覆寫。
+     *
+     * @param array<string, \SDPMlab\Anser\Service\ActionInterface> $actions
+     * @return array<string, mixed>
+     */
+    protected function runConcurrent(array $actions): array
+    {
+        $concurrent = new ConcurrentAction();
+        $concurrent->setActions($actions)->send();
+        return $concurrent->getActionsMeaningData();
     }
 
     private function calculateTotal(array $productList): int
@@ -97,149 +270,27 @@ class OrderSaga extends Saga{
     }
 
     #[EventHandler]
-    public function onOrderCreated(OrderCreatedEvent $event)
-    {
-        $this->log("Saga Step 2: 訂單建立，開始扣庫存");
-
-        $concurrent = new ConcurrentAction();
-        $actions = [];
-        $keyToIndex = [];
-        foreach ($event->productList as $index => $product) {
-            $key = "product_{$index}";
-            $actions[$key] = $this->productionService
-                ->reduceInventory($product['p_key'], $event->orderId, $product['amount']);
-            $keyToIndex[$key] = $index;
-        }
-
-        $concurrent->setActions($actions)->send();
-        $results = $concurrent->getActionsMeaningData();
-
-        $successfulDeductions = [];
-        $inventoryFailed = false;
-        foreach ($results as $key => $info) {
-            if (is_array($info) && $this->isSuccess($info)) {
-                $successfulDeductions[] = $event->productList[$keyToIndex[$key]];
-            } else {
-                $inventoryFailed = true;
-            }
-        }
-
-        if ($inventoryFailed) {
-            $this->log("[x] 扣減庫存失敗，觸發補償");
-            $this->compensate(RollbackInventoryEvent::class, [
-                'orderId'              => $event->orderId,
-                'userKey'              => $event->userKey,
-                'successfulDeductions' => $successfulDeductions,
-                'paymentCompleted'     => false,
-                'total'                => 0,
-            ]);
-            return;
-        }
-
-        $this->log("[x] 扣減庫存成功");
-        $this->publish(InventoryDeductedEvent::class, [
-            'orderId'     => $event->orderId,
-            'userKey'     => $event->userKey,
-            'productList' => $successfulDeductions,
-            'total'       => $event->total,
-        ]);
-    }
-
-    #[EventHandler]
-    public function onInventoryDeducted(InventoryDeductedEvent $event)
-    {
-        $this->log("Saga Step 3: 開始支付");
-        $info = $this->userService
-		->walletChargeAction
-		($event->userKey, $event->orderId, $event->total)
-		->do()->getMeaningData();
-        if (!$this->isSuccess($info)) {
-            $this->log("[x] 支付失敗，開始回滾");
-            $this->compensate(RollbackInventoryEvent::class, [
-                'orderId' => $event->orderId,
-                'userKey' => $event->userKey,
-                'successfulDeductions' => $event->productList,
-                'paymentCompleted' => false,
-                'total' => 0,
-            ]);
-            return;
-        }
-        $this->log("[x] 支付成功");
-        $this->publish(PaymentProcessedEvent::class, [
-            'orderId'     => $event->orderId,
-            'success'     => $this->isSuccess($info),
-            'userKey'     => $event->userKey,
-            'total'       => $event->total,
-            'productList' => $event->productList,
-        ]);
-    }
-
-    #[EventHandler]
-    public function onPaymentProcessed(PaymentProcessedEvent $event)
-    {
-        if (!$event->success) {
-            $this->compensate(RollbackInventoryEvent::class, [
-                'orderId' => $event->orderId,
-                'userKey' => $event->userKey,
-                'successfulDeductions' => $event->productList,
-                'paymentCompleted' => false,
-                'total' => 0,
-            ]);
-            return;
-        }
-
-        $info = $this->orderService
-            ->confirmOrderAction((int)$event->userKey, $event->orderId)
-            ->do()->getMeaningData();
-
-        if (!$this->isSuccess($info)) {
-            $this->compensate(RollbackInventoryEvent::class, [
-                'orderId' => $event->orderId,
-                'userKey' => $event->userKey,
-                'successfulDeductions' => $event->productList,
-                'paymentCompleted' => true,
-                'total' => $event->total,
-            ]);
-            return;
-        }
-
-        $this->log("✅ Saga Step 4: 訂單完成！");
-        if (getenv('PERF_METRIC_ENABLED') === '1') {
-            fwrite(STDOUT, sprintf(
-                "[perf-saga-complete] ts=%.6f orderId=%s\n",
-                microtime(true),
-                $event->orderId
-            ));
-        }
-        $this->publish(OrderSagaCompletedEvent::class, [
-            'orderId' => $event->orderId,
-            'userKey' => $event->userKey,
-            'total' => $event->total,
-            'status' => 'completed',
-        ]);
-    }
-
-    #[EventHandler]
-    public function onOrderSagaCompleted(OrderSagaCompletedEvent $event)
-    {
-        $this->log("✅ Saga 完成: orderId={$event->orderId}");
-    }
-
-    #[EventHandler]
     public function onRollbackInventory(RollbackInventoryEvent $event)
     {
         $this->log("RollbackSaga Step 2: 回滾已扣減庫存");
 
+        // 退款（單筆，本身已最低延遲）
         if ($event->paymentCompleted) {
             $this->userService->walletCompensateAction(
                 (int)$event->userKey, $event->orderId, $event->total
             )->do()->getMeaningData();
         }
 
-        foreach ($event->successfulDeductions as $product) {
-            $this->productionService
-                ->addInventoryCompensateAction($product['p_key'], $event->orderId, $product['amount'])
-                ->do()->getMeaningData();
+        // 並行補償庫存（與 Step 2 對稱：扣庫存並行，補償也並行）
+        if (!empty($event->successfulDeductions)) {
+            $actions = [];
+            foreach ($event->successfulDeductions as $index => $product) {
+                $key = "comp_{$index}";
+                $actions[$key] = $this->productionService->addInventoryCompensateAction(
+                    $product['p_key'], $event->orderId, $product['amount']
+                );
+            }
+            $this->runConcurrent($actions);
         }
 
         $this->publish(RollbackOrderEvent::class, [

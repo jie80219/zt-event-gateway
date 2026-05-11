@@ -6,23 +6,24 @@ namespace Tests\Unit\Saga;
 
 use App\Events\OrderCreateRequestedEvent;
 use App\Events\OrderCreatedEvent;
-use App\Events\InventoryDeductedEvent;
-use App\Events\PaymentProcessedEvent;
 use App\Events\OrderSagaCompletedEvent;
 use App\Events\RollbackInventoryEvent;
 use App\Events\RollbackOrderEvent;
 use App\Sagas\OrderSaga;
 use PHPUnit\Framework\TestCase;
 use SDPMlab\Anser\Service\ActionInterface;
-use SDPMlab\Anser\Service\ConcurrentAction;
 use SDPMlab\ZtEventGateway\EventBus;
 use Services\OrderService;
 use Services\ProductionService;
 use Services\UserService;
-use Services\Models\OrderProductDetail;
 
 /**
- * Full OrderSaga unit test — covers all 5 steps + compensation flows.
+ * OrderSaga unit tests — orchestrator mode.
+ *
+ * After the Step1→4 merge, `onOrderCreateRequested` runs the full happy
+ * path inline; only compensation still rides on AMQP events. Tests focus on
+ * the orchestrator's branching (which compensation event fires when) and
+ * the rollback handlers.
  */
 class OrderSagaTest extends TestCase
 {
@@ -42,20 +43,23 @@ class OrderSagaTest extends TestCase
         $this->orderSvc = $this->createMock(OrderService::class);
         $this->userSvc = $this->createMock(UserService::class);
 
-        $this->saga = new OrderSaga($this->eventBus);
+        // Partial-mock OrderSaga so we can stub `runConcurrent` — the real
+        // ConcurrentAction.send() hits Guzzle pool and can't run in unit tests.
+        $this->saga = $this->getMockBuilder(OrderSaga::class)
+            ->setConstructorArgs([$this->eventBus])
+            ->onlyMethods(['runConcurrent'])
+            ->getMock();
 
-        // Inject mocked services via reflection
         foreach ([
             'productionService' => $this->prodSvc,
             'orderService' => $this->orderSvc,
             'userService' => $this->userSvc,
         ] as $prop => $mock) {
-            $ref = new \ReflectionProperty($this->saga, $prop);
+            $ref = new \ReflectionProperty(OrderSaga::class, $prop);
             $ref->setAccessible(true);
             $ref->setValue($this->saga, $mock);
         }
 
-        // Capture all EventBus.publish calls
         $this->published = [];
         $this->eventBus->method('publish')
             ->willReturnCallback(function (string $eventClass, array $payload) {
@@ -83,9 +87,24 @@ class OrderSagaTest extends TestCase
         );
     }
 
+    /**
+     * Stub runConcurrent so every action returns the same meaningData.
+     */
+    private function stubConcurrentUniform(array $meaningData): void
+    {
+        $this->saga->method('runConcurrent')
+            ->willReturnCallback(function (array $actions) use ($meaningData) {
+                $out = [];
+                foreach ($actions as $key => $_action) {
+                    $out[$key] = $meaningData;
+                }
+                return $out;
+            });
+    }
+
     private function assertPublished(string $expectedEventClass, int $index = 0): array
     {
-        $this->assertArrayHasKey($index, $this->published, "Expected publish call #{$index} not found");
+        $this->assertArrayHasKey($index, $this->published, "Expected publish #{$index} not found");
         $this->assertSame($expectedEventClass, $this->published[$index][0]);
         return $this->published[$index][1];
     }
@@ -96,50 +115,14 @@ class OrderSagaTest extends TestCase
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Step 1: onOrderCreateRequested
+    //  Step 1: 查價 + 建單 失敗路徑
     // ═══════════════════════════════════════════════════════════════
-
-    public function testStep1_happyPath(): void
-    {
-        $this->prodSvc->method('productInfoAction')
-            ->willReturn($this->mockAction(['code' => 200, 'data' => ['price' => 150]]));
-
-        $this->orderSvc->method('createOrderAction')
-            ->willReturn($this->mockAction(['code' => 200, 'total' => 300]));
-
-        $this->saga->onOrderCreateRequested($this->makeOrderRequestedEvent());
-
-        $payload = $this->assertPublished(OrderCreatedEvent::class);
-        $this->assertNotEmpty($payload['orderId']);
-        $this->assertSame('1', $payload['userKey']);
-        $this->assertSame(300, $payload['total']);
-        $this->assertCount(1, $payload['productList']);
-    }
-
-    public function testStep1_queriesCorrectProductIds(): void
-    {
-        $queriedIds = [];
-        $this->prodSvc->method('productInfoAction')
-            ->willReturnCallback(function (int $id) use (&$queriedIds) {
-                $queriedIds[] = $id;
-                return $this->mockAction(['code' => 200, 'data' => ['price' => 100]]);
-            });
-        $this->orderSvc->method('createOrderAction')
-            ->willReturn($this->mockAction(['code' => 200, 'total' => 500]));
-
-        $event = $this->makeOrderRequestedEvent('1', [
-            ['p_key' => 7, 'amount' => 1],
-            ['p_key' => 42, 'amount' => 3],
-        ]);
-        $this->saga->onOrderCreateRequested($event);
-
-        $this->assertSame([7, 42], $queriedIds);
-    }
 
     public function testStep1_productInfoFails_abortsWithoutPublish(): void
     {
         $this->prodSvc->method('productInfoAction')
-            ->willReturn($this->mockAction(['code' => 500, 'msg' => 'down']));
+            ->willReturn($this->mockAction(['code' => 500]));
+        $this->stubConcurrentUniform(['code' => 500, 'msg' => 'down']);
 
         $this->orderSvc->expects($this->never())->method('createOrderAction');
 
@@ -151,6 +134,7 @@ class OrderSagaTest extends TestCase
     {
         $this->prodSvc->method('productInfoAction')
             ->willReturn($this->mockAction(['code' => 200, 'data' => ['price' => 100]]));
+        $this->stubConcurrentUniform(['code' => 200, 'data' => ['price' => 100]]);
         $this->orderSvc->method('createOrderAction')
             ->willReturn($this->mockAction(['code' => 500, 'msg' => 'db error']));
 
@@ -158,185 +142,213 @@ class OrderSagaTest extends TestCase
         $this->assertNothingPublished();
     }
 
-    public function testStep1_calculatesTotalWhenResponseOmitsIt(): void
+    public function testStep1_queriesAllProductIdsConcurrently(): void
     {
-        // price=200, amount=3 → total = 200*3 = 600
+        $queriedIds = [];
+        $this->prodSvc->method('productInfoAction')
+            ->willReturnCallback(function (int $id) use (&$queriedIds) {
+                $queriedIds[] = $id;
+                return $this->mockAction(['code' => 200, 'data' => ['price' => 100]]);
+            });
+        $this->stubConcurrentUniform(['code' => 200, 'data' => ['price' => 100]]);
+        $this->orderSvc->method('createOrderAction')
+            ->willReturn($this->mockAction(['code' => 200, 'total' => 500]));
+        $this->userSvc->method('walletChargeAction')
+            ->willReturn($this->mockAction(['code' => 200]));
+        $this->orderSvc->method('confirmOrderAction')
+            ->willReturn($this->mockAction(['code' => 200]));
+
+        $event = $this->makeOrderRequestedEvent('1', [
+            ['p_key' => 7, 'amount' => 1],
+            ['p_key' => 42, 'amount' => 3],
+        ]);
+        $this->saga->onOrderCreateRequested($event);
+
+        $this->assertSame([7, 42], $queriedIds);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Happy path: Step 1 → 4 全跑完
+    // ═══════════════════════════════════════════════════════════════
+
+    public function testHappyPath_publishesOrderCreatedAndSagaCompleted(): void
+    {
+        $this->prodSvc->method('productInfoAction')
+            ->willReturn($this->mockAction(['code' => 200, 'data' => ['price' => 100]]));
+        $this->stubConcurrentUniform(['code' => 200, 'data' => ['price' => 100]]);
+        $this->orderSvc->method('createOrderAction')
+            ->willReturn($this->mockAction(['code' => 200, 'total' => 200]));
+        $this->userSvc->method('walletChargeAction')
+            ->willReturn($this->mockAction(['code' => 200]));
+        $this->orderSvc->method('confirmOrderAction')
+            ->willReturn($this->mockAction(['code' => 200]));
+
+        $this->saga->onOrderCreateRequested(
+            $this->makeOrderRequestedEvent('1', [['p_key' => 1, 'amount' => 2]]),
+        );
+
+        // 主路徑只 publish 2 個事件：OrderCreated (給 EventStore projection 起點)
+        // 與 OrderSagaCompleted (終點)。中間 step 不再走 AMQP。
+        $this->assertCount(2, $this->published);
+        $created = $this->assertPublished(OrderCreatedEvent::class, 0);
+        $this->assertSame(200, $created['total']);
+        $orderId = $created['orderId'];
+
+        $completed = $this->assertPublished(OrderSagaCompletedEvent::class, 1);
+        $this->assertSame($orderId, $completed['orderId']);
+        $this->assertSame('completed', $completed['status']);
+        $this->assertSame(200, $completed['total']);
+    }
+
+    public function testHappyPath_calculatesTotalFromProductsWhenResponseOmitsTotal(): void
+    {
         $this->prodSvc->method('productInfoAction')
             ->willReturn($this->mockAction(['code' => 200, 'data' => ['price' => 200]]));
+        $this->stubConcurrentUniform(['code' => 200, 'data' => ['price' => 200]]);
         $this->orderSvc->method('createOrderAction')
             ->willReturn($this->mockAction(['code' => 200])); // no 'total'
+        $this->userSvc->method('walletChargeAction')
+            ->willReturn($this->mockAction(['code' => 200]));
+        $this->orderSvc->method('confirmOrderAction')
+            ->willReturn($this->mockAction(['code' => 200]));
 
+        // price=200, amount=3 → total = 600
         $event = $this->makeOrderRequestedEvent('1', [['p_key' => 1, 'amount' => 3]]);
         $this->saga->onOrderCreateRequested($event);
 
-        $payload = $this->assertPublished(OrderCreatedEvent::class);
-        $this->assertSame(600, $payload['total']);
+        $created = $this->assertPublished(OrderCreatedEvent::class, 0);
+        $this->assertSame(600, $created['total']);
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Step 2: onOrderCreated (inventory deduction)
+    //  Step 2 失敗：扣庫存有任一筆失敗 → 觸發補償（paymentCompleted=false）
     // ═══════════════════════════════════════════════════════════════
 
-    public function testStep2_happyPath(): void
+    public function testStep2_inventoryFails_publishesOrderCreatedThenRollback(): void
     {
-        // reduceInventory is used inside ConcurrentAction — mock it
+        $this->prodSvc->method('productInfoAction')
+            ->willReturn($this->mockAction(['code' => 200, 'data' => ['price' => 100]]));
         $this->prodSvc->method('reduceInventory')
-            ->willReturn($this->mockAction(['code' => 200]));
+            ->willReturn($this->mockAction(['code' => 500]));
+        $this->orderSvc->method('createOrderAction')
+            ->willReturn($this->mockAction(['code' => 200, 'total' => 200]));
 
-        $event = new OrderCreatedEvent('order-001', '1', [
-            ['p_key' => 1, 'amount' => 2, 'price' => 100],
-            ['p_key' => 3, 'amount' => 1, 'price' => 50],
-        ], 250);
-
-        // ConcurrentAction relies on Anser internals — we test through the saga
-        // Since ConcurrentAction.send() makes real HTTP calls which we can't mock
-        // easily without a running service, we test the event wiring instead.
-        // We verify the saga calls reduceInventory for each product.
-        $calledProducts = [];
-        $this->prodSvc->method('reduceInventory')
-            ->willReturnCallback(function ($pKey, $orderId, $amount) use (&$calledProducts) {
-                $calledProducts[] = ['p_key' => $pKey, 'amount' => $amount];
-                return $this->mockAction(['code' => 200]);
+        // Step 1 並行查價成功，Step 2 並行扣庫存失敗
+        $this->saga->method('runConcurrent')
+            ->willReturnCallback(function (array $actions) {
+                $out = [];
+                foreach ($actions as $key => $_) {
+                    // info_* 成功；ded_* 失敗
+                    $out[$key] = str_starts_with($key, 'info_')
+                        ? ['code' => 200, 'data' => ['price' => 100]]
+                        : ['code' => 500];
+                }
+                return $out;
             });
 
-        // Note: ConcurrentAction is hard to unit test because send() uses
-        // Guzzle pool internally. We verify the method parameters are correct.
-        $this->assertIsCallable([$this->saga, 'onOrderCreated']);
+        $this->saga->onOrderCreateRequested($this->makeOrderRequestedEvent());
+
+        $this->assertPublished(OrderCreatedEvent::class, 0);
+        $rollback = $this->assertPublished(RollbackInventoryEvent::class, 1);
+        $this->assertFalse($rollback['paymentCompleted']);
+        $this->assertSame(0, $rollback['total']);
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Step 3: onInventoryDeducted (payment)
+    //  Step 3 失敗：付款失敗 → 觸發補償（paymentCompleted=false）
     // ═══════════════════════════════════════════════════════════════
 
-    public function testStep3_happyPath_publishesPaymentProcessed(): void
+    public function testStep3_paymentFails_publishesOrderCreatedThenRollback(): void
     {
+        $this->prodSvc->method('productInfoAction')
+            ->willReturn($this->mockAction(['code' => 200, 'data' => ['price' => 100]]));
+        $this->stubConcurrentUniform(['code' => 200, 'data' => ['price' => 100]]);
+        $this->orderSvc->method('createOrderAction')
+            ->willReturn($this->mockAction(['code' => 200, 'total' => 200]));
         $this->userSvc->method('walletChargeAction')
-            ->willReturn($this->mockAction(['code' => 200]));
+            ->willReturn($this->mockAction(['code' => 500, 'msg' => 'insufficient']));
 
-        $event = new InventoryDeductedEvent('order-001', '5', [
-            ['p_key' => 1, 'amount' => 2, 'price' => 100],
-        ], 200);
+        $this->saga->onOrderCreateRequested(
+            $this->makeOrderRequestedEvent('1', [['p_key' => 1, 'amount' => 2]]),
+        );
 
-        $this->saga->onInventoryDeducted($event);
-
-        $payload = $this->assertPublished(PaymentProcessedEvent::class);
-        $this->assertSame('order-001', $payload['orderId']);
-        $this->assertSame('5', $payload['userKey']);
-        $this->assertSame(200, $payload['total']);
-        $this->assertTrue($payload['success']);
-        $this->assertCount(1, $payload['productList']);
+        $this->assertPublished(OrderCreatedEvent::class, 0);
+        $rollback = $this->assertPublished(RollbackInventoryEvent::class, 1);
+        $this->assertFalse($rollback['paymentCompleted']);
+        $this->assertSame(0, $rollback['total']);
+        $this->assertCount(1, $rollback['successfulDeductions']);
     }
 
-    public function testStep3_chargesCorrectAmount(): void
+    public function testStep3_chargesUserWithCorrectTotal(): void
     {
         $chargedWith = [];
+        $this->prodSvc->method('productInfoAction')
+            ->willReturn($this->mockAction(['code' => 200, 'data' => ['price' => 100]]));
+        $this->stubConcurrentUniform(['code' => 200, 'data' => ['price' => 100]]);
+        $this->orderSvc->method('createOrderAction')
+            ->willReturn($this->mockAction(['code' => 200, 'total' => 999]));
         $this->userSvc->method('walletChargeAction')
             ->willReturnCallback(function (int $userId, string $orderId, int $total) use (&$chargedWith) {
                 $chargedWith = compact('userId', 'orderId', 'total');
                 return $this->mockAction(['code' => 200]);
             });
-
-        $event = new InventoryDeductedEvent('order-xyz', '7', [], 999);
-        $this->saga->onInventoryDeducted($event);
-
-        $this->assertSame(['userId' => 7, 'orderId' => 'order-xyz', 'total' => 999], $chargedWith);
-    }
-
-    public function testStep3_paymentFails_triggersRollback(): void
-    {
-        $this->userSvc->method('walletChargeAction')
-            ->willReturn($this->mockAction(['code' => 500, 'msg' => 'insufficient funds']));
-
-        $products = [['p_key' => 1, 'amount' => 2, 'price' => 100]];
-        $event = new InventoryDeductedEvent('order-001', '1', $products, 200);
-
-        $this->saga->onInventoryDeducted($event);
-
-        $payload = $this->assertPublished(RollbackInventoryEvent::class);
-        $this->assertSame('order-001', $payload['orderId']);
-        $this->assertSame($products, $payload['successfulDeductions']);
-        $this->assertFalse($payload['paymentCompleted']);
-        $this->assertSame(0, $payload['total']);
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    //  Step 4: onPaymentProcessed (confirm order)
-    // ═══════════════════════════════════════════════════════════════
-
-    public function testStep4_happyPath_publishesOrderSagaCompleted(): void
-    {
         $this->orderSvc->method('confirmOrderAction')
             ->willReturn($this->mockAction(['code' => 200]));
 
-        $event = new PaymentProcessedEvent('order-001', true, '1', 500, [
-            ['p_key' => 1, 'amount' => 2],
-        ]);
+        $this->saga->onOrderCreateRequested($this->makeOrderRequestedEvent('7'));
 
-        $this->saga->onPaymentProcessed($event);
-
-        $payload = $this->assertPublished(OrderSagaCompletedEvent::class);
-        $this->assertSame('order-001', $payload['orderId']);
-        $this->assertSame('1', $payload['userKey']);
-        $this->assertSame(500, $payload['total']);
-        $this->assertSame('completed', $payload['status']);
+        $this->assertSame(7, $chargedWith['userId']);
+        $this->assertSame(999, $chargedWith['total']);
+        $this->assertNotEmpty($chargedWith['orderId']);
     }
 
-    public function testStep4_successFalse_triggersRollback(): void
+    // ═══════════════════════════════════════════════════════════════
+    //  Step 4 失敗：訂單確認失敗 → 觸發完整補償（paymentCompleted=true）
+    // ═══════════════════════════════════════════════════════════════
+
+    public function testStep4_confirmOrderFails_publishesOrderCreatedThenFullRollback(): void
     {
-        $products = [['p_key' => 1, 'amount' => 2]];
-        $event = new PaymentProcessedEvent('order-001', false, '1', 500, $products);
-
-        $this->saga->onPaymentProcessed($event);
-
-        $payload = $this->assertPublished(RollbackInventoryEvent::class);
-        $this->assertSame('order-001', $payload['orderId']);
-        $this->assertSame($products, $payload['successfulDeductions']);
-        $this->assertFalse($payload['paymentCompleted']);
-    }
-
-    public function testStep4_confirmOrderFails_triggersFullRollback(): void
-    {
+        $this->prodSvc->method('productInfoAction')
+            ->willReturn($this->mockAction(['code' => 200, 'data' => ['price' => 100]]));
+        $this->stubConcurrentUniform(['code' => 200, 'data' => ['price' => 100]]);
+        $this->orderSvc->method('createOrderAction')
+            ->willReturn($this->mockAction(['code' => 200, 'total' => 200]));
+        $this->userSvc->method('walletChargeAction')
+            ->willReturn($this->mockAction(['code' => 200]));
         $this->orderSvc->method('confirmOrderAction')
             ->willReturn($this->mockAction(['code' => 500, 'msg' => 'db error']));
 
-        $products = [['p_key' => 1, 'amount' => 2]];
-        $event = new PaymentProcessedEvent('order-001', true, '1', 500, $products);
+        $this->saga->onOrderCreateRequested(
+            $this->makeOrderRequestedEvent('1', [['p_key' => 1, 'amount' => 2]]),
+        );
 
-        $this->saga->onPaymentProcessed($event);
-
-        $payload = $this->assertPublished(RollbackInventoryEvent::class);
-        $this->assertSame('order-001', $payload['orderId']);
-        $this->assertTrue($payload['paymentCompleted']);
-        $this->assertSame(500, $payload['total']);
-        $this->assertSame($products, $payload['successfulDeductions']);
+        $this->assertPublished(OrderCreatedEvent::class, 0);
+        $rollback = $this->assertPublished(RollbackInventoryEvent::class, 1);
+        $this->assertTrue($rollback['paymentCompleted']);
+        $this->assertSame(200, $rollback['total']);
+        $this->assertCount(1, $rollback['successfulDeductions']);
     }
 
     public function testStep4_confirmOrderCallsWithCorrectArgs(): void
     {
         $calledWith = [];
+        $this->prodSvc->method('productInfoAction')
+            ->willReturn($this->mockAction(['code' => 200, 'data' => ['price' => 100]]));
+        $this->stubConcurrentUniform(['code' => 200, 'data' => ['price' => 100]]);
+        $this->orderSvc->method('createOrderAction')
+            ->willReturn($this->mockAction(['code' => 200, 'total' => 100]));
+        $this->userSvc->method('walletChargeAction')
+            ->willReturn($this->mockAction(['code' => 200]));
         $this->orderSvc->method('confirmOrderAction')
             ->willReturnCallback(function (int $userId, string $orderId) use (&$calledWith) {
                 $calledWith = compact('userId', 'orderId');
                 return $this->mockAction(['code' => 200]);
             });
 
-        $event = new PaymentProcessedEvent('order-abc', true, '99', 100, []);
-        $this->saga->onPaymentProcessed($event);
+        $this->saga->onOrderCreateRequested($this->makeOrderRequestedEvent('99'));
 
-        $this->assertSame(['userId' => 99, 'orderId' => 'order-abc'], $calledWith);
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    //  Step 5: onOrderSagaCompleted
-    // ═══════════════════════════════════════════════════════════════
-
-    public function testStep5_completedEventIsHandled(): void
-    {
-        $event = new OrderSagaCompletedEvent('order-001', '1', 500, 'completed');
-
-        // Should not throw; just logs
-        $this->saga->onOrderSagaCompleted($event);
-        $this->assertNothingPublished();
+        $this->assertSame(99, $calledWith['userId']);
+        $this->assertNotEmpty($calledWith['orderId']);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -345,7 +357,6 @@ class OrderSagaTest extends TestCase
 
     public function testRollbackInventory_withPayment_refundsAndRestores(): void
     {
-        // Mock wallet compensate (refund)
         $refundCalled = false;
         $this->userSvc->method('walletCompensateAction')
             ->willReturnCallback(function () use (&$refundCalled) {
@@ -353,7 +364,6 @@ class OrderSagaTest extends TestCase
                 return $this->mockAction(['code' => 200]);
             });
 
-        // Mock inventory restore
         $restoredProducts = [];
         $this->prodSvc->method('addInventoryCompensateAction')
             ->willReturnCallback(function ($pKey, $orderId, $amount) use (&$restoredProducts) {
@@ -436,102 +446,7 @@ class OrderSagaTest extends TestCase
 
         $event = new RollbackOrderEvent('order-001', '1');
 
-        // Should not throw, just logs
         $this->saga->onRollbackOrder($event);
-        $this->assertNothingPublished();
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    //  Integration: full happy path chain
-    // ═══════════════════════════════════════════════════════════════
-
-    public function testFullHappyPath_step1Through4(): void
-    {
-        // ── Step 1: onOrderCreateRequested ──
-        $this->prodSvc->method('productInfoAction')
-            ->willReturn($this->mockAction(['code' => 200, 'data' => ['price' => 100]]));
-        $this->orderSvc->method('createOrderAction')
-            ->willReturn($this->mockAction(['code' => 200, 'total' => 200]));
-
-        $this->saga->onOrderCreateRequested(
-            $this->makeOrderRequestedEvent('1', [['p_key' => 1, 'amount' => 2]]),
-        );
-
-        $step1Payload = $this->assertPublished(OrderCreatedEvent::class, 0);
-        $this->assertSame(200, $step1Payload['total']);
-        $orderId = $step1Payload['orderId'];
-
-        // ── Step 3: onInventoryDeducted (skip step 2 ConcurrentAction) ──
-        $this->published = [];
-        $this->userSvc->method('walletChargeAction')
-            ->willReturn($this->mockAction(['code' => 200]));
-
-        $this->saga->onInventoryDeducted(
-            new InventoryDeductedEvent($orderId, '1', $step1Payload['productList'], 200),
-        );
-
-        $step3Payload = $this->assertPublished(PaymentProcessedEvent::class, 0);
-        $this->assertTrue($step3Payload['success']);
-
-        // ── Step 4: onPaymentProcessed ──
-        $this->published = [];
-        $this->orderSvc->method('confirmOrderAction')
-            ->willReturn($this->mockAction(['code' => 200]));
-
-        $this->saga->onPaymentProcessed(
-            new PaymentProcessedEvent($orderId, true, '1', 200, $step3Payload['productList']),
-        );
-
-        $step4Payload = $this->assertPublished(OrderSagaCompletedEvent::class, 0);
-        $this->assertSame($orderId, $step4Payload['orderId']);
-        $this->assertSame('completed', $step4Payload['status']);
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    //  Integration: full rollback chain (payment fails)
-    // ═══════════════════════════════════════════════════════════════
-
-    public function testFullRollbackPath_paymentFails(): void
-    {
-        $products = [['p_key' => 1, 'amount' => 2, 'price' => 100]];
-
-        // ── Step 3 fails: payment rejected ──
-        $this->userSvc->method('walletChargeAction')
-            ->willReturn($this->mockAction(['code' => 500, 'msg' => 'insufficient']));
-
-        $this->saga->onInventoryDeducted(
-            new InventoryDeductedEvent('order-001', '1', $products, 200),
-        );
-
-        $rollbackPayload = $this->assertPublished(RollbackInventoryEvent::class, 0);
-        $this->assertFalse($rollbackPayload['paymentCompleted']);
-
-        // ── Rollback inventory ──
-        $this->published = [];
-        $this->prodSvc->method('addInventoryCompensateAction')
-            ->willReturn($this->mockAction(['code' => 200]));
-
-        $this->saga->onRollbackInventory(
-            new RollbackInventoryEvent(
-                $rollbackPayload['orderId'],
-                $rollbackPayload['userKey'],
-                $rollbackPayload['successfulDeductions'],
-                $rollbackPayload['paymentCompleted'],
-                $rollbackPayload['total'],
-            ),
-        );
-
-        $orderRollbackPayload = $this->assertPublished(RollbackOrderEvent::class, 0);
-
-        // ── Rollback order ──
-        $this->published = [];
-        $this->orderSvc->method('compensateOrderAction')
-            ->willReturn($this->mockAction(['code' => 200]));
-
-        $this->saga->onRollbackOrder(
-            new RollbackOrderEvent($orderRollbackPayload['orderId'], $orderRollbackPayload['userKey']),
-        );
-
         $this->assertNothingPublished();
     }
 }

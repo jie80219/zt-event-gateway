@@ -55,28 +55,58 @@ final class EventConsumer
             );
         }
 
-        $reflection = new \ReflectionClass($eventClass);
-        $constructor = $reflection->getConstructor();
-        if ($constructor === null) {
-            return $reflection->newInstance();
+        $signature = self::constructorSignature($eventClass);
+
+        if ($signature === null) {
+            return new $eventClass();
         }
 
         $args = [];
-        foreach ($constructor->getParameters() as $parameter) {
-            $name = $parameter->getName();
-            if (array_key_exists($name, $payload)) {
-                $args[] = $payload[$name];
-                continue;
+        foreach ($signature as $param) {
+            if (array_key_exists($param['name'], $payload)) {
+                $args[] = $payload[$param['name']];
+            } elseif ($param['hasDefault']) {
+                $args[] = $param['default'];
+            } else {
+                $args[] = null;
             }
-
-            if ($parameter->isDefaultValueAvailable()) {
-                $args[] = $parameter->getDefaultValue();
-                continue;
-            }
-
-            $args[] = null;
         }
 
-        return $reflection->newInstanceArgs($args);
+        return new $eventClass(...$args);
+    }
+
+    /**
+     * Cache constructor parameter metadata per event class. Saves a
+     * ReflectionClass + parameters walk per inbound event.
+     *
+     * @return list<array{name:string,hasDefault:bool,default:mixed}>|null
+     *         null when the class has no constructor.
+     */
+    private static function constructorSignature(string $eventClass): ?array
+    {
+        /** @var array<string, list<array{name:string,hasDefault:bool,default:mixed}>|null> $cache */
+        static $cache = [];
+        if (array_key_exists($eventClass, $cache)) {
+            return $cache[$eventClass];
+        }
+
+        $reflection = new \ReflectionClass($eventClass);
+        $constructor = $reflection->getConstructor();
+        if ($constructor === null) {
+            return $cache[$eventClass] = null;
+        }
+
+        $signature = [];
+        foreach ($constructor->getParameters() as $parameter) {
+            $signature[] = [
+                'name'       => $parameter->getName(),
+                'hasDefault' => $parameter->isDefaultValueAvailable(),
+                'default'    => $parameter->isDefaultValueAvailable()
+                    ? $parameter->getDefaultValue()
+                    : null,
+            ];
+        }
+
+        return $cache[$eventClass] = $signature;
     }
 }
