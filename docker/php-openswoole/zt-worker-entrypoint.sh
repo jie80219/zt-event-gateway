@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 # Fork N php-worker processes inside the single zt-php-worker container.
 # Multi-process consumption parallelises saga throughput across one queue
 # (RabbitMQ round-robins to consumers). Keeps the container name stable so
