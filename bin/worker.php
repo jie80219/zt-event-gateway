@@ -385,7 +385,7 @@ try {
         $eventQueues,
     );
     $scanner->scanAndRegisterHandlers('App\Sagas', $eventBus);
-    $channel->basic_qos(null, 1, null);
+    $channel->basic_qos(null, 8, null);
 
     $transportConsumer->subscribe($requestQueue, [$requestConsumer, 'process']);
     foreach ($eventQueues as $queueName) {
