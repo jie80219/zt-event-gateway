@@ -55,8 +55,9 @@ case "${STACK:-}" in
         K_CAPTURE_FILTER="tcp port 8082"
         L_TARGET_CONTAINER="zt-spiffe-watcher"
         L_HEALTH_HOST="$GATEWAY_ALIAS"
-        # SHM file lives inside the watcher container; query from within.
-        L_HEALTH_CMD='cat /tmp/spiffe-shared/meta.json 2>/dev/null | jq -re ".x509_state == \"ready\"" >/dev/null'
+        # SHM file lives inside the watcher container; the slim watcher
+        # image lacks jq, so use grep on the literal key/value pair.
+        L_HEALTH_CMD='grep -q "\"x509_state\":\"ready\"" /tmp/spiffe-shared/meta.json 2>/dev/null'
         L_HEALTH_VIA_CONTAINER=1
         ;;
     linkerd)
