@@ -354,8 +354,7 @@ run_category_l() {
     local build_in_container=0
     if echo "$build_out" | grep -q MISSING_GCC; then
         log "gcc missing on $L_HEALTH_HOST — attempting build inside $L_TARGET_CONTAINER"
-        ssh -n "$L_HEALTH_HOST" "docker exec $L_TARGET_CONTAINER sh -c 'command -v gcc >/dev/null 2>&1'" 2>/dev/null
-        if [[ $? -ne 0 ]]; then
+        if ! ssh -n "$L_HEALTH_HOST" "docker exec $L_TARGET_CONTAINER sh -c 'command -v gcc >/dev/null 2>&1'" 2>/dev/null; then
             emit L1 "lib-hijack" "$L_TARGET_CONTAINER" "no-gcc" "skipped" \
                 "gcc unavailable on $L_HEALTH_HOST host AND inside container — cannot build evil.so" 0
             emit L2 "lib-hijack" "$L_TARGET_CONTAINER" "no-gcc" "skipped" "depends on L1" 0
