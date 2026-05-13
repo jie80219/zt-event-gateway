@@ -75,4 +75,9 @@ d_cross_service D9 "$PROD_ALIAS"  10.1.1.214 8084 "from prod-host probe user-hos
 
 run_category_e
 
+# Category K + L (Paper-5 attack toolkit: tcpreplay + fakelib)
+source "$SCRIPT_DIR/probe-paper5-attacks.sh"
+run_category_k
+run_category_l
+
 print_summary

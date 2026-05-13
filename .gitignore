@@ -8,6 +8,10 @@
 /.env.local
 /artifacts/
 
+# Paper-5 attack capture pcaps — may contain TLS ciphertext from live runs.
+artifacts/sec-*/pcap/
+artifacts/sec-*/**/*.pcap
+
 # Thesis-related artifacts — raw data files and draft chapters are not
 # tracked (regeneratable via scripts/run-thesis-experiment.sh).
 # Previously tracked files remain tracked; new files are ignored.
