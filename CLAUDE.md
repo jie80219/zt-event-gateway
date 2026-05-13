@@ -179,6 +179,13 @@ ssh zt-user    'curl -fsS http://127.0.0.1:8084/api/health' && echo " user OK"
 # (d) SPIRE / watcher SHM 狀態（在 gateway host 上）
 ssh zt-gateway 'docker exec zt-spiffe-watcher cat /tmp/spiffe-shared/meta.json | jq .x509_state'
 ssh zt-gateway 'docker exec zt-keycloak-watcher cat /tmp/keycloak-shared/meta.json | jq .token_state' # KEYCLOAK_ENABLED=1 才需要
+
+# (e) Paper-5 攻擊工具 preflight（僅安全實驗需要；效能實驗可略過）
+#     scripts/security/probe-paper5-attacks.sh 需要 tcpreplay (replay) + tcpdump (capture)
+#     + gcc (build fakelib evil.so)。tshark 用於 K0 ClientHello 計數。
+for h in zt-gateway zt-order zt-prod zt-user; do
+  ssh "$h" 'sudo apt-get install -y tcpreplay tcpdump tshark gcc'
+done
 ```
 
 任一步失敗就 **停下排查**，不要進入下一步。

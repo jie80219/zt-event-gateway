@@ -156,4 +156,9 @@ f_lsvid_get F5 "$ORDER_ALIAS" 8082 /api/v1/order   "forged X-LSVID — order ser
 f_lsvid_get F6 "$USER_ALIAS"  8084 /api/v1/wallet  "forged X-LSVID — user service must reject"
 f_lsvid_get F7 "$PROD_ALIAS"  8083 /api/health     "forged X-LSVID hits health (likely 200 since health is unauth)" 0
 
+# Category K + L (Paper-5 attack toolkit: tcpreplay + fakelib)
+source "$SCRIPT_DIR/probe-paper5-attacks.sh"
+run_category_k
+run_category_l
+
 print_summary
