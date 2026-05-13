@@ -88,7 +88,17 @@ class KeycloakIngressJwtFilter implements FilterInterface
 
     public static function isEnabled(): bool
     {
-        return (getenv('KEYCLOAK_INGRESS_ENABLED') ?: '0') !== '0';
+        // Ingress enforcement defaults to follow KEYCLOAK_ENABLED — when an
+        // operator turns on the Keycloak stack, ingress validation is on by
+        // default (fail-closed). Explicit override:
+        //   KEYCLOAK_INGRESS_ENABLED=0  → disable (opt-out)
+        //   KEYCLOAK_INGRESS_ENABLED=1  → force-enable
+        // Unset / empty → mirror KEYCLOAK_ENABLED.
+        $explicit = getenv('KEYCLOAK_INGRESS_ENABLED');
+        if (is_string($explicit) && $explicit !== '') {
+            return $explicit !== '0';
+        }
+        return (getenv('KEYCLOAK_ENABLED') ?: '0') !== '0';
     }
 
     public static function expectedAudience(): string
