@@ -220,15 +220,24 @@ services:
       dockerfile: docker/php-openswoole/Dockerfile
     container_name: zt-spiffe-watcher
     command: ["php", "bin/spiffe-watcher.php"]
-    # ── Hardening (Paper-5 L2 finding) ────────────────────────────────
+    # ── Hardening (Paper-5 L1 + L2 findings) ──────────────────────────
     # no-new-privileges: blocks setuid → root escalation in LD_PRELOAD
     #                    attacks against suid binaries.
     # cap_drop ALL:      watcher only needs to read SPIRE socket + write
     #                    to the shared volume; no Linux caps required.
+    # read_only + tmpfs: /tmp is a noexec tmpfs so dropped-in shared
+    #                    libraries (e.g. via `docker cp evil.so`) cannot
+    #                    be dlopen'd via LD_PRELOAD. The /tmp/spiffe-*
+    #                    volume mounts below shadow this tmpfs at their
+    #                    specific paths and remain fully read-write.
     security_opt:
       - "no-new-privileges:true"
     cap_drop:
       - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+      - /run:size=8m
     environment:
       SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
       SPIFFE_PEM_DIR: "/tmp/spiffe-certs"
