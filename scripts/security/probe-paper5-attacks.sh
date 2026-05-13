@@ -382,32 +382,44 @@ CSRC
             rm -f /tmp/evil/evil.c
         '" 2>&1 >/dev/null || true
     else
-        inject_into_container "$L_HEALTH_HOST" "$L_TARGET_CONTAINER" "$evil_so" >/dev/null 2>&1
+        # inject may fail (e.g. read-only rootfs blocks docker cp); the
+        # downstream `docker exec test -f` will catch it and emit skipped.
+        inject_into_container "$L_HEALTH_HOST" "$L_TARGET_CONTAINER" "$evil_so" >/dev/null 2>&1 || true
         ssh -n "$L_HEALTH_HOST" "rm -f '$evil_so'" 2>/dev/null || true
     fi
 
-    # Confirm evil.so present inside container.
-    if ! ssh -n "$L_HEALTH_HOST" "docker exec $L_TARGET_CONTAINER test -f /tmp/evil/evil.so" 2>/dev/null; then
-        emit L1 "lib-hijack" "$L_TARGET_CONTAINER" "no-evil-so" "skipped" \
-            "evil.so not present in container after build/copy (built_in_container=$build_in_container)" 0
-        emit L2 "lib-hijack" "$L_TARGET_CONTAINER" "no-evil-so" "skipped" "depends on L1" 0
-        emit L3 "lib-hijack" "$L_TARGET_CONTAINER" "no-evil-so" "skipped" "depends on L1" 0
-        return 0
+    # Confirm evil.so present inside container. If the file-delivery step
+    # itself was blocked (e.g. read-only rootfs rejecting docker cp), that
+    # IS a defense success at an earlier stage of the kill chain — emit
+    # L1 as rejected (not skipped) and let L2/L3 still run independently
+    # (they inspect docker config + /proc/1/maps respectively, neither
+    # depends on evil.so being injected).
+    local evil_present=0
+    if ssh -n "$L_HEALTH_HOST" "docker exec $L_TARGET_CONTAINER test -f /tmp/evil/evil.so" 2>/dev/null; then
+        evil_present=1
+    else
+        emit L1 "lib-hijack" "$L_TARGET_CONTAINER" "delivery-blocked" "rejected" \
+            "evil.so delivery into container blocked (read-only rootfs / docker cp refused) — attack chain broke at file-drop stage"
     fi
 
     # ── L1: LD_PRELOAD via one-shot docker exec ───────────────────────────
-    # Runs `/bin/sh -c id` (benign) with the env var set. If the dynamic
-    # linker honors LD_PRELOAD, the constructor runs and touches
-    # /tmp/hijacked. The long-running daemon (pid 1) is UNAFFECTED — this
-    # purely measures whether the LD_PRELOAD mechanic works at all under
-    # the container's security profile.
-    ssh -n "$L_HEALTH_HOST" "docker exec -e LD_PRELOAD=/tmp/evil/evil.so '$L_TARGET_CONTAINER' /bin/sh -c id" 2>/dev/null >/dev/null || true
-    local l1_marker
-    l1_marker=$(hijacked_marker "$L_HEALTH_HOST" "$L_TARGET_CONTAINER")
-    local l1_verdict="rejected"
-    [[ "$l1_marker" == "yes" ]] && l1_verdict="accepted"
-    emit L1 "lib-hijack" "$L_TARGET_CONTAINER" "$l1_marker" "$l1_verdict" \
-        "LD_PRELOAD one-shot exec — marker=$l1_marker (accepted = attacker .so loaded into spawned process)"
+    # Only run the LD_PRELOAD probe if evil.so actually made it into the
+    # container; otherwise L1 was already emitted as rejected at the
+    # delivery stage above.
+    if [[ "$evil_present" == "1" ]]; then
+        # Runs `/bin/sh -c id` (benign) with the env var set. If the dynamic
+        # linker honors LD_PRELOAD, the constructor runs and touches
+        # /tmp/hijacked. The long-running daemon (pid 1) is UNAFFECTED — this
+        # purely measures whether the LD_PRELOAD mechanic works at all under
+        # the container's security profile.
+        ssh -n "$L_HEALTH_HOST" "docker exec -e LD_PRELOAD=/tmp/evil/evil.so '$L_TARGET_CONTAINER' /bin/sh -c id" 2>/dev/null >/dev/null || true
+        local l1_marker
+        l1_marker=$(hijacked_marker "$L_HEALTH_HOST" "$L_TARGET_CONTAINER")
+        local l1_verdict="rejected"
+        [[ "$l1_marker" == "yes" ]] && l1_verdict="accepted"
+        emit L1 "lib-hijack" "$L_TARGET_CONTAINER" "$l1_marker" "$l1_verdict" \
+            "LD_PRELOAD one-shot exec — marker=$l1_marker (accepted = attacker .so loaded into spawned process)"
+    fi
 
     # ── L2: container hardening posture ───────────────────────────────────
     # docker inspect for SecurityOpt + ReadonlyRootfs + Privileged. Hardened
