@@ -220,6 +220,15 @@ services:
       dockerfile: docker/php-openswoole/Dockerfile
     container_name: zt-spiffe-watcher
     command: ["php", "bin/spiffe-watcher.php"]
+    # ── Hardening (Paper-5 L2 finding) ────────────────────────────────
+    # no-new-privileges: blocks setuid → root escalation in LD_PRELOAD
+    #                    attacks against suid binaries.
+    # cap_drop ALL:      watcher only needs to read SPIRE socket + write
+    #                    to the shared volume; no Linux caps required.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
     environment:
       SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
       SPIFFE_PEM_DIR: "/tmp/spiffe-certs"

@@ -1,3 +1,14 @@
+# ─────────────────────────────────────────────────────────────────────
+# Multi-stage build used by zt-gateway, zt-php-worker, and
+# zt-spiffe-watcher.
+#
+# The runtime stage explicitly strips the gcc/g++/make/autoconf chain
+# that `pecl install` (openswoole, protobuf) pulls in transparently.
+# This closes the Paper-5 L1 attack vector (LD_PRELOAD-style library
+# hijack via in-container compilation) flagged on zt-spiffe-watcher.
+# ─────────────────────────────────────────────────────────────────────
+
+# ── Stage 1: composer vendor ────────────────────────────────────────
 FROM composer:2.8 AS vendor
 
 WORKDIR /app
@@ -7,28 +18,37 @@ COPY packages/ packages/
 RUN composer update --no-interaction --prefer-dist --no-progress --optimize-autoloader \
     --no-scripts --ignore-platform-req=ext-swoole --ignore-platform-req=ext-swow
 
+# ── Stage 2: runtime ────────────────────────────────────────────────
+# Single-stage runtime with explicit toolchain strip. We keep the
+# build → strip steps in ONE RUN so the compilers never persist in
+# any image layer; multi-stage with a separate extension builder is
+# the canonical alternative but copying /usr/local/lib/php/extensions
+# across stages is fragile when the base image floats versions.
 FROM php:8.3-cli-bookworm
 
 WORKDIR /app
 
-# System deps
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        git unzip curl procps libssl-dev libcurl4-openssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux \
+    # ── runtime libs only — no compilers ─────────────────────────
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+         git unzip curl procps libssl-dev libcurl4-openssl-dev \
+    # Build + enable PHP extensions. `pecl install` quietly pulls in
+    # gcc / g++ / make / autoconf via PHPIZE_DEPS; we strip them after.
+    && docker-php-ext-install sockets pcntl \
+    && pecl install openswoole && docker-php-ext-enable openswoole \
+    && pecl install protobuf && docker-php-ext-enable protobuf \
+    # ── Strip the build toolchain to close the LD_PRELOAD / fakelib
+    # ──   attack vector (Paper-5 L1 finding on zt-spiffe-watcher).
+    && apt-get purge -y --auto-remove \
+         gcc g++ cpp make autoconf m4 binutils \
+         gcc-12 g++-12 cpp-12 binutils-common binutils-x86-64-linux-gnu \
+         libgcc-12-dev libstdc++-12-dev pkg-config re2c \
+         dpkg-dev libdpkg-perl \
+    && apt-get autoremove -y --purge \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/cache/apt/* /root/.pearrc
 
-# PHP extensions
-RUN docker-php-ext-install sockets pcntl
-
-# OpenSwoole (with HTTP/2 + SSL + curl hooks)
-RUN pecl install openswoole && docker-php-ext-enable openswoole
-
-# Protobuf C extension
-RUN pecl install protobuf && docker-php-ext-enable protobuf
-
-# 不需要 ext-grpc — php-spiffe 使用純 PHP 的 OpenSwooleHttp2Transport
-# 直連 SPIRE Agent，不依賴 \Grpc\BaseStub
-
-# Copy vendor from build stage
+# Copy vendor from composer stage
 COPY --from=vendor /app/vendor /app/vendor
 
 # Copy application
