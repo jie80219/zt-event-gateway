@@ -23,11 +23,25 @@ final class KeycloakClient
         private readonly string $clientSecret,
         private readonly int $timeoutSeconds = 10,
     ) {
-        $this->http = new Client([
+        $config = [
             RequestOptions::TIMEOUT => $timeoutSeconds,
             RequestOptions::CONNECT_TIMEOUT => $timeoutSeconds,
             RequestOptions::HTTP_ERRORS => true,
-        ]);
+        ];
+        // Run 4: keep the Keycloak TCP connection warm across token/JWKS
+        // refreshes (the watcher refreshes on a 1s loop). Zero-security-loss:
+        // token contents and TLS verification of the Keycloak endpoint are
+        // unchanged; only the socket is reused. Disable with
+        // KEYCLOAK_HTTP_KEEPALIVE=0.
+        if (getenv('KEYCLOAK_HTTP_KEEPALIVE') !== '0') {
+            $config[RequestOptions::HEADERS] = ['Connection' => 'keep-alive'];
+            $config['curl'] = [
+                CURLOPT_TCP_KEEPALIVE => 1,
+                CURLOPT_TCP_KEEPIDLE  => 30,
+                CURLOPT_TCP_KEEPINTVL => 15,
+            ];
+        }
+        $this->http = new Client($config);
     }
 
     /**
