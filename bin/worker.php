@@ -420,11 +420,23 @@ try {
         fwrite(STDOUT, "[worker] downstream HTTP keep-alive enabled (mTLS off)\n");
     }
 
-    // prefetch=1: aligned with EXPERIMENT.md spec. Higher prefetch (e.g. 8)
-    // boosts throughput but inflates p99 — one slow message blocks up to N
-    // already-buffered messages behind it. Saga tail latency dominates the
-    // claim we're benchmarking against Linkerd 1.x, so prefer prefetch=1.
-    $channel->basic_qos(null, 1, null);
+    // Run 5: tunable AMQP prefetch (throughput vs p99 trade-off).
+    //
+    // prefetch=1 (default): aligned with EXPERIMENT.md spec. Higher prefetch
+    // (e.g. 8) boosts throughput but inflates p99 — one slow message blocks up
+    // to N already-buffered messages behind it. Saga tail latency dominates the
+    // claim we're benchmarking against Linkerd 1.x, so the default stays 1.
+    //
+    // AMQP_PREFETCH lets an experiment round sweep this lever (1 vs 8 @20k) and
+    // record the saga-complete throughput vs p99 trade-off in run notes. Worker
+    // concurrency is still scaled by container replicas — this only widens the
+    // in-flight window for a single synchronous consumer. Zero-security-loss:
+    // pure flow control; every message still runs the full triple validation.
+    $prefetch = (int) $env('AMQP_PREFETCH', '1');
+    if ($prefetch < 1) {
+        $prefetch = 1;
+    }
+    $channel->basic_qos(null, $prefetch, null);
 
     $transportConsumer->subscribe($requestQueue, [$requestConsumer, 'process']);
     foreach ($eventQueues as $queueName) {
