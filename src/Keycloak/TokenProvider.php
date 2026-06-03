@@ -17,6 +17,18 @@ namespace Keycloak;
  */
 final class TokenProvider
 {
+    /**
+     * Per-process hot memo of the last valid token record. Collapses the N
+     * SHM reads per saga (one per outbound hop via KeycloakBearerFilter /
+     * MessageBus::publish) down to a single in-memory check while the token
+     * is still valid. Refreshed lazily from SHM (or, as a last resort, the
+     * network) once it drops inside the skew window. Same source + TTL bound
+     * as the SHM cache, so a rotated/expired token is never served.
+     *
+     * @var array{access_token:string, expires_at:int, ...}|null
+     */
+    private ?array $memo = null;
+
     public function __construct(
         private readonly KeycloakClient $client,
         private readonly TokenCache $cache,
@@ -26,11 +38,35 @@ final class TokenProvider
 
     public function getAccessToken(): string
     {
+        $now = time();
+
+        // 1) Hot path: in-process memo, valid until exp - skew.
+        if ($this->memo !== null && ($this->memo['expires_at'] - $this->refreshSkewSeconds) > $now) {
+            return $this->memo['access_token'];
+        }
+
+        // 2) Warm path: SHM cache kept fresh by the keycloak-watcher daemon.
         $cached = $this->cache->read();
-        if ($cached !== null && ($cached['expires_at'] - $this->refreshSkewSeconds) > time()) {
+        if ($cached !== null && ($cached['expires_at'] - $this->refreshSkewSeconds) > $now) {
+            $this->memo = $cached;
             return $cached['access_token'];
         }
-        return $this->refresh()['access_token'];
+
+        // 3) Cold path: synchronous network fetch. This blocks the request and
+        // under load can stall the whole consumer, so it is gated. Set
+        // KEYCLOAK_SYNC_FETCH_FALLBACK=0 to fail-fast and rely solely on the
+        // warmed watcher (no validation is skipped either way — downstream
+        // still verifies iss/sig/aud/exp).
+        if (getenv('KEYCLOAK_SYNC_FETCH_FALLBACK') === '0') {
+            throw new \RuntimeException(
+                'Keycloak access token unavailable from cache and '
+                . 'KEYCLOAK_SYNC_FETCH_FALLBACK=0 disables synchronous fetch'
+            );
+        }
+
+        $fresh = $this->refresh();
+        $this->memo = $fresh;
+        return $fresh['access_token'];
     }
 
     public function getClientId(): string
