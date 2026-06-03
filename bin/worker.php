@@ -385,6 +385,41 @@ try {
         $eventQueues,
     );
     $scanner->scanAndRegisterHandlers('App\Sagas', $eventBus);
+
+    // Run 3: downstream HTTP keep-alive (mTLS-off modes only).
+    //
+    // The saga's downstream calls go through Anser's singleton Guzzle client
+    // (ServiceList::getHttpClient). By default the worker registers no global
+    // handler, so each call relies on cURL's implicit reuse. Register a base
+    // handler that wraps Guzzle's DEFAULT handler (sync + async safe — NOT the
+    // Swow HTTPConnectionManager, which needs a coroutine scheduler this
+    // synchronous worker doesn't run) and pins TCP keepalive + connection reuse
+    // so bursts of saga steps don't churn fresh TCP/handshakes.
+    //
+    // Gated off when mTLS is on (per-request client certs must never share a
+    // reused socket) or when DOWNSTREAM_HTTP_KEEPALIVE=0. Zero-security-loss:
+    // transport reuse only; every request still carries its own Bearer + X-LSVID
+    // headers, validated downstream regardless of socket reuse.
+    if ($env('SPIFFE_MTLS_ENABLED', '0') !== '1'
+        && $env('DOWNSTREAM_HTTP_KEEPALIVE', '1') === '1') {
+        $defaultHandler = \GuzzleHttp\Utils::chooseHandler();
+        $keepAliveHandler = static function (
+            \Psr\Http\Message\RequestInterface $request,
+            array $options
+        ) use ($defaultHandler) {
+            $options['curl'] = ($options['curl'] ?? []) + [
+                CURLOPT_TCP_KEEPALIVE => 1,
+                CURLOPT_TCP_KEEPIDLE  => 30,
+                CURLOPT_TCP_KEEPINTVL => 15,
+                CURLOPT_FORBID_REUSE  => 0,
+                CURLOPT_FRESH_CONNECT => 0,
+            ];
+            return $defaultHandler($request->withHeader('Connection', 'keep-alive'), $options);
+        };
+        \SDPMlab\Anser\Service\ServiceList::setGlobalHandlerStack($keepAliveHandler);
+        fwrite(STDOUT, "[worker] downstream HTTP keep-alive enabled (mTLS off)\n");
+    }
+
     // prefetch=1: aligned with EXPERIMENT.md spec. Higher prefetch (e.g. 8)
     // boosts throughput but inflates p99 — one slow message blocks up to N
     // already-buffered messages behind it. Saga tail latency dominates the
