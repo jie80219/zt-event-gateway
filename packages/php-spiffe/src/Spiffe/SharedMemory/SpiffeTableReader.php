@@ -18,14 +18,38 @@ namespace Spiffe\SharedMemory;
  */
 final class SpiffeTableReader
 {
-    private const MAX_SPIN = 200;
-    private const SPIN_SLEEP_US = 500;
+    private const DEFAULT_MAX_SPIN = 200;
+    private const DEFAULT_SPIN_SLEEP_US = 500;
 
     private string $baseDir;
+
+    /**
+     * Run 6: tunable seqlock spin budget. The defaults (200 spins ×
+     * 500us) are unchanged; SPIFFE_SHM_MAX_SPIN / SPIFFE_SHM_SPIN_SLEEP_US
+     * let an experiment round trade retry aggressiveness against CPU spent
+     * busy-waiting on a writer mid-update. The seqlock correctness invariant
+     * (return the read only when v1 === v2 and even, else null) is unchanged
+     * regardless of the budget.
+     */
+    private int $maxSpin;
+    private int $spinSleepUs;
 
     public function __construct(string $baseDir = SpiffeTableSchema::DEFAULT_BASE_DIR)
     {
         $this->baseDir = rtrim($baseDir, '/');
+        $this->maxSpin = self::readPositiveIntEnv('SPIFFE_SHM_MAX_SPIN', self::DEFAULT_MAX_SPIN);
+        $this->spinSleepUs = self::readPositiveIntEnv('SPIFFE_SHM_SPIN_SLEEP_US', self::DEFAULT_SPIN_SLEEP_US);
+    }
+
+    private static function readPositiveIntEnv(string $key, int $default): int
+    {
+        $raw = getenv($key);
+        if (!is_string($raw) || $raw === '') {
+            return $default;
+        }
+        $val = (int) $raw;
+
+        return $val > 0 ? $val : $default;
     }
 
     // ── X.509 credential reads ───────────────────────────────────
@@ -268,11 +292,11 @@ final class SpiffeTableReader
      */
     private function consistentRead(callable $readFn): mixed
     {
-        for ($spin = 0; $spin < self::MAX_SPIN; $spin++) {
+        for ($spin = 0; $spin < $this->maxSpin; $spin++) {
             $v1 = $this->readMetaRaw()['version'] ?? 0;
 
             if ($v1 & 1) {
-                usleep(self::SPIN_SLEEP_US);
+                usleep($this->spinSleepUs);
                 continue;
             }
 
@@ -283,7 +307,7 @@ final class SpiffeTableReader
                 return $result;
             }
 
-            usleep(self::SPIN_SLEEP_US);
+            usleep($this->spinSleepUs);
         }
 
         return null;
