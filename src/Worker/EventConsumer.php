@@ -347,16 +347,46 @@ final class EventConsumer
         }
 
         // 一般事件走反射路徑：逐一對應 constructor 參數。
-        $reflection = new \ReflectionClass($eventClass);
-        $constructor = $reflection->getConstructor();
-        if ($constructor === null) {
+        //
+        // Run 7: per-event-type reflection cache. ReflectionClass +
+        // constructor parameter metadata (name / default availability /
+        // default value) are immutable for a given class, so we resolve
+        // them once and reuse across messages. Behaviour is identical —
+        // only the repeated reflection work per saga step is removed.
+        static $reflCache = [];
+
+        if (!isset($reflCache[$eventClass])) {
+            $reflection = new \ReflectionClass($eventClass);
+            $constructor = $reflection->getConstructor();
+            $params = [];
+            if ($constructor !== null) {
+                foreach ($constructor->getParameters() as $parameter) {
+                    $hasDefault = $parameter->isDefaultValueAvailable();
+                    $params[] = [
+                        'name' => $parameter->getName(),
+                        'hasDefault' => $hasDefault,
+                        'default' => $hasDefault ? $parameter->getDefaultValue() : null,
+                    ];
+                }
+            }
+            $reflCache[$eventClass] = [
+                'reflection' => $reflection,
+                'hasConstructor' => $constructor !== null,
+                'params' => $params,
+            ];
+        }
+
+        $cached = $reflCache[$eventClass];
+        $reflection = $cached['reflection'];
+
+        if (!$cached['hasConstructor']) {
             // 無建構子：直接 new。
             return $reflection->newInstance();
         }
 
         $args = [];
-        foreach ($constructor->getParameters() as $parameter) {
-            $name = $parameter->getName();
+        foreach ($cached['params'] as $parameter) {
+            $name = $parameter['name'];
             // 依參數名字從 payload 抓值。
             if (array_key_exists($name, $payload)) {
                 $args[] = $payload[$name];
@@ -364,8 +394,8 @@ final class EventConsumer
             }
 
             // payload 沒有這個鍵 → 嘗試使用參數的預設值。
-            if ($parameter->isDefaultValueAvailable()) {
-                $args[] = $parameter->getDefaultValue();
+            if ($parameter['hasDefault']) {
+                $args[] = $parameter['default'];
                 continue;
             }
 
