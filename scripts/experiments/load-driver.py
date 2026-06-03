@@ -50,15 +50,19 @@ async def post_one(
     trace_id: str,
     token: str = "",
 ) -> Result:
-    # When a Bearer token is present, gateway derives userKey from the JWT `sub`
-    # claim (Keycloak ingress validation). Don't send userKey in the body — it
-    # would just be overwritten and adds bytes to every request.
+    # Always send a numeric userKey="1". The gateway's Keycloak ingress would
+    # otherwise derive userKey from the JWT `sub` (a UUID), but the downstream
+    # sub->users.id mapping is not implemented, so order-service returns 500 on
+    # create and every saga aborts at Step 1 (0% completion). The EXPERIMENT-ONLY
+    # passthrough in Order.php keeps a numeric body userKey so the happy path
+    # actually completes and we measure the auth/crypto cost on completed sagas
+    # — matching the smoke-test body. KC JWT verification cost is still paid at
+    # gateway ingress + worker regardless.
     body: dict = {
         "productList": [{"p_key": (seq % 5) + 1, "amount": 1}],
         "total": 100,
+        "userKey": "1",
     }
-    if not token:
-        body["userKey"] = "1"
     headers = {
         "Content-Type": "application/json",
         "X-Correlation-Id": trace_id,
