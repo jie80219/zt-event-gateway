@@ -17,12 +17,42 @@ use Firebase\JWT\JWT;
  */
 final class JwtValidator
 {
+    /**
+     * Memoized parsed key set, keyed by a hash of the raw JWKS read from SHM.
+     * JWK::parseKeySet() is pure CPU (decode each JWK into an OpenSSL key) and
+     * was re-run on every validate(); the key material only changes on
+     * rotation, so we re-parse only when the JWKS content hash changes.
+     *
+     * @var array{hash: string|null, map: array<string, mixed>|null}
+     */
+    private array $keyMapMemo = ['hash' => null, 'map' => null];
+
     public function __construct(
         private readonly JwksCache $jwksCache,
         private readonly string $expectedIssuer,
         private readonly int $leewaySeconds = 30,
     ) {
         JWT::$leeway = $this->leewaySeconds;
+    }
+
+    /**
+     * Parse the JWKS into a key map, reusing the last result while the JWKS
+     * content is unchanged. Behaviour-preserving: the same keys are used to
+     * verify every signature; only redundant re-parsing is skipped, and any
+     * rotation (content change) invalidates the memo.
+     *
+     * @param  array<int, array<string, mixed>>  $keys
+     * @return array<string, mixed>
+     */
+    private function parseKeySetMemoized(array $keys): array
+    {
+        $hash = hash('sha256', (string) json_encode($keys));
+        if ($this->keyMapMemo['hash'] === $hash && $this->keyMapMemo['map'] !== null) {
+            return $this->keyMapMemo['map'];
+        }
+        $map = JWK::parseKeySet(['keys' => $keys]);
+        $this->keyMapMemo = ['hash' => $hash, 'map' => $map];
+        return $map;
     }
 
     /**
@@ -37,7 +67,7 @@ final class JwtValidator
             throw new \RuntimeException('JWKS cache is empty — cannot verify JWT');
         }
 
-        $keyMap = JWK::parseKeySet(['keys' => $keys]);
+        $keyMap = $this->parseKeySetMemoized($keys);
 
         try {
             $decoded = JWT::decode($jwt, $keyMap);
