@@ -371,6 +371,121 @@ def plot_bar_incomplete(df: pd.DataFrame, out_png: Path) -> None:
     plt.close(fig)
 
 
+# ── Bar + Line plotters (default; replace box plots) ────────────────────
+# Publishable convention: bar shows p50 (typical) + p99 (tail) per
+# (scale, round); the companion line shows the same two stats as a trend
+# across 請求數. No distribution box — just the two headline percentiles.
+def _stat_for(df: pd.DataFrame, value_col: str, scale: int, rnd: str,
+              q: float) -> float:
+    s = df[(df["scale"] == scale) & (df["round"] == rnd)][value_col]
+    s = pd.to_numeric(s, errors="coerce").dropna()
+    return float(s.quantile(q)) if len(s) else float("nan")
+
+
+def plot_bar_line_by_scale(df: pd.DataFrame, value_col: str, title: str,
+                           ylabel: str, out_png_bar: Path,
+                           out_png_line: Path) -> None:
+    import numpy as np
+    scales = sorted(df["scale"].unique())
+    rounds = ROUNDS
+    stats = (("p50", 0.50), ("p99", 0.99))
+
+    # Auto log scale when the p99 range dwarfs the p50 (same heuristic as box).
+    plotted = [
+        _stat_for(df, value_col, n, r, q)
+        for n in scales for r in rounds for _, q in stats
+    ]
+    plotted = [v for v in plotted if v == v and v > 0]  # drop NaN / non-positive
+    use_log = bool(plotted) and (max(plotted) / max(min(plotted), 1e-9) > 50)
+
+    # ── Bar ──────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(12, 7))
+    x = np.arange(len(scales))
+    n_series = len(rounds) * len(stats)
+    width = 0.8 / n_series
+    idx = 0
+    for r in rounds:
+        for stat_name, q in stats:
+            ys = [_stat_for(df, value_col, n, r, q) for n in scales]
+            offset = (idx - (n_series - 1) / 2) * width
+            bars = ax.bar(
+                x + offset, ys, width=width, label=f"{r}-{stat_name}",
+                color=ROUND_COLORS[r],
+                alpha=0.85 if stat_name == "p50" else 0.45,
+                hatch=None if stat_name == "p50" else "//",
+                edgecolor="#222", linewidth=0.8,
+            )
+            for b, y in zip(bars, ys):
+                if y == y:  # not NaN
+                    ax.text(b.get_x() + b.get_width() / 2, y, f"{y:.1f}",
+                            ha="center", va="bottom", fontsize=7, rotation=90)
+            idx += 1
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(n) for n in scales])
+    ax.set_xlabel("請求數")
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"{title} — p50/p99 長條對比")
+    if use_log:
+        ax.set_yscale("log")
+    ax.legend(loc="upper left", fontsize=8)
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_png_bar, dpi=120)
+    plt.close(fig)
+
+    # ── Line (trend across scales) ───────────────────────────────────
+    fig, ax = plt.subplots(figsize=(12, 7))
+    for r in rounds:
+        for stat_name, q in stats:
+            ys = [_stat_for(df, value_col, n, r, q) for n in scales]
+            ax.plot(x, ys, marker="o",
+                    linestyle="-" if stat_name == "p50" else "--",
+                    color=ROUND_COLORS[r], label=f"{r}-{stat_name}")
+            for xi, y in zip(x, ys):
+                if y == y:
+                    ax.annotate(f"{y:.1f}", (xi, y), textcoords="offset points",
+                                xytext=(0, 5), ha="center", fontsize=7)
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(n) for n in scales])
+    ax.set_xlabel("請求數")
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"{title} — 趨勢 (p50/p99 隨請求數)")
+    if use_log:
+        ax.set_yscale("log")
+    ax.legend(loc="upper left", fontsize=8)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_png_line, dpi=120)
+    plt.close(fig)
+
+
+def plot_line_incomplete(df: pd.DataFrame, out_png: Path) -> None:
+    """Line trend of incomplete rate across 請求數, one line per round."""
+    fig, ax = plt.subplots(figsize=(11, 6.5))
+    pivot = df.pivot(index="scale", columns="round", values="incomplete_rate_pct")
+    scales = sorted(pivot.index)
+    x = list(range(len(scales)))
+    for r in ROUNDS:
+        if r not in pivot.columns:
+            continue
+        ys = pivot[r].reindex(scales).values
+        ax.plot(x, ys, marker="o", color=ROUND_COLORS[r], label=r)
+        for xi, y in zip(x, ys):
+            if not pd.isna(y):
+                ax.annotate(f"{y:.2f}%", (xi, y), textcoords="offset points",
+                            xytext=(0, 5), ha="center", fontsize=8)
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(s) for s in scales])
+    ax.set_xlabel("請求數")
+    ax.set_ylabel("未完成率 (%)")
+    ax.set_title("未完成交易率 趨勢 (隨請求數)")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=120)
+    plt.close(fig)
+
+
 # ── Metadata helpers ───────────────────────────────────────────────────
 def load_metadata(indir: Path) -> dict | None:
     p = indir / "metadata.json"
@@ -472,9 +587,10 @@ def write_readme(indir: Path, meta: dict | None,
     lines.append("## Files")
     lines.append("")
     for fname in ("Gateway接收請求時間.xlsx", "Gateway接收請求時間.png",
-                  "訂單完成時間.xlsx", "訂單完成時間.png",
-                  "未完成交易率.xlsx", "未完成交易率.png",
-                  "mTLS花費時間.xlsx", "mTLS花費時間.png",
+                  "Gateway接收請求時間_trend.png",
+                  "訂單完成時間.xlsx", "訂單完成時間.png", "訂單完成時間_trend.png",
+                  "未完成交易率.xlsx", "未完成交易率.png", "未完成交易率_trend.png",
+                  "mTLS花費時間.xlsx", "mTLS花費時間.png", "mTLS花費時間_trend.png",
                   "summary.xlsx", "metadata.json"):
         if (indir / fname).exists():
             lines.append(f"- `{fname}`")
@@ -488,6 +604,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="indir", required=True)
     ap.add_argument("--scales", default="5000,10000,20000")
+    ap.add_argument("--plots", choices=["barline", "box"], default="barline",
+                    help="barline (default): Bar(p50/p99) + Line(trend), no box. "
+                         "box: legacy box plots.")
     args = ap.parse_args()
     setup_cjk_font()
 
@@ -517,6 +636,7 @@ def main() -> int:
     # ── 1. Gateway 接收請求時間 ───────────────────────────────────────
     gw_xlsx = indir / "Gateway接收請求時間.xlsx"
     gw_png = indir / "Gateway接收請求時間.png"
+    gw_trend_png = indir / "Gateway接收請求時間_trend.png"
     gw_long = req_df[["scale", "round", "trace_id", "gw_proc_ms"]].copy()
     gw_long = gw_long.dropna(subset=["gw_proc_ms"])
     with pd.ExcelWriter(gw_xlsx, engine="openpyxl") as xw:
@@ -527,16 +647,20 @@ def main() -> int:
             d["scale"] = n; d["round"] = r
             rows.append(d)
         pd.DataFrame(rows).to_excel(xw, sheet_name="summary", index=False)
-    plot_box_by_scale_round(
-        gw_long, "gw_proc_ms",
+    _gw_kw = dict(
         title="Gateway 接收請求時間 (gateway 接收 → publish to order_queue)",
         ylabel="Gateway 處理時間 (ms)",
-        out_png=gw_png,
     )
+    if args.plots == "box":
+        plot_box_by_scale_round(gw_long, "gw_proc_ms", out_png=gw_png, **_gw_kw)
+    else:
+        plot_bar_line_by_scale(gw_long, "gw_proc_ms", out_png_bar=gw_png,
+                               out_png_line=gw_trend_png, **_gw_kw)
 
     # ── 2. 訂單完成時間 (publish → SagaCompleted) ─────────────────────
     oc_xlsx = indir / "訂單完成時間.xlsx"
     oc_png = indir / "訂單完成時間.png"
+    oc_trend_png = indir / "訂單完成時間_trend.png"
     oc = req_df[["scale", "round", "trace_id", "order_completion_ms"]].copy()
     oc = oc.dropna(subset=["order_completion_ms"])
     with pd.ExcelWriter(oc_xlsx, engine="openpyxl") as xw:
@@ -547,12 +671,15 @@ def main() -> int:
             d["scale"] = n; d["round"] = r
             rows.append(d)
         pd.DataFrame(rows).to_excel(xw, sheet_name="summary", index=False)
-    plot_box_by_scale_round(
-        oc, "order_completion_ms",
+    _oc_kw = dict(
         title="訂單完成時間 (gateway publish → OrderSagaCompletedEvent)",
         ylabel="完成時間 (ms)",
-        out_png=oc_png,
     )
+    if args.plots == "box":
+        plot_box_by_scale_round(oc, "order_completion_ms", out_png=oc_png, **_oc_kw)
+    else:
+        plot_bar_line_by_scale(oc, "order_completion_ms", out_png_bar=oc_png,
+                               out_png_line=oc_trend_png, **_oc_kw)
 
     # ── 3. 未完成交易率 ─────────────────────────────────────────────────
     # 3.C 公式：(總完成交易次數 - 成功完成交易次數) / 總交易次數 × 100
@@ -560,6 +687,7 @@ def main() -> int:
     # 「成功完成」= saga 跑到 OrderSagaCompletedEvent
     rate_xlsx = indir / "未完成交易率.xlsx"
     rate_png  = indir / "未完成交易率.png"
+    rate_trend_png = indir / "未完成交易率_trend.png"
     rate_rows = []
     for (n, r), g in req_df.groupby(["scale", "round"]):
         total = len(g)
@@ -580,10 +708,13 @@ def main() -> int:
     with pd.ExcelWriter(rate_xlsx, engine="openpyxl") as xw:
         rate_df.to_excel(xw, sheet_name="summary", index=False)
     plot_bar_incomplete(rate_df, rate_png)
+    if args.plots != "box":
+        plot_line_incomplete(rate_df, rate_trend_png)
 
     # ── 4. mTLS 花費時間 ───────────────────────────────────────────────
     mtls_xlsx = indir / "mTLS花費時間.xlsx"
     mtls_png  = indir / "mTLS花費時間.png"
+    mtls_trend_png = indir / "mTLS花費時間_trend.png"
     if not mtls_df.empty:
         with pd.ExcelWriter(mtls_xlsx, engine="openpyxl") as xw:
             mtls_df.to_excel(xw, sheet_name="raw", index=False)
@@ -593,12 +724,16 @@ def main() -> int:
                 d["scale"] = n; d["round"] = r
                 rows.append(d)
             pd.DataFrame(rows).to_excel(xw, sheet_name="summary", index=False)
-        plot_box_by_scale_round(
-            mtls_df, "handshake_ms",
+        _mtls_kw = dict(
             title="mTLS handshake 花費時間 (probe inside zt-php-worker)",
             ylabel="handshake_ms",
-            out_png=mtls_png,
         )
+        if args.plots == "box":
+            plot_box_by_scale_round(mtls_df, "handshake_ms", out_png=mtls_png,
+                                    **_mtls_kw)
+        else:
+            plot_bar_line_by_scale(mtls_df, "handshake_ms", out_png_bar=mtls_png,
+                                   out_png_line=mtls_trend_png, **_mtls_kw)
     else:
         sys.stderr.write("[analyze] WARN: no mTLS samples found\n")
 
@@ -634,12 +769,13 @@ def main() -> int:
 
     write_readme(indir, metadata, gw_rows, oc_rows, rate_df, mtls_rows)
 
-    print(f"[analyze] outputs written to {indir}")
-    print(f"  - {gw_xlsx.name}, {gw_png.name}")
-    print(f"  - {oc_xlsx.name}, {oc_png.name}")
-    print(f"  - {rate_xlsx.name}, {rate_png.name}")
+    _trend = " (+_trend.png)" if args.plots != "box" else ""
+    print(f"[analyze] outputs written to {indir} [plots={args.plots}]")
+    print(f"  - {gw_xlsx.name}, {gw_png.name}{_trend}")
+    print(f"  - {oc_xlsx.name}, {oc_png.name}{_trend}")
+    print(f"  - {rate_xlsx.name}, {rate_png.name}{_trend}")
     if not mtls_df.empty:
-        print(f"  - {mtls_xlsx.name}, {mtls_png.name}")
+        print(f"  - {mtls_xlsx.name}, {mtls_png.name}{_trend}")
     print(f"  - {summary_xlsx.name}, README.md")
     return 0
 
