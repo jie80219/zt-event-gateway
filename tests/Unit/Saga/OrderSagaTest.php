@@ -70,6 +70,10 @@ class OrderSagaTest extends TestCase
         $action = $this->createMock(ActionInterface::class);
         $action->method('do')->willReturn($action);
         $action->method('getMeaningData')->willReturn($meaningData);
+        // ConcurrentAction.send() drives each action via doAsync() and then
+        // unwraps the returned promises before reading getMeaningData(). A
+        // fulfilled promise lets us exercise Step 2 with no real HTTP.
+        $action->method('doAsync')->willReturn(\GuzzleHttp\Promise\Create::promiseFor(null));
         return $action;
     }
 
@@ -177,9 +181,8 @@ class OrderSagaTest extends TestCase
     //  Step 2: onOrderCreated (inventory deduction)
     // ═══════════════════════════════════════════════════════════════
 
-    public function testStep2_happyPath(): void
+    public function testStep2_happyPath_publishesInventoryDeducted(): void
     {
-        // reduceInventory is used inside ConcurrentAction — mock it
         $this->prodSvc->method('reduceInventory')
             ->willReturn($this->mockAction(['code' => 200]));
 
@@ -188,20 +191,83 @@ class OrderSagaTest extends TestCase
             ['p_key' => 3, 'amount' => 1, 'price' => 50],
         ], 250);
 
-        // ConcurrentAction relies on Anser internals — we test through the saga
-        // Since ConcurrentAction.send() makes real HTTP calls which we can't mock
-        // easily without a running service, we test the event wiring instead.
-        // We verify the saga calls reduceInventory for each product.
-        $calledProducts = [];
+        $this->saga->onOrderCreated($event);
+
+        $payload = $this->assertPublished(InventoryDeductedEvent::class);
+        $this->assertSame('order-001', $payload['orderId']);
+        $this->assertSame('1', $payload['userKey']);
+        $this->assertSame(250, $payload['total']);
+        // all deductions succeeded → full product list forwarded
+        $this->assertCount(2, $payload['productList']);
+        $this->assertSame(
+            [['p_key' => 1, 'amount' => 2, 'price' => 100], ['p_key' => 3, 'amount' => 1, 'price' => 50]],
+            $payload['productList'],
+        );
+    }
+
+    public function testStep2_deductsEachProductWithCorrectArgs(): void
+    {
+        $calledWith = [];
         $this->prodSvc->method('reduceInventory')
-            ->willReturnCallback(function ($pKey, $orderId, $amount) use (&$calledProducts) {
-                $calledProducts[] = ['p_key' => $pKey, 'amount' => $amount];
+            ->willReturnCallback(function ($pKey, $orderId, $amount) use (&$calledWith) {
+                $calledWith[] = compact('pKey', 'orderId', 'amount');
                 return $this->mockAction(['code' => 200]);
             });
 
-        // Note: ConcurrentAction is hard to unit test because send() uses
-        // Guzzle pool internally. We verify the method parameters are correct.
-        $this->assertIsCallable([$this->saga, 'onOrderCreated']);
+        $event = new OrderCreatedEvent('order-xyz', '1', [
+            ['p_key' => 7, 'amount' => 4],
+            ['p_key' => 9, 'amount' => 1],
+        ], 100);
+
+        $this->saga->onOrderCreated($event);
+
+        $this->assertSame([
+            ['pKey' => 7, 'orderId' => 'order-xyz', 'amount' => 4],
+            ['pKey' => 9, 'orderId' => 'order-xyz', 'amount' => 1],
+        ], $calledWith);
+    }
+
+    public function testStep2_oneDeductionFails_triggersRollbackWithOnlySuccessful(): void
+    {
+        // p_key=1 succeeds, p_key=3 fails → rollback must restore only p_key=1
+        $this->prodSvc->method('reduceInventory')
+            ->willReturnCallback(function (int $pKey) {
+                return $this->mockAction($pKey === 3
+                    ? ['code' => 500, 'msg' => 'out of stock']
+                    : ['code' => 200]);
+            });
+
+        $event = new OrderCreatedEvent('order-001', '1', [
+            ['p_key' => 1, 'amount' => 2, 'price' => 100],
+            ['p_key' => 3, 'amount' => 1, 'price' => 50],
+        ], 250);
+
+        $this->saga->onOrderCreated($event);
+
+        $payload = $this->assertPublished(RollbackInventoryEvent::class);
+        $this->assertSame('order-001', $payload['orderId']);
+        $this->assertFalse($payload['paymentCompleted']);
+        $this->assertSame(0, $payload['total']);
+        $this->assertSame(
+            [['p_key' => 1, 'amount' => 2, 'price' => 100]],
+            $payload['successfulDeductions'],
+        );
+    }
+
+    public function testStep2_allDeductionsFail_rollsBackWithEmptyDeductions(): void
+    {
+        $this->prodSvc->method('reduceInventory')
+            ->willReturn($this->mockAction(['code' => 500, 'msg' => 'out of stock']));
+
+        $event = new OrderCreatedEvent('order-001', '1', [
+            ['p_key' => 1, 'amount' => 2, 'price' => 100],
+        ], 100);
+
+        $this->saga->onOrderCreated($event);
+
+        $payload = $this->assertPublished(RollbackInventoryEvent::class);
+        $this->assertSame([], $payload['successfulDeductions']);
+        $this->assertFalse($payload['paymentCompleted']);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -461,13 +527,30 @@ class OrderSagaTest extends TestCase
         $this->assertSame(200, $step1Payload['total']);
         $orderId = $step1Payload['orderId'];
 
-        // ── Step 3: onInventoryDeducted (skip step 2 ConcurrentAction) ──
+        // ── Step 2: onOrderCreated (inventory deduction) ──
+        // Step 1 emits OrderProductDetail objects, but events cross RabbitMQ as
+        // JSON — so by the time Step 2 consumes them they are associative
+        // arrays. Round-trip through JSON to faithfully model that boundary.
+        $serializedProducts = json_decode(json_encode($step1Payload['productList']), true);
+        $this->published = [];
+        $this->prodSvc->method('reduceInventory')
+            ->willReturn($this->mockAction(['code' => 200]));
+
+        $this->saga->onOrderCreated(
+            new OrderCreatedEvent($orderId, '1', $serializedProducts, 200),
+        );
+
+        $step2Payload = $this->assertPublished(InventoryDeductedEvent::class, 0);
+        $this->assertSame($orderId, $step2Payload['orderId']);
+        $this->assertSame(200, $step2Payload['total']);
+
+        // ── Step 3: onInventoryDeducted ──
         $this->published = [];
         $this->userSvc->method('walletChargeAction')
             ->willReturn($this->mockAction(['code' => 200]));
 
         $this->saga->onInventoryDeducted(
-            new InventoryDeductedEvent($orderId, '1', $step1Payload['productList'], 200),
+            new InventoryDeductedEvent($orderId, '1', $step2Payload['productList'], 200),
         );
 
         $step3Payload = $this->assertPublished(PaymentProcessedEvent::class, 0);
