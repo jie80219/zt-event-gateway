@@ -76,7 +76,16 @@ class Order extends BaseController
                     'message' => 'Authenticated user identity (sub) is missing.',
                 ], 401);
             }
-            $data['userKey'] = $sub;
+            // EXPERIMENT-ONLY: downstream sub→users.id mapping is not yet
+            // implemented. Keep request-body userKey when numeric so saga
+            // can complete end-to-end. KC JWT verification cost is still
+            // measured at gateway + worker. README must disclose this.
+            $bodyUserKey = $requestPayload['userKey'] ?? null;
+            if (is_int($bodyUserKey) || (is_string($bodyUserKey) && ctype_digit($bodyUserKey))) {
+                $data['userKey'] = (string) $bodyUserKey;
+            } else {
+                $data['userKey'] = $sub;
+            }
         }
 
         $traceId = $request->header('X-Correlation-ID') ?: uniqid('txn_', true);

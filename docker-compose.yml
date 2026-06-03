@@ -322,6 +322,14 @@ services:
       KEYCLOAK_INGRESS_ENABLED: "${KEYCLOAK_INGRESS_ENABLED:-1}"
       KEYCLOAK_INGRESS_AUDIENCE: "${KEYCLOAK_INGRESS_AUDIENCE:-gateway}"
       KEYCLOAK_INGRESS_SKIP_PATHS: "${KEYCLOAK_INGRESS_SKIP_PATHS:-/api/health,/}"
+    # json-file rotation — without this, high-load runs (≥20k) lose ~44%
+    # of perf log lines because the default driver caps at 10MB/file and the
+    # analyzer's tail -n +offset misses pre-rotation rows.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "500m"
+        max-file: "5"
     volumes:
       - spire-agent-sockets:/run/spire/sockets:ro
       - spiffe-certs:/tmp/spiffe-certs:ro
@@ -404,6 +412,15 @@ services:
       KEYCLOAK_AUDIENCE_ORDER: "${KEYCLOAK_AUDIENCE_ORDER:-order-service}"
       KEYCLOAK_AUDIENCE_PRODUCTION: "${KEYCLOAK_AUDIENCE_PRODUCTION:-production-service}"
       KEYCLOAK_AUDIENCE_USER: "${KEYCLOAK_AUDIENCE_USER:-user-service}"
+    # json-file rotation — see comment under `gateway` service. Worker is
+    # where [perf-request-in] / [perf-saga-*] markers live, so without this
+    # 20k cold runs only capture 55.74% of saga completions and tail latency
+    # estimates become unreliable.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "500m"
+        max-file: "5"
     volumes:
       - spire-agent-sockets:/run/spire/sockets:ro
       - spiffe-certs:/tmp/spiffe-certs:ro

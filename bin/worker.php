@@ -385,7 +385,11 @@ try {
         $eventQueues,
     );
     $scanner->scanAndRegisterHandlers('App\Sagas', $eventBus);
-    $channel->basic_qos(null, 8, null);
+    // prefetch=1: aligned with EXPERIMENT.md spec. Higher prefetch (e.g. 8)
+    // boosts throughput but inflates p99 — one slow message blocks up to N
+    // already-buffered messages behind it. Saga tail latency dominates the
+    // claim we're benchmarking against Linkerd 1.x, so prefer prefetch=1.
+    $channel->basic_qos(null, 1, null);
 
     $transportConsumer->subscribe($requestQueue, [$requestConsumer, 'process']);
     foreach ($eventQueues as $queueName) {

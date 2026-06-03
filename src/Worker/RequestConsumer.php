@@ -20,6 +20,27 @@ final class RequestConsumer
         'spiffe://zt.local/',
     ];
 
+    /**
+     * Defensive memoize for L0 validation. Cache hit rate is expected to be
+     * low here (gateway mints a fresh jti per HTTP request via
+     * LSVIDSigner::createBase()), so this is primarily a guard against AMQP
+     * redelivery on consumer crash: a redelivered envelope carries the same
+     * raw L0 and would otherwise pay full ECDSA chain verification again.
+     * Same shape/TTL as EventConsumer so both sides behave consistently.
+     */
+    private const VERIFIED_TTL = 60.0;
+
+    /** Hard cap to bound memory; cheap drain to half when exceeded. */
+    private const VERIFIED_CAP = 1024;
+
+    /**
+     * Cache key bakes in (rawLsvid, expectedAudience, expectedSubject)
+     * so a token-for-A cannot satisfy a check that demands subject=B.
+     *
+     * @var array<string, array{at: float, parsed: object}>
+     */
+    private array $verifiedTokens = [];
+
     public function __construct(
         private readonly MessageBus $messageBus,
         // SPIFFE / LSVID side
@@ -85,11 +106,32 @@ final class RequestConsumer
             try {
                 $workerSpiffeId = getenv('SPIFFE_ID') ?: null;
 
-                $parsed = $this->lsvidValidator->validate(
-                    $inboundLsvid,
-                    expectedAudience: $workerSpiffeId,
-                    expectedSubject: $sourceSpiffeId,
+                $cacheKey = hash(
+                    'sha256',
+                    $inboundLsvid . '|' . ($workerSpiffeId ?? '') . '|' . $sourceSpiffeId,
                 );
+                $cached = $this->verifiedTokens[$cacheKey] ?? null;
+                if ($cached !== null && (microtime(true) - $cached['at']) <= self::VERIFIED_TTL) {
+                    $parsed = $cached['parsed'];
+                } else {
+                    $parsed = $this->lsvidValidator->validate(
+                        $inboundLsvid,
+                        expectedAudience: $workerSpiffeId,
+                        expectedSubject: $sourceSpiffeId,
+                    );
+                    if (count($this->verifiedTokens) >= self::VERIFIED_CAP) {
+                        $this->verifiedTokens = array_slice(
+                            $this->verifiedTokens,
+                            (int) (self::VERIFIED_CAP / 2),
+                            null,
+                            true,
+                        );
+                    }
+                    $this->verifiedTokens[$cacheKey] = [
+                        'at'     => microtime(true),
+                        'parsed' => $parsed,
+                    ];
+                }
 
                 $chain = $parsed->chain();
                 if ($chain !== []) {
