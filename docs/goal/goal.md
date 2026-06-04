@@ -23,7 +23,9 @@
 
 ## 實驗一 — 零安全損失效能優化（逐 Run commit 於 `feat/spiffe-keycloak`）
 
-每個 Run = 一個獨立 commit + 一次獨立量測（`run-dualmode-distributed.sh` → `analyze-dualmode-experiment.py`）。量測時其他新增 env toggle 一律保持預設，確保 delta 可歸因於單一改動。輸出目錄名嵌入 `git rev-parse --short HEAD`。每個 Run 跑完先用 smoke test 確認單筆訂單走完 Step 1→4，再進場壓測。
+每個 Run = 一個獨立 commit + 一次獨立**調優量測**。逐 Run 量測用 `scripts/experiments/measure-run.sh`（有界併發 `MEASURE_COUNT=2000 MEASURE_CONC=100`，產 `summary.json`），**不是** `run-dualmode-distributed.sh`：後者把 `--concurrency` 釘成 `=--count`，高 scale 會壓垮下游、完成率變不可觀測，無法歸因單一 Run 的 delta；有界併發才能讓 saga 真的跑完、看出延遲/完成率變化。量測時其他新增 env toggle 一律保持預設，確保 delta 可歸因於單一改動。輸出目錄沿用 `artifacts/measure/run<N>-<sha>`，名嵌 `git rev-parse --short HEAD`。
+
+**每個 Run 的 PASS 判定**：先 smoke 一筆訂單看到 `✅ Saga Step 4` → 跑 measure-run @2000 → `incomplete_rate_pct=0`（完成率 100%）**且** `gateway_latency_ms`/`saga_span_ms` p50/p99 較前一 Run 不退步（delta 不為負）。正式可發表的 5000/10000/20000 壓測延到「階段閘門與正式量測」小節，等 2000 gate 通過才跑。
 
 ### Run 1 —（最高影響）消除 Keycloak token 同步抓取
 - **檔案/位置**：`src/Keycloak/TokenProvider.php:27-34`。快取 miss/stale 時同步打 Keycloak（`KeycloakClient::fetchClientCredentialsToken` `src/Keycloak/KeycloakClient.php:36-58`，10s timeout）。呼叫點：`KeycloakBearerFilter.php:36`、`MessageBus.php:192`、`Order.php:162`，每筆 saga 多次。
@@ -65,6 +67,40 @@
 - **commit**：`perf(lsvid): assert signer/validator singleton reuse + prep-cache hit debug`
 
 **排序理由**：Run 1 唯一會造成請求期網路 stall 與 503，列第一；Run 2/3 是穩態 CPU/RTT；Run 5 是最大吞吐槓桿但犧牲 p99，放在延遲優化落地後再測；Run 6–8 為低風險收尾。
+
+---
+
+## 實驗一 — 階段閘門與正式量測
+
+優化與正式壓測分三階段；**只有前一階段過了才進下一階段**，避免在還沒調好的 build 上燒掉正式量測的數小時。
+
+### Stage 1 — 微調（逐 Run，measure-run @2000）
+Run 1–N 逐一用 `measure-run.sh`（有界併發 2000/conc100）量測，把**延遲與訂單完成時間**調到位。每個 Run 一 commit；**個別 Run** 的 PASS = `incomplete_rate_pct=0` + 該 Run 延遲較前一 Run 不退步（吞吐型 Run 5、驗證型 Run 8 允許持平，不強求每個 Run 都降延遲）。但**整體要進 Stage 2 放行**，累積效果必須讓延遲**較優化前 baseline 真正下降**（見 Stage 2）。此階段只用 2000 筆有界併發，不跑 distributed。
+
+### Stage 2 — 2000 gate（A + B 兩組都要過）
+進正式壓測前，**A、B 兩組各跑一次 measure-run @2000**，兩組都必須同時滿足放行條件：
+- **完成率 100%**：`incomplete_rate_pct=0`（2000 筆全部走完 Step 1→4、無 RollbackSaga），且
+- **延遲需進步**：`gateway_latency_ms`/`saga_span_ms` p50/p99 較**優化前 baseline**（Run 1 之前、同條件 measure-run @2000）**有改善**（delta 為正向、延遲下降）。僅「不退步」不算過——優化必須真的把延遲壓下來才放行。
+
+> baseline = 優化開始前（Run 1 之前）的 SPIFFE+Keycloak 同條件 @2000 量測；這是 goal.md Context 所述「落後 Linkerd」的起點。第一次跑優化前先補一筆 baseline measure-run 當對照基準。
+
+組別切換（env 與 goal2 §2 一致）：
+- **A（SPIFFE+Keycloak+LSVID）**：`docker compose up -d`（compose 預設，`LSVID_ENABLED=1 LSVID_REQUIRED=1`）。
+- **B（SPIFFE+Keycloak，無 LSVID）**：疊加 `-f docker-compose.override.yml`（`LSVID_ENABLED=0 LSVID_REQUIRED=0 SPIFFE_MTLS_ENABLED=0`）。
+
+兩組都通過才放行 Stage 3。任一組 2000 沒過 → 回 Stage 1 依 goal2 §5 微調迴圈新增 Run，**不要硬進正式量測**。
+
+### Stage 3 — 正式實驗（原專案設計的壓測，A + B）
+2000 gate 通過後，才進入原本專案內所設計的可發表壓測（見 CLAUDE.md「Running Experiments」與 goal2 §3）：
+
+```bash
+SCALES="5000 10000 20000" ROUNDS="warm cold" PERF_METRIC_ENABLED=1 \
+  bash scripts/experiments/run-dualmode-distributed.sh "$OUT"
+python3 scripts/experiments/analyze-dualmode-experiment.py --in "$OUT" --scales 5000,10000,20000
+```
+
+- 本輪正式量測**只跑 A + B 兩組**。
+- **Linkerd 1.x 不重跑**，沿用使用者既有數據；最後用 `compare-three-stacks.py` 把 A / B / 既有 Linkerd 做三方對比（Linkerd 舊式單 sheet 加 `--linkerd-format single`）。
 
 ---
 
@@ -121,12 +157,13 @@ Linkerd 1.x 可能用自身重試遮蔽暫時性故障 → 先確認故障確實
 5. **三重驗證仍在線**：每 Run 後確認 `RequestConsumer.php:184`(JWT)、LSVID 鏈驗證、`SpiffeLsvidFilter.php:59-80`(extend 前 re-validate) 皆執行。
 6. **OrderSaga 凍結**：兩實驗所需標記皆已存在，無需改。
 7. **容器名漂移**：Exp-4 腳本容器名以 env 參數化；每次執行前 `docker ps` 核對實際名稱。
-8. **從 gateway host 驅動壓測**：本機無 `zt-gateway`/`-lan` 別名。若在本機直接跑 `run-dualmode-distributed.sh`，需設 `GATEWAY_HOST` 指本機、`DRIVER_HOST=zt-order`；正式可發表數據建議從 Mac 用 `-lan` 別名驅動。
+8. **從 gateway host 驅動壓測**：本機無 `zt-gateway`/`-lan` 別名。若在本機直接跑 `run-dualmode-distributed.sh`，需設 `GATEWAY_HOST` 指本機、`DRIVER_HOST=zt-order`；正式可發表數據建議從 Mac 用 `-lan` 別名驅動。Stage 1/2 的 `measure-run.sh` 同拓撲，預設 `GATEWAY_HOST=10.1.1.209 DRIVER_HOST=zt-order`（從 gateway host 自驅），與正式量測拓撲事實一致。
 
 ---
 
 ## 驗證方式（end-to-end）
 
-- **每 Run（實驗一）**：smoke 一筆訂單看到 `✅ Saga Step 4` → `SCALES="5000 10000 20000" ROUNDS="warm cold" bash scripts/experiments/run-dualmode-distributed.sh $OUT` → `analyze-dualmode-experiment.py --in $OUT`，比對 `未完成交易率`、saga-complete 吞吐、`gw_proc_ms`/saga span p50/p99 的 delta。
+- **每 Run / 2000 gate（實驗一 Stage 1–2）**：smoke 一筆訂單看到 `✅ Saga Step 4` → `bash scripts/experiments/measure-run.sh $OUT`（@2000/conc100）→ 看 `summary.json`，比對 `incomplete_rate_pct`、`gateway_latency_ms`、`saga_span_ms` p50/p99 的 delta。**放行 gate**：A、B 兩組都 `incomplete_rate_pct=0`（完成率 100%）**且**延遲較優化前 baseline **有進步**（非僅不退步）才算過 gate。
+- **正式量測（實驗一 Stage 3）**：2000 gate 通過後 → `SCALES="5000 10000 20000" ROUNDS="warm cold" bash scripts/experiments/run-dualmode-distributed.sh $OUT`（只跑 A + B）→ `analyze-dualmode-experiment.py --in $OUT` → `compare-three-stacks.py`（A / B / 既有 Linkerd 三方對比），比對 `未完成交易率`、saga-complete 吞吐、`gw_proc_ms`/saga span p50/p99。
 - **實驗四**：兩 stack 各跑 `fault-recovery-*.sh`，每場景結束都看到後續成功 `[perf-saga-complete]`（業務完整），最後 `analyze-fault-recovery.py` 出對照表/圖。
 - **回歸**：`composer test:unit` 與 `bash scripts/e2e-failure-modes.sh` 維持綠燈。

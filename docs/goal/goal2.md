@@ -10,7 +10,7 @@
 | 由誰 | 內容 |
 |---|---|
 | 已建置（本分支已提交） | 實驗一圖表 box→**Bar+Line**（`analyze-dualmode-experiment.py`）、三方對比 `compare-three-stacks.py`、實驗四 `fault-recovery-common.sh` / `-spire.sh` / `-linkerd.sh` / `analyze-fault-recovery.py` |
-| 使用者執行 | 三組壓測 run（A/B/Linkerd）、實驗四 SPIRE 與 Linkerd 兩側 run、Linkerd 重部署 |
+| 使用者執行 | 微調 + 2000 gate（measure-run @2000，A/B 兩組）、A/B 兩組 distributed 正式壓測（Linkerd **不重跑**、沿用既有數據）、實驗四 SPIRE 與 Linkerd 兩側 run、Linkerd 重部署 |
 
 **鐵則**：不改 `Sagas/OrderSaga.php`；不弱化三重驗證（`RequestConsumer` JWT、LSVID 鏈、`SpiffeLsvidFilter` re-validate）；新增 env toggle 預設保留現狀；所有圖表**禁用 box，一律 Bar（對比）+ Line（趨勢）**。
 
@@ -29,6 +29,8 @@ SPIFFE+Keycloak+LSVID  <  Linkerd 1.x  <  SPIFFE+Keycloak（無 LSVID）
 - warm 為頭條數據；cold（重啟後）作為「重啟成本」對照報告。
 - 若實測不符 → 進入 §5 微調迴圈。
 
+> **入場條件**：跑本節三方排序比較前，A、B 兩組必須先各自通過 **2000 gate**（見 goal.md「實驗一 — 階段閘門與正式量測」Stage 2：measure-run @2000，`incomplete_rate_pct=0` + 延遲不退步）。**Linkerd 1.x 本輪不重跑**，沿用使用者既有數據。
+
 ---
 
 ## §2 三組與切換
@@ -45,11 +47,15 @@ SPIFFE+Keycloak+LSVID  <  Linkerd 1.x  <  SPIFFE+Keycloak（無 LSVID）
 
 ## §3 實驗一執行流程（每組一次）
 
-依 goal.md §4 從 Mac 用 `-lan` 別名驅動。每組：
+> **Stage 0 — 2000 gate（前置）**：本節的 distributed 正式量測**只在 A、B 兩組都通過 2000 gate 後才跑**。逐 Run 調優與 2000 gate 用 `scripts/experiments/measure-run.sh`（有界併發 2000/conc100），不是 distributed runner（後者 conc=count 會壓垮下游、完成率不可觀測）。詳見 goal.md「實驗一 — 階段閘門與正式量測」。
+>
+> 本輪正式量測**只跑 A + B 兩組**；**Linkerd 沿用既有 `summary.xlsx`**（不重部署、不重跑），直接餵 §4 三方對比。
+
+依 goal.md §4 從 Mac 用 `-lan` 別名驅動。每組（A / B）：
 
 ```bash
 SHA=$(git rev-parse --short HEAD)
-OUT=artifacts/$(date +%Y%m%d-%H%M%S)-${SHA}-lsvidON   # 或 -lsvidOFF / -linkerd
+OUT=artifacts/$(date +%Y%m%d-%H%M%S)-${SHA}-lsvidON   # 或 -lsvidOFF（本輪只跑 A / B）
 
 # 1) smoke：先確認單筆訂單走完 Step1→4（看到 ✅ Saga Step 4）
 # 2) 壓測（round 後綴 raw 契約：raw/load_<round>_<scale>.csv 等）
@@ -60,7 +66,7 @@ SCALES="5000 10000 20000" ROUNDS="warm cold" PERF_METRIC_ENABLED=1 \
 python3 scripts/experiments/analyze-dualmode-experiment.py --in "$OUT" --scales 5000,10000,20000
 ```
 
-Linkerd 組在 `feat/Linkerd1` 用同一個 `analyze-dualmode-experiment.py`（兩分支共用），產生相同 schema 的 `summary.xlsx`。輸出目錄名嵌 `git rev-parse --short HEAD` 與組別。
+Linkerd 組**本輪不重跑**：沿用使用者既有、由 `feat/Linkerd1` 同一個 `analyze-dualmode-experiment.py`（兩分支共用）產生的相同 schema `summary.xlsx`，直接於 §4 三方對比引用。A / B 輸出目錄名嵌 `git rev-parse --short HEAD` 與組別。
 
 > ⚠️ raw 檔名為 **round 後綴**（`load_warm_5000.csv`…）。舊式 `load_5000.csv` 的 artifacts 不相容於此分析器。
 
@@ -72,10 +78,12 @@ Linkerd 組在 `feat/Linkerd1` 用同一個 `analyze-dualmode-experiment.py`（�
 python3 scripts/experiments/compare-three-stacks.py \
   --lsvid-on  <A的OUT> \
   --lsvid-off <B的OUT> \
-  --linkerd   <LK的OUT> \
+  --linkerd   <既有Linkerd輸出目錄> \
   --out artifacts/three-way-$(date +%Y%m%d) \
   --round warm --scales 5000,10000,20000          # Linkerd 舊式單sheet → 加 --linkerd-format single
 ```
+
+`--lsvid-on` / `--lsvid-off` 指向本輪剛跑的 A / B `OUT`；`--linkerd` 指向**使用者既有的 Linkerd 輸出目錄**（本輪不重跑）。若該 Linkerd `summary.xlsx` 是舊式單 sheet，務必加 `--linkerd-format single`。
 
 每個 metric（Gateway接收請求時間 / 訂單完成時間 / 未完成交易率 / mTLS花費時間）輸出：
 - `<metric>_3way.png` — grouped **Bar**，每 scale 三條（序 A=藍 / LK=灰 / B=紅）。
@@ -88,6 +96,8 @@ python3 scripts/experiments/compare-three-stacks.py \
 ---
 
 ## §5 微調迴圈（若 §1 不成立）
+
+> 微調的逐 Run 量測在 **measure-run @2000**（有界併發）上做，不是每次都重跑 distributed；distributed 只在 2000 gate（A+B）通過、要產正式三方數據時才跑。新增的 Run 先在 2000 上看 `incomplete_rate_pct`/延遲 delta，過 2000 gate 後才重跑受影響組的 distributed 與三方對比。
 
 **PASS 條件**：每個 scale 的 warm round `oc_mean(A) < oc_mean(LK) < oc_mean(B)`（即 `ordering_verdict` 全 True）。
 
@@ -187,7 +197,7 @@ python3 scripts/experiments/analyze-fault-recovery.py \
 
 ## §10 風險
 
-1. **raw 命名不一致**：舊式 artifacts（`load_5000.csv`）不相容 round 後綴分析器；box→Bar+Line 的完整功能驗收落在使用者首次實跑。
+1. **raw 命名不一致**：舊式 artifacts（`load_5000.csv`）不相容 round 後綴分析器；box→Bar+Line 的完整功能驗收落在使用者首次實跑。2000 gate 的 measure-run 也走 round 後綴契約（`load_warm_2000.csv`），與正式量測命名一致。
 2. **統計選擇**：Bar/Line 用 p50+p99（單組分析器）與 mean（三方）；mean 為 §1 gate。如需改 p50 為 gate 可微調。
 3. **實驗四時鐘**：`t_recovered` 用 worker 標記 `ts=`、`t_fault_clear` 用 wall-clock epoch；單機同 clock 可比，分散式接受次秒雜訊。
 4. **Linkerd 重試遮蔽**：僅在 abort/rollback 標記出現時採信 `recovery_sec`，由 `saga_completed`/`rollback_count` + 完成率圖把關。
