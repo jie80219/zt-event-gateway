@@ -47,6 +47,26 @@ class SpiffeLsvidFilter implements FilterInterface
         $validator = LSVIDValidatorRegistry::get();
         $failClosed = (getenv('LSVID_REQUIRED') === '1');
 
+        // Run 8 (verification-type): assert the signer/validator returned by
+        //   the registries are the SAME singleton instances on every call —
+        //   i.e. the prep-cache "hits" and nothing is rebuilt per request.
+        //   Purely observational, gated by LSVID_PREP_DEBUG (default 0 → no
+        //   output). Touches no validation logic.
+        if (getenv('LSVID_PREP_DEBUG') === '1') {
+            static $lastSignerId = null;
+            static $lastValidatorId = null;
+            $sid = $signer !== null ? spl_object_id($signer) : 0;
+            $vid = $validator !== null ? spl_object_id($validator) : 0;
+            $hit = static fn ($last, $cur): string =>
+                $last === null ? 'INIT' : ($last === $cur ? 'HIT' : 'MISS-rebuilt');
+            fwrite(STDOUT, sprintf(
+                "[spiffe-lsvid-filter] LSVID_PREP_DEBUG: signer#%d=%s validator#%d=%s\n",
+                $sid, $hit($lastSignerId, $sid), $vid, $hit($lastValidatorId, $vid),
+            ));
+            $lastSignerId = $sid;
+            $lastValidatorId = $vid;
+        }
+
         if ($rawLsvid !== null && $signer !== null) {
             $targetAudience = $this->resolveAudience($action);
 

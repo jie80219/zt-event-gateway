@@ -168,6 +168,19 @@ try {
         LSVIDSignerRegistry::set($lsvidSigner);
         fwrite(STDOUT, "[worker] LSVIDSignerRegistry initialized\n");
 
+        // Run 8 (verification-type): the signer is wired exactly once here
+        //   and reused for every downstream extend() via the registry —
+        //   there is no per-request reconstruction. LSVID_PREP_DEBUG=1
+        //   surfaces the singleton object id so the prep-cache hit rate can
+        //   be confirmed at runtime (default 0 → no output, no behaviour
+        //   change). Does not touch any validation path.
+        if ($env('LSVID_PREP_DEBUG', '0') === '1') {
+            fwrite(STDOUT, sprintf(
+                "[worker] LSVID_PREP_DEBUG: signer#%d wired once at bootstrap (singleton reuse asserted)\n",
+                spl_object_id($lsvidSigner),
+            ));
+        }
+
         // 1b. Filter validator（不帶 jtiCache）for SpiffeLsvidFilter re-validate.
         //     跟 consumer validator 分離，避免對同一個 token 報 jti replay。
         if (isset($filterValidator)) {
