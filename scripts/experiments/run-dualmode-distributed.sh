@@ -44,6 +44,17 @@ DRIVER_HOST="${DRIVER_HOST:-zt-order}"
 GATEWAY_URL="http://10.1.1.209:8080/api/orders"
 HEALTH_URL="http://10.1.1.209:8080/api/health"
 
+# --- Stack parameterization (defaults = SPIFFE+Keycloak dual-mode) ----------
+# Override these for the Vault stack (SPIFFE stripped, Workerman gateway):
+#   GW_CONTAINER=zt-anser-gateway TOKEN_MODE=none \
+#   REQUEST_QUEUE_NAME=request_queue MTLS_PROBE_ENABLED=0
+GW_CONTAINER="${GW_CONTAINER:-zt-gateway}"
+WORKER_CONTAINER="${WORKER_CONTAINER:-zt-php-worker}"
+RABBIT_CONTAINER="${RABBIT_CONTAINER:-zt-rabbitmq}"
+TOKEN_MODE="${TOKEN_MODE:-keycloak}"           # keycloak | none
+REQUEST_QUEUE_NAME="${REQUEST_QUEUE_NAME:-order_queue}"
+MTLS_PROBE_ENABLED="${MTLS_PROBE_ENABLED:-1}"
+
 PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 mkdir -p "$OUT/raw"
 
@@ -56,8 +67,13 @@ mint_token() {
     # Bearer JWT. Mint via ROPC. Must hit Keycloak through its docker-internal
     # URL (http://keycloak:8080/...) so the issued `iss` matches what gateway's
     # JwtValidator expects (KEYCLOAK_ISSUER=http://keycloak:8080/realms/zt).
-    # We exec the curl inside zt-gateway (which is on anser_project_network).
-    ssh "$GATEWAY_HOST" "docker exec zt-gateway curl -fsS -m 5 -X POST \
+    # We exec the curl inside the gateway container (on anser_project_network).
+    # TOKEN_MODE=none (e.g. Vault stack, no bearer filter) → emit empty token.
+    if [[ "$TOKEN_MODE" != "keycloak" ]]; then
+        printf ''
+        return 0
+    fi
+    ssh "$GATEWAY_HOST" "docker exec $GW_CONTAINER curl -fsS -m 5 -X POST \
         -H 'Content-Type: application/x-www-form-urlencoded' \
         --data-urlencode 'grant_type=password' \
         --data-urlencode 'client_id=client-app' \
@@ -69,13 +85,13 @@ mint_token() {
 }
 
 purge_queues() {
-    ssh "$GATEWAY_HOST" '
-        for q in order_queue OrderCreateRequestedEvent OrderCreatedEvent \
+    ssh "$GATEWAY_HOST" "
+        for q in $REQUEST_QUEUE_NAME OrderCreateRequestedEvent OrderCreatedEvent \
                  InventoryDeductedEvent PaymentProcessedEvent OrderSagaCompletedEvent \
                  RollbackInventoryEvent RollbackOrderEvent; do
-            docker exec zt-rabbitmq rabbitmqctl --quiet purge_queue "$q" 2>/dev/null || true
+            docker exec $RABBIT_CONTAINER rabbitmqctl --quiet purge_queue \"\$q\" 2>/dev/null || true
         done
-    '
+    "
 }
 
 wait_health() {
@@ -92,8 +108,8 @@ wait_health() {
 }
 
 cold_restart_gateway() {
-    log "cold round: restarting zt-gateway and zt-php-worker"
-    ssh "$GATEWAY_HOST" 'docker restart zt-gateway zt-php-worker' >/dev/null
+    log "cold round: restarting $GW_CONTAINER and $WORKER_CONTAINER"
+    ssh "$GATEWAY_HOST" "docker restart $GW_CONTAINER $WORKER_CONTAINER" >/dev/null
     sleep 15
     wait_health
 }
@@ -115,7 +131,7 @@ run_scale() {
     purge_queues
 
     # Mark log offsets on gateway host
-    ssh "$GATEWAY_HOST" "docker logs zt-gateway 2>&1 | wc -l > /tmp/gw_off.txt; docker logs zt-php-worker 2>&1 | wc -l > /tmp/wk_off.txt"
+    ssh "$GATEWAY_HOST" "docker logs $GW_CONTAINER 2>&1 | wc -l > /tmp/gw_off.txt; docker logs $WORKER_CONTAINER 2>&1 | wc -l > /tmp/wk_off.txt"
 
     log "round=$round scale=$n — running driver on $DRIVER_HOST (concurrency=$n)"
     # Driver runs inside a python container on the driver host, with --network host
@@ -151,7 +167,7 @@ run_scale() {
         drain_elapsed=$((drain_elapsed + DRAIN_POLL))
         # Sum across ALL queues — sagas pass through order_queue + the 7 event
         # queues; watching only order_queue under-reports in-flight work.
-        depth=$(ssh "$GATEWAY_HOST" "docker exec zt-rabbitmq rabbitmqctl --quiet list_queues name messages 2>/dev/null | awk '\$2 ~ /^[0-9]+\$/ {sum+=\$2} END{print sum+0}'") || depth=0
+        depth=$(ssh "$GATEWAY_HOST" "docker exec $RABBIT_CONTAINER rabbitmqctl --quiet list_queues name messages 2>/dev/null | awk '\$2 ~ /^[0-9]+\$/ {sum+=\$2} END{print sum+0}'") || depth=0
         depth="${depth:-0}"
         log "  drain t=${drain_elapsed}s all_queues=${depth}"
         if [[ "$depth" == "0" ]]; then
@@ -167,27 +183,33 @@ run_scale() {
 
     # Capture only this scale's perf lines from gateway+worker logs.
     log "round=$round scale=$n — pulling worker/gateway perf logs"
-    ssh "$GATEWAY_HOST" '
-        goff=$(cat /tmp/gw_off.txt)
-        woff=$(cat /tmp/wk_off.txt)
+    ssh "$GATEWAY_HOST" "
+        goff=\$(cat /tmp/gw_off.txt)
+        woff=\$(cat /tmp/wk_off.txt)
         {
-            docker logs zt-gateway 2>&1 | tail -n +$((goff+1)) \
-                | grep -E "\[perf-request-in\]"
-            docker logs zt-php-worker 2>&1 | tail -n +$((woff+1)) \
-                | grep -E "\[perf-saga-step1\]|\[perf-saga-complete\]|商品資訊查詢失敗|RollbackOrderEvent|❌|Saga 完成|RollbackSaga"
+            docker logs $GW_CONTAINER 2>&1 | tail -n +\$((goff+1)) \
+                | grep -E \"\[perf-request-in\]\"
+            docker logs $WORKER_CONTAINER 2>&1 | tail -n +\$((woff+1)) \
+                | grep -E \"\[perf-saga-step1\]|\[perf-saga-complete\]|商品資訊查詢失敗|RollbackOrderEvent|❌|Saga 完成|RollbackSaga\"
         }
-    ' > "$wlog_local"
+    " > "$wlog_local"
     log "round=$round scale=$n — worker.log lines=$(wc -l < "$wlog_local")"
 
-    # mTLS probe inside the worker container.
-    log "round=$round scale=$n — running mTLS probe (count=$MTLS_PROBE_COUNT)"
-    scp -q "$PROJECT_DIR/scripts/experiments/mtls-probe.sh" \
-        "$GATEWAY_HOST:/tmp/mtls-probe.sh"
-    ssh "$GATEWAY_HOST" "
-        docker cp /tmp/mtls-probe.sh zt-php-worker:/tmp/mtls-probe.sh
-        docker exec zt-php-worker bash /tmp/mtls-probe.sh $MTLS_PROBE_COUNT
-    " > "$mlog_local" 2>&1 || true
-    log "round=$round scale=$n — mTLS lines=$(grep -c perf-mtls "$mlog_local" || true)"
+    # mTLS probe inside the worker container. Skipped for mTLS-off stacks
+    # (e.g. Vault, where SPIFFE is stripped) → mtls metric becomes N/A.
+    if [[ "$MTLS_PROBE_ENABLED" == "1" ]]; then
+        log "round=$round scale=$n — running mTLS probe (count=$MTLS_PROBE_COUNT)"
+        scp -q "$PROJECT_DIR/scripts/experiments/mtls-probe.sh" \
+            "$GATEWAY_HOST:/tmp/mtls-probe.sh"
+        ssh "$GATEWAY_HOST" "
+            docker cp /tmp/mtls-probe.sh $WORKER_CONTAINER:/tmp/mtls-probe.sh
+            docker exec $WORKER_CONTAINER bash /tmp/mtls-probe.sh $MTLS_PROBE_COUNT
+        " > "$mlog_local" 2>&1 || true
+        log "round=$round scale=$n — mTLS lines=$(grep -c perf-mtls "$mlog_local" || true)"
+    else
+        : > "$mlog_local"
+        log "round=$round scale=$n — mTLS probe skipped (MTLS_PROBE_ENABLED=0)"
+    fi
 }
 
 # --- Main --------------------------------------------------------------
