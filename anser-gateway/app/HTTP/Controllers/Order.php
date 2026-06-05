@@ -10,6 +10,8 @@ class Order extends BaseController
 {
     public function create()
     {
+        $perfEnabled = getenv('PERF_METRIC_ENABLED') === '1';
+        $perfStart = microtime(true);
         $request = $this->request;
         $rawBody = $request->rawBody();
         $data = [];
@@ -63,6 +65,17 @@ class Order extends BaseController
 
             $msg = new AMQPMessage($eventPayload, ['delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT]);
             $channel->basic_publish($msg, $exchangeName, $routingKey);
+
+            if ($perfEnabled) {
+                $perfEnd = microtime(true);
+                fwrite(STDOUT, sprintf(
+                    "[perf-request-in] ts_in=%.6f ts_out=%.6f gw_proc_ms=%.3f traceId=%s\n",
+                    $perfStart,
+                    $perfEnd,
+                    ($perfEnd - $perfStart) * 1000.0,
+                    $traceId
+                ));
+            }
 
             $channel->close();
             $connection->close();
