@@ -110,6 +110,14 @@ class OrderSaga extends Saga{
         $this->generateProductList($productList);
         // 產生 orderId
         $orderId = $this->generateOrderId();
+        if (getenv('PERF_METRIC_ENABLED') === '1') {
+            fwrite(STDOUT, sprintf(
+                "[perf-saga-step1] ts=%.6f orderId=%s traceId=%s\n",
+                microtime(true),
+                $orderId,
+                $event->getTraceId() ?? ''
+            ));
+        }
         // 新增訂單
         $info = $this->orderService
             ->createOrderAction($userKey, $orderId, $this->productList)
@@ -211,6 +219,13 @@ class OrderSaga extends Saga{
     {
         if ($event->success) {
             $this->log("✅ Saga Step 4: 訂單完成！");
+            if (getenv('PERF_METRIC_ENABLED') === '1') {
+                fwrite(STDOUT, sprintf(
+                    "[perf-saga-complete] ts=%.6f orderId=%s\n",
+                    microtime(true),
+                    $event->orderId
+                ));
+            }
         }
     }
 
