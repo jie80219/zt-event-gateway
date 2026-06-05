@@ -211,6 +211,7 @@ services:
     environment:
       gateway.workerUser: root
       gateway.listeningPort: "8080"
+      PERF_METRIC_ENABLED: "${PERF_METRIC_ENABLED:-0}"
       RABBITMQ_HOST: "rabbitmq"
       RABBITMQ_PORT: "5672"
       gatewayregister.address: "anser-gateway"
@@ -273,6 +274,7 @@ services:
         exec php bin/worker.php
     environment:
       APP_SERVICE_NAME: php-worker
+      PERF_METRIC_ENABLED: "${PERF_METRIC_ENABLED:-0}"
       AMQP_HOST: "rabbitmq"
       AMQP_PORT: "5672"
       RABBITMQ_HOST: "rabbitmq"
