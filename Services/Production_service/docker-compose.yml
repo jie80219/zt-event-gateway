@@ -1,49 +1,20 @@
 services:
-    # ── SPIRE Agent ─────────────────────────────────────────────────
-    spire-agent:
-        image: ghcr.io/spiffe/spire-agent:1.12.0
-        container_name: production-spire-agent
-        user: "0:0"
-        command:
-            - -config
-            - /opt/spire/conf/agent/agent.conf
-        # Single-host (default): rely on docker DNS via anser_project_network
-        # to resolve `zt-spire-server`. For multi-host deployments where the
-        # spire-server lives on a different machine, add to a local override:
-        #   extra_hosts:
-        #     - "zt-spire-server:<gateway-host-LAN-IP>"
+    # ── vault-agent sidecar ─────────────────────────────────────────
+    # Authenticates to Vault via AppRole and renders the service's
+    # Vault-issued mTLS material to a shared volume:
+    #   /vault/out/tls.crt  (leaf cert + issuing CA chain)
+    #   /vault/out/tls.key  (private key)
+    #   /vault/out/ca.crt   (trust bundle for verifying the client cert)
+    production-svc-vault-agent:
+        image: hashicorp/vault:1.18
+        container_name: production-svc-vault-agent
+        command: sh -c "chown -R vault:vault /vault/out; exec docker-entrypoint.sh agent -config=/vault/config.hcl"
+        environment:
+            - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
         volumes:
-            - ./spiffe/spire-agent-e2e/agent.conf:/opt/spire/conf/agent/agent.conf:ro
-            - ./spiffe/certs/production-agent.key.pem:/opt/spire/conf/agent/agent.key.pem:ro
-            - ./spiffe/certs/production-agent.crt.pem:/opt/spire/conf/agent/agent.crt.pem:ro
-            - spire-agent-sockets:/run/spire/sockets
-            - production-spire-data:/opt/spire/data/agent
-        healthcheck:
-            test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/sockets/agent.sock"]
-            interval: 5s
-            timeout: 3s
-            retries: 30
-            start_period: 15s
-        restart: unless-stopped
-        networks:
-            - anser_project_network
-
-    # ── spiffe-helper sidecar ───────────────────────────────────────
-    # NOTE: production-helper 共享 spire-agent 的 PID namespace。
-    # 若 spire-agent 被 recreate（非僅 restart），production-helper 也必須 recreate，
-    # 否則 PID namespace 參照會失效。請使用 restart-helper.sh 處理此情境。
-    production-helper:
-        image: ghcr.io/spiffe/spiffe-helper:0.8.0
-        container_name: production-helper
-        pid: "service:spire-agent"
-        command: ["-config", "/opt/spiffe-helper/helper.conf"]
-        volumes:
-            - ./spiffe/helper/production-service.conf:/opt/spiffe-helper/helper.conf:ro
-            - spire-agent-sockets:/run/spire/sockets:ro
-            - production-certs:/certs
-        depends_on:
-            spire-agent:
-                condition: service_healthy
+            - ../../docker/vault-pki/agent/production-svc.hcl:/vault/config.hcl:ro
+            - ../../docker/vault-pki/creds:/vault/creds:ro
+            - production-svc-vault-out:/vault/out
         restart: unless-stopped
         networks:
             - anser_project_network
@@ -64,21 +35,17 @@ services:
             - PHP_MAX_EXECUTION_TIME=300
             - PHP_POST_MAX_SIZE=2048M
             - PHP_UPLOAD_MAX_FILESIZE=2048M
-            # ── SPIFFE / LSVID ──
-            - SPIFFE_ID=spiffe://zt.local/production-service
-            - SPIFFE_SHM_DIR=/certs
-            - LSVID_REQUIRED=0
         volumes:
             - './app:/app'
             # Bind the host's packages/ tree so vendor/jie80219/php-lsvid
             # symlink (../../../../../packages/php-lsvid) resolves inside the
             # container.
             - '../../packages:/packages:ro'
-            - production-certs:/certs:ro
+            - production-svc-vault-out:/vault/out:ro
         command: >
-            bash -c "chmod 776 ./start_service.sh && ./start_service.sh"
+            bash -c "until [ -s /vault/out/tls.crt ]; do echo '[production-service] waiting for /vault/out/tls.crt ...'; sleep 0.2; done; chmod 776 ./start_service.sh && ./start_service.sh"
         depends_on:
-            production-helper:
+            production-svc-vault-agent:
                 condition: service_started
         healthcheck:
             test: ["CMD-SHELL", "curl -so /dev/null -w '%{http_code}' http://127.0.0.1:8080/ | grep -qE '^[2-4]'"]
@@ -113,9 +80,7 @@ services:
             ]
 
 volumes:
-    spire-agent-sockets:
-    production-certs:
-    production-spire-data:
+    production-svc-vault-out:
 
 networks:
     anser_project_network:

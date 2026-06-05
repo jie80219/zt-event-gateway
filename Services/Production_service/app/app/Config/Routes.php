@@ -37,7 +37,6 @@ $routes->group(
     'api/v1',
     [
         'namespace' => 'App\Controllers\v1',
-        'filter'    => 'spiffeLsvid',
     ],
     function(\CodeIgniter\Router\RouteCollection $routes)
     {
@@ -59,7 +58,6 @@ $routes->group(
     'api/vDtm',
     [
         'namespace' => 'App\Controllers\Dtm',
-        'filter'    => 'spiffeLsvid',
     ],
     function (\CodeIgniter\Router\RouteCollection $routes) {
         //Production

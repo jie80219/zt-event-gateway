@@ -8,6 +8,12 @@ server:
 
 http:
   address: "0.0.0.0:8080"
+  ssl:
+    address: ":8443"
+    cert: "/vault/out/tls.crt"
+    key: "/vault/out/tls.key"
+    root_ca: "/vault/out/ca.crt"
+    client_auth_type: "require_and_verify_client_cert"
   static:
     dir: "/app/public"
     forbid: [".htaccess", ".php"]
