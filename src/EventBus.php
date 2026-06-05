@@ -3,8 +3,6 @@ namespace SDPMlab\ZtEventGateway;
 
 use SDPMlab\ZtEventGateway\MessageQueue\MessageBus;
 use SDPMlab\ZtEventGateway\EventStore\EventStoreDB;
-use SDPMlab\LSVID\LSVIDContext;
-use Keycloak\KeycloakTokenContext;
 
 class EventBus
 {
@@ -138,50 +136,29 @@ class EventBus
     }
 
     /**
-     * Publish an event to the message bus with both SPIFFE/LSVID identity
-     * propagation and Keycloak service-account token propagation.
+     * Publish an event to the message bus.
      *
-     * Both identity layers travel together when their respective stacks
-     * are active; consumers downstream pick whichever they're configured
-     * to validate.
+     * Service identity is transport-layer Vault PKI mTLS only — the envelope
+     * carries no application-layer identity token, so there is nothing to
+     * propagate beyond the event payload itself.
      *
      * @param string $eventType  Fully-qualified event class name
      * @param array  $eventData  Event payload
      * @param string $streamName EventStore stream name
-     * @param array  $spiffePath Previous SPIFFE identity chain to propagate
-     * @param array  $tokenPath  Previous Keycloak client_id trace to propagate
      */
     public function publish(
         string $eventType,
         array $eventData,
         string $streamName = 'Streams',
-        array $spiffePath = [],
-        array $tokenPath = [],
     ): void {
         $routingKey = substr(strrchr($eventType, '\\'), 1);
-
-        // Pull the currently-handled inbound LSVID (if any). MessageBus will
-        // wrap it as the `nested` claim of the new level it signs, producing
-        // the L0 → L1 → L2 … nested chain.
-        $priorLsvid = LSVIDContext::current();
-
-        // Pull the currently-handled Keycloak token context (if any) so we
-        // can record the upstream caller in EventStore metadata.
-        $kcCtx = KeycloakTokenContext::get();
 
         if ($this->eventStoreDB !== null) {
             $this->eventStoreDB->appendEvent($streamName, [
                 'eventId' => uniqid('event_', true),
                 'eventType' => $routingKey,
                 'data' => $eventData,
-                'metadata' => [
-                    'spiffe_id'   => $this->messageBus->getSpiffeId(),
-                    'spiffe_path' => $spiffePath,
-                    'lsvid_prior' => $priorLsvid,
-                    'client_id'   => $this->messageBus->getClientId(),
-                    'token_path'  => $tokenPath,
-                    'caller'      => $kcCtx['client_id'] ?? null,
-                ],
+                'metadata' => [],
             ]);
         }
 
@@ -189,9 +166,6 @@ class EventBus
             eventType: $eventType,
             eventData: $eventData,
             exchange: null,
-            spiffePath: $spiffePath,
-            priorLsvid: $priorLsvid,
-            tokenPath: $tokenPath,
         );
     }
 
