@@ -10,9 +10,11 @@ RUN \
     docker-php-ext-enable --ini-name zz-event.ini event && \
     docker-php-ext-enable redis || true
 
-# SWOW extension
+# SWOW extension — pin to a 1.x tag matching the composer swow/swow library
+# (^1.2 → requires ext ^1.5.3). Unpinned master now ships 2.0.0-alpha.2 which
+# fails the library's version check, so pin to the latest 1.x release.
 RUN \
-    git clone https://github.com/swow/swow.git && \
+    git clone --depth 1 --branch v1.6.2 https://github.com/swow/swow.git && \
     cd swow/ext && \
     phpize && ./configure --enable-swow-ssl --enable-swow-curl && make && \
     make install && \
