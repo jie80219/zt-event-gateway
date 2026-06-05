@@ -61,6 +61,53 @@ final class TlsCredential
         $this->version = $version;
     }
 
+    /**
+     * Build from vault-agent rendered PEM files (pure-Vault identity).
+     * SPIFFE id + trust domain are parsed from the cert's URI SAN
+     * (spiffe://<trust-domain>/<service>), issued by the Vault PKI engine.
+     *
+     * @param int $version monotonic marker (e.g. file mtime) so the TLS
+     *                      context can detect vault-agent re-renders.
+     */
+    public static function fromPemFiles(
+        string $certPath,
+        string $keyPath,
+        string $caPath,
+        int $version = 0,
+    ): self {
+        $certPem = @file_get_contents($certPath);
+        $keyPem  = @file_get_contents($keyPath);
+        $caPem   = @file_get_contents($caPath);
+        if (!is_string($certPem) || $certPem === '' || !is_string($keyPem) || $keyPem === '' || !is_string($caPem)) {
+            throw new \RuntimeException(
+                "Vault TLS files not readable (cert={$certPath} key={$keyPath} ca={$caPath})"
+            );
+        }
+
+        $cert = openssl_x509_read($certPem);
+        if ($cert === false) {
+            throw new \RuntimeException("Failed to parse Vault-issued certificate: {$certPath}");
+        }
+        $info = openssl_x509_parse($cert);
+
+        $spiffeId = '';
+        foreach (explode(',', (string) ($info['extensions']['subjectAltName'] ?? '')) as $san) {
+            $san = trim($san);
+            if (str_starts_with($san, 'URI:spiffe://')) {
+                $spiffeId = substr($san, 4); // strip "URI:"
+                break;
+            }
+        }
+        if ($spiffeId === '') {
+            throw new \RuntimeException("Vault certificate has no spiffe:// URI SAN: {$certPath}");
+        }
+
+        $host = parse_url($spiffeId, PHP_URL_HOST);
+        $trustDomain = is_string($host) && $host !== '' ? "spiffe://{$host}" : '';
+
+        return new self($spiffeId, $trustDomain, $certPem, $keyPem, $caPem, $version);
+    }
+
     // ── PEM strings (in-memory) ──────────────────────────────────────
 
     public function spiffeId(): string

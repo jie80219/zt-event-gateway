@@ -189,8 +189,31 @@ try {
         }
 
         // 2. mTLS — 暫不支援（MVP 不啟用 mTLS，SPIFFE_MTLS_ENABLED=0）
-        if ($env('SPIFFE_MTLS_ENABLED', '0') === '1') {
+        if ($env('SPIFFE_MTLS_ENABLED', '0') === '1' && $env('IDENTITY_BACKEND', 'spiffe') !== 'vault') {
             fwrite(STDERR, "[worker] mTLS not yet supported in MVP mode (direct Workload API)\n");
+        }
+    }
+
+    // Pure-Vault identity (P2): populate the mTLS registry from the vault-agent
+    // rendered X.509 (cert/key/ca) so SpiffeLsvidFilter injects Vault-issued
+    // client certs into downstream HTTP (P3). No SHM/SPIRE/LSVID involved.
+    if ($env('IDENTITY_BACKEND', 'spiffe') === 'vault' && $env('SPIFFE_MTLS_ENABLED', '0') === '1') {
+        $vCert = $env('VAULT_TLS_CERT', '/vault/out/tls.crt');
+        $vKey  = $env('VAULT_TLS_KEY',  '/vault/out/tls.key');
+        $vCa   = $env('VAULT_TLS_CA',   '/vault/out/ca.crt');
+        try {
+            $vaultCtx = \Spiffe\TLS\SpiffeTlsContext::fromVaultFiles($vCert, $vKey, $vCa);
+            $vaultCtx->current(); // force initial read — fail fast if files absent
+            SpiffeMtlsRegistry::set($vaultCtx);
+            fwrite(STDOUT, sprintf(
+                "[worker] Vault mTLS registry initialized (id=%s)\n",
+                $vaultCtx->spiffeId(),
+            ));
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "[worker] Vault mTLS init FAILED: " . $e->getMessage() . "\n");
+            if ($env('IDENTITY_REQUIRED', '0') === '1') {
+                exit(1);
+            }
         }
     }
 

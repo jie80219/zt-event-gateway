@@ -50,6 +50,9 @@ final class SpiffeTlsContext
     private ?X509Source $source;
     private ?TlsCredential $credential = null;
 
+    /** @var array{cert:string,key:string,ca:string}|null Vault-agent rendered PEM files */
+    private ?array $vaultFiles = null;
+
     /** @var int Slot index for multi-SVID sources */
     private int $slot;
 
@@ -82,6 +85,18 @@ final class SpiffeTlsContext
     public static function fromSource(X509Source $source): self
     {
         return new self(null, $source);
+    }
+
+    /**
+     * Create from vault-agent rendered PEM files (pure-Vault identity, P2).
+     * The cert/key/ca are issued + auto-renewed by a Vault PKI vault-agent
+     * sidecar; this context re-reads them when they change (mtime version).
+     */
+    public static function fromVaultFiles(string $certPath, string $keyPath, string $caPath): self
+    {
+        $ctx = new self(null, null);
+        $ctx->vaultFiles = ['cert' => $certPath, 'key' => $keyPath, 'ca' => $caPath];
+        return $ctx;
     }
 
     /**
@@ -148,6 +163,10 @@ final class SpiffeTlsContext
 
         if ($this->reader !== null) {
             return $this->reader->version() !== $this->credential->version();
+        }
+
+        if ($this->vaultFiles !== null) {
+            return $this->vaultFilesVersion() !== $this->credential->version();
         }
 
         // Source-based: always considered fresh (Source handles its own cache)
@@ -369,7 +388,25 @@ final class SpiffeTlsContext
             return $this->readFromX509Source();
         }
 
+        // Mode 3: vault-agent rendered PEM files (pure-Vault identity)
+        if ($this->vaultFiles !== null) {
+            return TlsCredential::fromPemFiles(
+                $this->vaultFiles['cert'],
+                $this->vaultFiles['key'],
+                $this->vaultFiles['ca'],
+                $this->vaultFilesVersion(),
+            );
+        }
+
         return null;
+    }
+
+    /** Version marker for vault files = newest mtime of cert/key. */
+    private function vaultFilesVersion(): int
+    {
+        $c = @filemtime($this->vaultFiles['cert']);
+        $k = @filemtime($this->vaultFiles['key']);
+        return max(is_int($c) ? $c : 0, is_int($k) ? $k : 0);
     }
 
     private function readFromReader(): ?TlsCredential
