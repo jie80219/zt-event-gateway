@@ -9,8 +9,7 @@ $env = static function (string $key, string $default): string {
     return is_string($value) && $value !== '' ? $value : $default;
 };
 
-$spiffeEnabled = $env('SPIFFE_ENABLED', '1') !== '0';
-$isHttps = $spiffeEnabled && $env('SPIFFE_MTLS_ENABLED', '0') === '1';
+$isHttps = $env('VAULT_MTLS_ENABLED', '0') === '1';
 $defaultHost = $env('SERVICE_HOST', 'localhost');
 $mtlsPort = (int) $env('MTLS_PORT', '8443');
 $httpPort  = 8080;  // RoadRunner internal HTTP port
