@@ -26,8 +26,7 @@ class EventStoreDB
     /**
      * 儲存事件
      *
-     * 將 metadata 與呼叫端傳入的 metadata 合併（如 SPIFFE、LSVID 資訊），
-     * 並自動加入 timestamp。
+     * 將 metadata 與呼叫端傳入的 metadata 合併，並自動加入 timestamp。
      *
      * @param string $streamName 事件流名稱
      * @param array  $eventData  事件內容，包含 eventType, data, metadata (optional)
@@ -478,8 +477,7 @@ fromStream("Streams")
     $init: function() { return {}; },
     "OrderCreatedEvent": function(state, event) {
         state[event.data.orderId] = {
-            createdAt: event.metadata.timestamp,
-            spiffe_id: event.metadata.spiffe_id
+            createdAt: event.metadata.timestamp
         };
     },
     "OrderSagaCompletedEvent": function(state, event) {
@@ -489,8 +487,7 @@ fromStream("Streams")
             var processingTime = (endTime - startTime) / 1000;
             emit("order_processing_times", "OrderProcessingTimeCalculated", {
                 orderId: event.data.orderId,
-                processingTime: processingTime,
-                spiffe_chain: state[event.data.orderId].spiffe_id
+                processingTime: processingTime
             });
             delete state[event.data.orderId];
         }
