@@ -57,6 +57,9 @@ services:
 
     production_DB:
         image: postgres:11.12
+        security_opt:
+            - apparmor=unconfined
+            - seccomp=unconfined
         networks:
             - anser_project_network
         restart: unless-stopped
