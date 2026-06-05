@@ -90,6 +90,72 @@ services:
     networks:
       - anser_project_network
 
+  # ── Vault PKI — service identity / mTLS CA (replaces SPIRE) ─────────
+  vault:
+    image: hashicorp/vault:1.18
+    container_name: zt-vault
+    command: ["vault", "server", "-dev", "-dev-root-token-id=zt-root", "-dev-listen-address=0.0.0.0:8200"]
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_ADDR: "http://0.0.0.0:8200"
+      VAULT_DEV_ROOT_TOKEN_ID: "zt-root"
+    ports:
+      - "8200:8200"
+    networks:
+      - default
+      - anser_project_network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8200/v1/sys/health?standbyok=true"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+
+  # One-shot: enable PKI (CA=zt.local), per-service roles + AppRole creds.
+  vault-init:
+    image: hashicorp/vault:1.18
+    container_name: zt-vault-init
+    entrypoint: ["/bin/sh", "/vault/init-pki.sh"]
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: "zt-root"
+      CREDS_DIR: "/vault/creds"
+    volumes:
+      - ./docker/vault-pki/init-pki.sh:/vault/init-pki.sh:ro
+      - ./docker/vault-pki/creds:/vault/creds
+    networks:
+      - default
+      - anser_project_network
+    depends_on:
+      vault:
+        condition: service_healthy
+
+  # vault-agent for the worker's mTLS CLIENT identity → renders into vault-out.
+  vault-agent-worker:
+    image: hashicorp/vault:1.18
+    container_name: zt-vault-agent-worker
+    entrypoint:
+      - "/bin/sh"
+      - "-c"
+      - "until [ -s /vault/creds/worker/secret_id ]; do sleep 0.3; done; chown -R vault:vault /vault/out; exec docker-entrypoint.sh agent -config=/vault/config.hcl"
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    volumes:
+      - ./docker/vault-pki/agent/worker.hcl:/vault/config.hcl:ro
+      - ./docker/vault-pki/creds:/vault/creds:ro
+      - vault-out:/vault/out
+    networks:
+      - default
+      - anser_project_network
+    healthcheck:
+      test: ["CMD", "sh", "-c", "[ -s /vault/out/tls.crt ]"]
+      interval: 3s
+      timeout: 2s
+      retries: 40
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+
   php-worker:
     build:
       context: .
@@ -143,6 +209,8 @@ services:
       rabbitmq:
         condition: service_healthy
       eventstoredb:
+        condition: service_healthy
+      vault-agent-worker:
         condition: service_healthy
     networks:
       - anser_project_network
