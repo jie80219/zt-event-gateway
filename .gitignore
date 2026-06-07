@@ -34,3 +34,9 @@ packages/php-lsvid/
 
 # Local Vault sandbox produced by docker compose (creds, file, logs)
 docker/vault/
+
+# Vault-PKI AppRole creds (role_id/secret_id) — secrets, never commit
+docker/vault-pki/creds/
+
+# Python bytecode cache (analyzer scripts)
+scripts/experiments/__pycache__/

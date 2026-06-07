@@ -1,11 +1,12 @@
 # EXPERIMENTS.md
 
-`zt-event-gateway` 的實驗總手冊。本文件涵蓋 **四種實驗類別**：
+`zt-event-gateway` 的實驗總手冊。本文件涵蓋 **五種實驗類別**：
 
 1. 壓力／效能實驗（5,000 / 10,000 / 20,000 訂單規模）
 2. 安全性實驗（跨 stack 攻擊矩陣）
 3. **無憑證鏈 vs 有憑證鏈的容量比較**（`feat/spiffe-keycloak` 量 LSVID；`feat/vault-pki` 量 Vault X.509 憑證鏈）
 4. **巢狀憑證成長大小與成長比**（`feat/spiffe-keycloak` 量 LSVID nested token；`feat/vault-pki` 量 Vault 憑證鏈 / mTLS 開銷）
+5. **故障注入與恢復時間**（對下游服務注入 pause / kill 故障，量 Saga 偵測→補償→恢復的時間與業務完整性）
 
 > **每次跑實驗前必走 §0 核對清單**：先確認分支、確認本次實驗類別、再對照下面對應章節走流程。任一步沒過就停下排查，不要硬跑。
 
@@ -41,6 +42,40 @@ done
 # 預期：四台都在你要測的 branch；服務本體與 gateway 的 commit 各自獨立（拆分後 SHA 不再相同），只要各自在對的 branch 即可
 ```
 
+### 0.1 切 branch 後一律清空 Docker（強制，4 台都做）
+
+**每次 `git checkout` 換到另一個實驗 branch 後、在 `docker compose up` 之前**，四台 host 都必須把 Docker 空間最大化清乾淨。各 branch（`main` / `feat/Linkerd1` / `feat/spiffe-keycloak` / `feat/vault-pki` / ablation）使用的 image、volume、network 不同，殘留的舊 build cache、dangling image、孤兒 volume（例如上一個 branch 的 `*-vault-out`、SPIRE socket volume、舊 DB data）會：
+
+- 吃光磁碟導致 `compose up` / `composer install` 中途失敗；
+- 讓服務掛載到**上一個 branch 的舊憑證 / 舊 SVID / 舊 schema**，量到的數值無效；
+- 造成 image 名稱相同但內容過舊（healthcheck 綠了卻跑錯版本）。
+
+```bash
+# 在「四台」host 各跑一次。先停掉該 host repo 的 stack，再深度清理。
+# ⚠️ 會刪掉所有未在執行中的 image / build cache / 未掛載 volume / 自訂 network。
+#    跨 branch 實驗環境本來就該每次重建，這是預期行為。
+
+# (a) 先把當前 branch 的 stack 停掉並移除孤兒（含 named volume）
+( cd /root/zt-event-gateway && docker compose down --remove-orphans -v )          # gateway = 本機
+ssh zt-order 'cd /root/Order-Service      && docker compose down --remove-orphans -v'
+ssh zt-prod  'cd /root/Production-Service && docker compose down --remove-orphans -v'
+ssh zt-user  'cd /root/User-Service       && docker compose down --remove-orphans -v'
+
+# (b) 四台 host 深度清理（image / 停止容器 / network / build cache / 未使用 volume 全清）
+for h in zt-gateway zt-order zt-prod zt-user; do
+  # 本機沒有 zt-gateway alias 時，把這行對 gateway 換成直接在本機跑 docker system prune ...
+  ssh "$h" 'docker system prune -af --volumes && docker builder prune -af'
+done
+
+# (c) 確認磁碟確實釋放（Reclaimable 應接近 0；四台都看一下）
+for h in zt-gateway zt-order zt-prod zt-user; do
+  echo "── $h ──"; ssh "$h" 'docker system df'
+done
+# 預期：TYPE=Images/Containers/Local Volumes/Build Cache 的 RECLAIMABLE 幾乎為 0
+```
+
+清完才回到下面選實驗類別、再進 §1.2 起 stack。**注意**：清掉的 image 會在下次 `compose up` 重新 pull / build，第一輪冷啟動較久屬正常；正式量測的 cold round 也應該建立在「乾淨環境重建」之上。
+
 對照下表確認 **本次要跑哪一類實驗 × 是否符合 branch 限制 × 必要的 worker / 環境配置**：
 
 | 實驗類別 | 章節 | 適用 branch | 是否需要先改 worker 配置？ | 額外前置 |
@@ -49,6 +84,7 @@ done
 | 安全性 | §3 | 任何 branch（用該 branch 的 `probe-<stack>.sh`） | 否 | — |
 | 無憑證鏈 vs 有憑證鏈 容量 | §4 | **`feat/spiffe-keycloak`（LSVID）或 `feat/vault-pki`（Vault 憑證鏈）** | 是（§4.1） | spiffe-keycloak：§1.4.3 全綠；vault-pki：§1.4.4 全綠 |
 | 巢狀憑證成長 | §5 | **`feat/spiffe-keycloak` 或 `feat/vault-pki`** | 否 | 同上 |
+| 故障注入與恢復時間 | §6 | 任何 branch（runner 依 stack 擇一：`fault-recovery-{spire,linkerd,vault,vault-pki}.sh`） | **是**（需 `PERF_METRIC_ENABLED=1`，見 §6.1） | 對應 branch 的 §1.4 全綠 + §1.3 smoke 過 |
 
 切錯 branch / 沒改 worker config 的後果：
 
@@ -58,7 +94,7 @@ done
 
 ---
 
-## 1. 基本測試（§2 §3 §4 §5 共用的前置門檻）
+## 1. 基本測試（§2 §3 §4 §5 §6 共用的前置門檻）
 
 每次實驗開跑前必跑這 4 項，**全通過** 才能進入後面任一個實驗章節。任一項失敗就停下排查，不要硬跑。
 
@@ -222,7 +258,7 @@ ssh zt-gateway "docker logs --tail 300 zt-php-worker 2>&1 | grep '$TRACE' -A2 | 
 這個 branch 用 **Vault 當 CA**（取代 SPIRE）：`init-pki.sh` 建立 PKI engine + per-service PKI role + AppRole；每個服務的 `vault-agent` sidecar 用自己的 AppRole creds 跟 Vault 換到短效 X.509（帶 SPIFFE-style URI SAN `spiffe://zt.local/<svc>`），寫成 `/vault/out/tls.crt|tls.key|ca.crt`，下游用 `VaultMtlsFilter` 做 mTLS。**零信任在「Vault 簽發的憑證鏈 + mTLS」這層**，跟 LSVID（SPIFFE 那條線）無關。
 
 > **拆分 repo 後的前置（vault-pki 專屬，跟其他 branch 不同）**
-> 1. **creds 分發**：`init-pki.sh` 在 gateway 一次產生**所有**服務的 `creds/<svc>/{role_id,secret_id}`。拆分後三台服務 host 各自只拿自己那份——gateway 跑完 init-pki 後要把 `order-svc/`、`production-svc/`、`user-svc/` 各自送到對應 host 的 creds 掛載點（部署細節見服務 repo 的 compose 與 §6.4）。
+> 1. **creds 分發**：`init-pki.sh` 在 gateway 一次產生**所有**服務的 `creds/<svc>/{role_id,secret_id}`。拆分後三台服務 host 各自只拿自己那份——gateway 跑完 init-pki 後要把 `order-svc/`、`production-svc/`、`user-svc/` 各自送到對應 host 的 creds 掛載點（部署細節見服務 repo 的 compose 與 §7.4）。
 > 2. **`VAULT_ADDR`**：服務 host 的 vault-agent 不能用 `vault:8200`（gateway compose 內網），跨主機要設 `VAULT_ADDR=http://10.1.1.209:8200`。
 
 ```bash
@@ -344,7 +380,7 @@ BR=$(git rev-parse --abbrev-ref HEAD)
 case "$BR" in
   main)                  PROBE=probe-baseline.sh ;;
   feat/Linkerd1)         PROBE=probe-linkerd.sh ;;
-  feat/spiffe-keycloak)  PROBE=probe-keycloak-spiffe.sh ;;  # §6.1 cherry-pick 後才有
+  feat/spiffe-keycloak)  PROBE=probe-keycloak-spiffe.sh ;;  # §7.1 cherry-pick 後才有
   feat/vault-pki)        PROBE=probe-vault-pki.sh ;;        # Vault PKI mTLS 攻擊面（憑證偽造 / 無 cert 直連 / role 越權簽發）
   *)                     echo "no probe for $BR"; exit 1 ;;
 esac
@@ -382,7 +418,7 @@ python3 scripts/security/aggregate-security.py \
 共通：`anser-gateway/env` 的 `gateway.workerCount = 10`（同 §2.1）。
 
 **`feat/spiffe-keycloak`：**
-1. 把 SPIFFE/SPIRE 與 LSVID 編解碼層復活（§6.1）
+1. 把 SPIFFE/SPIRE 與 LSVID 編解碼層復活（§7.1）
 2. 確認 SPIRE agent socket（在 gateway / order / prod / user 容器內）正常 issue SVID
 3. §1.4.3 全綠；Smoke 測一張帶 LSVID 的訂單，確認 `spiffe_path` 在 RabbitMQ envelope 上有完整鏈
 
@@ -507,9 +543,115 @@ Saga 鏈：Gateway → Order → Production → User → Order。每一跳都把
 
 ---
 
-## 6. 補充
+## 6. 故障注入與恢復時間
 
-### 6.1 `feat/spiffe-keycloak` 分支現況
+> **適用任何 branch**，但每個 stack 用各自的 runner：`scripts/experiments/fault-recovery-{spire,linkerd,vault,vault-pki}.sh`（共用 `fault-recovery-common.sh`）。本章量的是「**下游服務發生故障時，Saga 多快偵測、補償、並恢復到能正常完成訂單**」，以及故障期間的業務完整性（該回滾的有沒有回滾、該完成的有沒有完成）。
+
+跟 §2（吞吐／延遲）不同：§2 量「健康狀態下能撐多少量」，§6 量「不健康狀態下多快復原」。兩者互補，是 zero-trust 架構韌性論述的另一面。
+
+### 6.1 必要前置
+
+1. **`PERF_METRIC_ENABLED=1`**（關鍵）。`recovery_sec` 靠 `Sagas/OrderSaga.php` 的 `[perf-saga-step1]` / `[perf-saga-complete]` 時間戳 marker 計算，這些 marker 只在 `PERF_METRIC_ENABLED=1` 時才印。沒設這個值 → CSV 的 `recovery_sec` 全空，整輪白跑。worker 起的時候就要帶（不是跑 runner 時才帶）：
+   ```bash
+   # gateway host：起 worker 時就要帶環境變數
+   PERF_METRIC_ENABLED=1 COMPOSE_PROFILES=zt docker compose up -d
+   # 確認 worker 進程確實看得到
+   docker exec zt-php-worker printenv PERF_METRIC_ENABLED   # 要印出 1
+   ```
+2. **對應 branch 的 §1.4 全綠 + §1.3 smoke 過**。故障實驗必須建立在「健康時本來就能走完 Step 4」的前提上，否則分不清是注入的故障還是環境本身壞了。
+3. **runner 從 gateway host（10.1.1.209）驅動**；下游服務在各自 host，runner 透過 ssh alias + 容器名遠端注入故障（見 §6.3）。
+
+### 6.2 量什麼
+
+固定的 4 個故障場景（所有 stack 一致，方便橫向比較），每個場景再對 `FAULT_DURATIONS`（預設 `5 30` 秒）掃描：
+
+| 場景 | 注入目標 / 方式 | 預期 Saga 行為 | rollback |
+|---|---|---|---|
+| `step1-transient` | pause production（注入在 Step 1 前）| Step 1 商品查詢失敗 → 短暫故障後恢復 | 否 |
+| `comp-after-recovery` | pause user | Step 3 扣款失敗 → RollbackSaga Step 2（補償庫存）| 是 |
+| `full-rollback` | pause order（注入在 Step 3 後）| Step 4 確認失敗 → 完整回滾 | 是 |
+| `kill-restart` | kill + restart production | 容器重啟 → mTLS 身份層重新換證後恢復 | 否 |
+
+核心指標：
+
+- **`recovery_sec`** = `t_recovered − t_fault_clear`：故障「解除」之後，系統還要多久才能讓一張新單走完。**這才是恢復時間**（不含人為注入的故障持續時間）。
+- **`saga_completed`** / **`rollback_count`**：業務完整性 — 該回滾的有回滾、該完成的有完成。
+- CSV schema（`fault-recovery-common.sh` 定義，自描述）：
+  ```
+  stack,scenario,fault_type,fault_target,fault_duration_sec,t_fault_clear,recovery_sec,saga_completed,rollback_count,trace_id
+  ```
+
+`kill-restart` 對 `feat/vault-pki` 特別有意義：容器被 kill 後，vault-agent sidecar 要重新 AppRole 登入並重新 render `/vault/out/{tls.crt,tls.key}`，下游才能重新接受 mTLS。這段「身份層恢復」會疊加在一般的容器重啟時間上，是 Vault PKI 模型相對 SPIRE 的成本面之一。
+
+### 6.3 跑法
+
+每個 stack 用對應 runner。**`feat/vault-pki` 用 `fault-recovery-vault-pki.sh`**（拆分多主機 + Compose 自動命名容器，預設已對齊 2026-06-07 部署）：
+
+```bash
+# 在 gateway host（10.1.1.209）跑
+cd /root/zt-event-gateway
+
+# (a) 先確認下游容器名與 runner 預設一致（不一致就用 *_SVC_CONTAINER 覆蓋）
+ssh zt-order 'docker ps --format "{{.Names}}"' | grep order-service
+ssh zt-prod  'docker ps --format "{{.Names}}"' | grep production-service
+ssh zt-user  'docker ps --format "{{.Names}}"' | grep user-service
+
+# (b) 跑（worker 必須已用 PERF_METRIC_ENABLED=1 起來，見 §6.1）
+PERF_METRIC_ENABLED=1 \
+OUT=artifacts/fault-recovery-vault-pki-$(date +%Y%m%d-%H%M%S) \
+FAULT_DURATIONS="5 30" \
+  bash scripts/experiments/fault-recovery-vault-pki.sh
+```
+
+runner 預設的拆分拓撲（`fault-recovery-vault-pki.sh` 頭部，可用環境變數覆蓋）：
+
+| 角色 | host alias | 容器名（Compose 自動命名）|
+|---|---|---|
+| worker | 本機（gateway）| `zt-php-worker` |
+| order | `zt-order` | `order-service-order-service-1` |
+| production | `zt-prod` | `production-service-production-service-1` |
+| user | `zt-user` | `user-service-user-service-1` |
+
+> 其他 stack：`feat/spiffe-keycloak` → `fault-recovery-spire.sh`、`feat/Linkerd1` → `fault-recovery-linkerd.sh`、舊單機 Vault → `fault-recovery-vault.sh`。場景矩陣與 CSV schema 都相同，差別只在 `STACK` 標籤與容器/host 接線。
+
+runner 結束會做一次 **completeness gate**：注入矩陣跑完後再下一張乾淨單，必須走到 `✅ Saga Step 4`，否則判 FAIL（代表故障實驗把環境搞壞了，數據不可信）。
+
+### 6.4 預期輸出與分析
+
+輸出在 `$OUT/recovery_<stack>.csv`（vault-pki 即 `recovery_vault-pki.csv`），一列一個 (場景 × duration) 觀測。
+
+`scripts/experiments/analyze-fault-recovery.py` **已改成吃任意數量的 stack**（先前只 hard-code `--spire`/`--linkerd` 的限制已修掉）。兩種傳法：
+
+```bash
+# (A) 泛用 --csv stack=path（可重複，任何 stack 標籤都行）
+python3 scripts/experiments/analyze-fault-recovery.py \
+  --csv vault-pki=artifacts/fault-recovery-vault-pki-XXXX/recovery_vault-pki.csv \
+  --csv spire=artifacts/.../recovery_spire.csv \
+  --baseline spire \
+  --out artifacts/fault-recovery-compare-$(date +%Y%m%d-%H%M%S)
+
+# (B) 便捷旗標（--spire / --linkerd / --vault / --vault-pki / --main，擇任意子集，1 個以上即可）
+python3 scripts/experiments/analyze-fault-recovery.py \
+  --vault-pki artifacts/.../recovery_vault-pki.csv \
+  --spire     artifacts/.../recovery_spire.csv \
+  --out artifacts/fault-recovery-compare-$(date +%Y%m%d-%H%M%S)
+```
+
+產出（圖會把所有傳入的 stack 畫成同一張 grouped bar / 趨勢線，自動配色）：
+
+- `恢復時間_bar.png`、`恢復時間_趨勢.png`、`saga完成率_bar.png`、`rollback次數_bar.png`
+- `fault_recovery_summary.xlsx`：`aggregated` 分頁 + `ranking` 分頁（每個場景依 `recovery_median` 由低到高排出 `best_stack`）。給了 `--baseline <stack>` 時 `ranking` 換成 `verdict` 分頁，多一欄判斷該 stack 是否在**每個**場景都最低。
+- 只傳一個 stack 也能跑（單 stack 自我分析，不做比較）。
+
+> 仍是真的限制（不是 analyzer 的鍋）：四個 stack 要同圖比較，前提是**各 stack 各自跑過自己的 runner、產出各自的 `recovery_<stack>.csv`**；本章只負責產 vault-pki 那份，其餘 stack 的 CSV 要在對應 branch 上各跑一次再一起餵進來。
+
+健康判讀基準：`recovery_sec` 應與注入的 `fault_duration_sec` **無關**（恢復時間是系統特性，不是故障長度的函數）；若 `recovery_sec` 隨 duration 線性增長，代表有積壓未消化（worker 重試退避或佇列堆積），要回頭查 worker 設定。
+
+---
+
+## 7. 補充
+
+### 7.1 `feat/spiffe-keycloak` 分支現況
 
 `feat/spiffe-keycloak` 已經存在於 origin 與 4 台 host（截至本文件寫成時），不需要從歷史 commit cherry-pick 復活。它和 `main` 從某個分岔點開始已經分歧 49 個 commit，最近的大頭包括：
 
@@ -545,7 +687,7 @@ a2f73b0 feat(keycloak): add KEYCLOAK_* env vars, compose profile, firebase/php-j
 f22f7a3 feat(experiments): Keycloak token minting + drain 180s + bash 3.2 compat
 ```
 
-### 6.2 實驗紀錄表（建議每跑一輪手動填一列）
+### 7.2 實驗紀錄表（建議每跑一輪手動填一列）
 
 存在 `artifacts/EXPERIMENT_LOG.md`（不進 git，純本機歸檔）：
 
@@ -556,13 +698,13 @@ f22f7a3 feat(experiments): Keycloak token minting + drain 180s + bash 3.2 compat
 | ...        |                     |         |          |               |             |                     |                                         |      |
 ```
 
-### 6.3 實驗一致性原則
+### 7.3 實驗一致性原則
 
 - **同一份手冊跨所有 branch 通用**。本檔在 `main` 與所有 feature branch 上應該維持同步（必要時 cherry-pick）；不要在某個 branch 上分岔。
 - **每次跑實驗 §0 都要重走**。即使 5 分鐘前才剛跑過另一輪，也要重看 branch / commit / 配置是否還對。
-- **每次切換 branch 都要 §1 重 smoke**。compose 重起後 Saga 第一張單常常會慢；smoke 不過絕對不要進 §2 §3 §4 §5。
+- **每次切換 branch 都要 §1 重 smoke**。compose 重起後 Saga 第一張單常常會慢；smoke 不過絕對不要進 §2 §3 §4 §5 §6。
 
-### 6.4 拆分 repo 後的部署模型（所有 branch 共用）
+### 7.4 拆分 repo 後的部署模型（所有 branch 共用）
 
 三個服務已從 `zt-event-gateway/Services/*_service` 拆成獨立 GitHub repo，部署在各服務 host 的獨立路徑（見 §0.0）。部署只做 `git clone/checkout`，啟動由各 repo 自己的 `docker compose up -d`。
 
