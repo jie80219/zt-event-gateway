@@ -59,7 +59,9 @@ services:
             - apparmor=unconfined
             - seccomp=unconfined
         networks:
-            - anser_project_network
+            anser_project_network:
+                aliases:
+                    - devDB
         environment:
             POSTGRES_DB: order
             POSTGRES_USER: root

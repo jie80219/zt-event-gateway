@@ -61,7 +61,9 @@ services:
             - apparmor=unconfined
             - seccomp=unconfined
         networks:
-            - anser_project_network
+            anser_project_network:
+                aliases:
+                    - devDB
         restart: unless-stopped
         environment:
             POSTGRES_DB: production
