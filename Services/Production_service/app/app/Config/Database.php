@@ -36,7 +36,7 @@ class Database extends Config
         'username' => 'root',
         'password' => 'root',
         'database' => 'production',
-        'DBDriver' => 'MySQLi',
+        'DBDriver' => 'Postgre',
         'DBPrefix' => '',
         'pConnect' => false,
         'DBDebug'  => (ENVIRONMENT !== 'production'),
@@ -47,7 +47,7 @@ class Database extends Config
         'compress' => false,
         'strictOn' => false,
         'failover' => [],
-        'port'     => 3306,
+        'port'     => 5432,
     ];
 
     /**
