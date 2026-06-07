@@ -14,7 +14,6 @@ FROM composer:2.8 AS vendor
 WORKDIR /app
 RUN apk add --no-cache linux-headers && docker-php-ext-install sockets pcntl
 COPY composer.json ./
-COPY packages/ packages/
 RUN composer update --no-interaction --prefer-dist --no-progress --optimize-autoloader \
     --no-scripts --ignore-platform-req=ext-swoole --ignore-platform-req=ext-swow
 
