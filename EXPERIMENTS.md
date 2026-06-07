@@ -4,40 +4,55 @@
 
 1. 壓力／效能實驗（5,000 / 10,000 / 20,000 訂單規模）
 2. 安全性實驗（跨 stack 攻擊矩陣）
-3. **無 LSVID vs 有 LSVID 的容量比較**（僅 `feat/spiffe-keycloak`）
-4. **巢狀 Token 成長大小與成長比**（僅 `feat/spiffe-keycloak`）
+3. **無憑證鏈 vs 有憑證鏈的容量比較**（`feat/spiffe-keycloak` 量 LSVID；`feat/vault-pki` 量 Vault X.509 憑證鏈）
+4. **巢狀憑證成長大小與成長比**（`feat/spiffe-keycloak` 量 LSVID nested token；`feat/vault-pki` 量 Vault 憑證鏈 / mTLS 開銷）
 
 > **每次跑實驗前必走 §0 核對清單**：先確認分支、確認本次實驗類別、再對照下面對應章節走流程。任一步沒過就停下排查，不要硬跑。
+
+> **架構說明（拆分 repo 後）**：三個服務已從 `zt-event-gateway/Services/*_service` 拆成各自獨立的 GitHub repo，部署在各服務 host 的獨立路徑。gateway 仍是 `zt-event-gateway`。所有指令以下表的 host ↔ repo ↔ 路徑為準。
 
 ---
 
 ## 0. 開跑前核對清單（每一次都要跑）
 
-```bash
-# ── (a) 確認本機 branch ─────────────────────────────────
-git rev-parse --abbrev-ref HEAD          # 本機現在在哪個 branch
-git rev-parse --short HEAD               # 本機現在的 commit
+### 0.0 host ↔ repo ↔ 路徑對照（拆分架構，所有章節共用）
 
-# ── (b) 確認 4 台 host 同步 ─────────────────────────────
-for h in zt-gateway zt-order zt-prod zt-user; do
-  printf '%-13s ' "$h"
-  ssh "$h" 'cd ~/zt-event-gateway && git rev-parse --abbrev-ref HEAD && git rev-parse --short HEAD' | xargs
+| Host alias | IP | repo | 路徑 | 驅動方式 |
+|---|---|---|---|---|
+| `zt-gateway` | 10.1.1.209 | `zt-event-gateway` | `/root/zt-event-gateway` | 本機（gateway 即操作機；無 `zt-gateway` SSH alias 時把 `ssh zt-gateway '…'` 換成在本機直接跑 `…`）|
+| `zt-order` | 10.1.1.210 | `Order-Service` | `/root/Order-Service` | SSH |
+| `zt-prod` | 10.1.1.207 | `Production-Service` | `/root/Production-Service` | SSH |
+| `zt-user` | 10.1.1.214 | `User-Service` | `/root/User-Service` | SSH |
+
+> 拆分後三個服務 host 各自是獨立 repo（不再是 `zt-event-gateway/Services/*_service` 子目錄），但 branch 名稱（`feat/vault-pki` 等）四個 repo 一致，仍要求四台同 branch 同步。
+
+```bash
+# ── (a) 確認 gateway（本機）branch ──────────────────────
+git -C /root/zt-event-gateway rev-parse --abbrev-ref HEAD   # gateway 現在在哪個 branch
+git -C /root/zt-event-gateway rev-parse --short HEAD        # gateway 現在的 commit
+
+# ── (b) 確認 4 台 host 同步（各自獨立 repo）─────────────
+echo -n "zt-gateway  "; git -C /root/zt-event-gateway rev-parse --abbrev-ref HEAD --short HEAD | xargs
+for hp in "zt-order:/root/Order-Service" "zt-prod:/root/Production-Service" "zt-user:/root/User-Service"; do
+  h=${hp%%:*}; d=${hp##*:}
+  printf '%-11s ' "$h"
+  ssh "$h" "git -C $d rev-parse --abbrev-ref HEAD && git -C $d rev-parse --short HEAD" | xargs
 done
-# 預期：四台都在你要測的 branch、同一個 short HEAD
+# 預期：四台都在你要測的 branch；服務本體與 gateway 的 commit 各自獨立（拆分後 SHA 不再相同），只要各自在對的 branch 即可
 ```
 
 對照下表確認 **本次要跑哪一類實驗 × 是否符合 branch 限制 × 必要的 worker / 環境配置**：
 
 | 實驗類別 | 章節 | 適用 branch | 是否需要先改 worker 配置？ | 額外前置 |
 |---|---|---|---|---|
-| 壓力 / 效能 | §2 | 任何 branch（`main` / `feat/Linkerd1` / `feat/spiffe-keycloak` / ablation） | **是**（§2.1 指定） | — |
+| 壓力 / 效能 | §2 | 任何 branch（`main` / `feat/Linkerd1` / `feat/spiffe-keycloak` / `feat/vault-pki` / ablation） | **是**（§2.1 指定） | — |
 | 安全性 | §3 | 任何 branch（用該 branch 的 `probe-<stack>.sh`） | 否 | — |
-| 無 LSVID vs 有 LSVID 容量 | §4 | **僅 `feat/spiffe-keycloak`** | 是（§4.1） | §1.4.3 SPIRE/Keycloak/LSVID 驗證項全綠 |
-| 巢狀 Token 成長 | §5 | **僅 `feat/spiffe-keycloak`** | 否 | 同上 |
+| 無憑證鏈 vs 有憑證鏈 容量 | §4 | **`feat/spiffe-keycloak`（LSVID）或 `feat/vault-pki`（Vault 憑證鏈）** | 是（§4.1） | spiffe-keycloak：§1.4.3 全綠；vault-pki：§1.4.4 全綠 |
+| 巢狀憑證成長 | §5 | **`feat/spiffe-keycloak` 或 `feat/vault-pki`** | 否 | 同上 |
 
 切錯 branch / 沒改 worker config 的後果：
 
-- 在 `main` / `feat/Linkerd1` 上跑 §4 §5 — 沒有 LSVID 邏輯，量到的數值無意義。
+- 在 `main` / `feat/Linkerd1` 上跑 §4 §5 — 沒有憑證鏈邏輯（LSVID / Vault PKI），量到的數值無意義。
 - 跑 §2 但 `gateway.workerCount` 還停在 default `1` — 5k/10k 已經會被 Gateway thread 卡死，整輪資料失準。
 - 跑 §3 用了不同 stack 的 probe — case_id 命中錯誤，aggregator 對不齊。
 
@@ -50,27 +65,28 @@ done
 ### 1.1 確認 branch 位置（本機 + 4 host commit 一致）
 
 ```bash
-BR=$(git rev-parse --abbrev-ref HEAD)
-LOCAL_HEAD=$(git rev-parse --short HEAD)
-echo "local: $BR @ $LOCAL_HEAD"
+BR=$(git -C /root/zt-event-gateway rev-parse --abbrev-ref HEAD)
+echo "gateway: $BR @ $(git -C /root/zt-event-gateway rev-parse --short HEAD)"
 
-for h in zt-gateway zt-order zt-prod zt-user; do
-  REMOTE=$(ssh "$h" 'cd ~/zt-event-gateway && git rev-parse --abbrev-ref HEAD && git rev-parse --short HEAD' | xargs)
-  printf '%-13s %s\n' "$h" "$REMOTE"
+# 各服務 host 是獨立 repo（路徑見 §0.0），只比對 branch 是否一致
+for hp in "zt-order:/root/Order-Service" "zt-prod:/root/Production-Service" "zt-user:/root/User-Service"; do
+  h=${hp%%:*}; d=${hp##*:}
+  REMOTE=$(ssh "$h" "git -C $d rev-parse --abbrev-ref HEAD && git -C $d rev-parse --short HEAD" | xargs)
+  printf '%-11s %s\n' "$h" "$REMOTE"
 done
 ```
 
-**Pass 條件**：本機與 4 台 host 全部都在同一個 `branch @ short HEAD`。
-**Fail 處理**：差幾個 commit → 對 host 跑 `git fetch + git checkout $BR + git pull --ff-only` 補齊；分支對不上 → 重看 §0 的對照表，確認本次實驗本來就該在哪個 branch。
+**Pass 條件**：gateway 與 3 台服務 host 全部都在**同一個 branch**（拆分後各 repo 的 short HEAD 本來就不同，不需相同）。
+**Fail 處理**：branch 不對 → 對該 host 在其 repo 路徑跑 `git fetch + git checkout $BR + git pull --ff-only` 補齊；分支對不上 → 重看 §0 的對照表，確認本次實驗本來就該在哪個 branch。
 
 ### 1.2 4 台 host 都 up 且跑的是對應 branch 的服務
 
 ```bash
-# (a) compose stack 都拉起來
-ssh zt-gateway 'cd ~/zt-event-gateway && docker compose up -d'
-ssh zt-order   'cd ~/zt-event-gateway/Services/Order_service      && docker compose up -d'
-ssh zt-prod    'cd ~/zt-event-gateway/Services/Production_service && docker compose up -d'
-ssh zt-user    'cd ~/zt-event-gateway/Services/User_service       && docker compose up -d'
+# (a) compose stack 都拉起來（各自獨立 repo 路徑，見 §0.0）
+( cd /root/zt-event-gateway && docker compose up -d )                 # gateway = 本機
+ssh zt-order 'cd /root/Order-Service      && docker compose up -d'
+ssh zt-prod  'cd /root/Production-Service && docker compose up -d'
+ssh zt-user  'cd /root/User-Service       && docker compose up -d'
 
 # (b) 容器都 healthy
 for h in zt-gateway zt-order zt-prod zt-user; do
@@ -121,6 +137,7 @@ ssh zt-gateway "docker logs --tail 300 zt-php-worker 2>&1 | grep -E 'Saga Step 4
 | `main` | 無 zero-trust（純粹的 baseline）| §1.4.1 |
 | `feat/Linkerd1` | Linkerd 1.x L7 mesh（mTLS off Phase 2，僅做 routing/observability）| §1.4.2 |
 | `feat/spiffe-keycloak` | SPIRE workload SVID + Keycloak end-user JWT + LSVID nested token | §1.4.3 |
+| `feat/vault-pki` | Vault PKI 簽發 X.509（SPIFFE-style URI SAN）+ vault-agent sidecar mTLS（取代 SPIRE）| §1.4.4 |
 
 #### 1.4.1 `main`（baseline）
 
@@ -200,6 +217,48 @@ ssh zt-gateway "docker logs --tail 300 zt-php-worker 2>&1 | grep '$TRACE' -A2 | 
 
 **Pass 條件**：(a)(b)(c)(d) 全綠。任一缺失就停下排查，**不要進 §4 §5**，會量到誤導性數據。
 
+#### 1.4.4 `feat/vault-pki`
+
+這個 branch 用 **Vault 當 CA**（取代 SPIRE）：`init-pki.sh` 建立 PKI engine + per-service PKI role + AppRole；每個服務的 `vault-agent` sidecar 用自己的 AppRole creds 跟 Vault 換到短效 X.509（帶 SPIFFE-style URI SAN `spiffe://zt.local/<svc>`），寫成 `/vault/out/tls.crt|tls.key|ca.crt`，下游用 `VaultMtlsFilter` 做 mTLS。**零信任在「Vault 簽發的憑證鏈 + mTLS」這層**，跟 LSVID（SPIFFE 那條線）無關。
+
+> **拆分 repo 後的前置（vault-pki 專屬，跟其他 branch 不同）**
+> 1. **creds 分發**：`init-pki.sh` 在 gateway 一次產生**所有**服務的 `creds/<svc>/{role_id,secret_id}`。拆分後三台服務 host 各自只拿自己那份——gateway 跑完 init-pki 後要把 `order-svc/`、`production-svc/`、`user-svc/` 各自送到對應 host 的 creds 掛載點（部署細節見服務 repo 的 compose 與 §6.4）。
+> 2. **`VAULT_ADDR`**：服務 host 的 vault-agent 不能用 `vault:8200`（gateway compose 內網），跨主機要設 `VAULT_ADDR=http://10.1.1.209:8200`。
+
+```bash
+# (a) Vault 可達 + PKI/approle 已啟用（在 gateway host）
+( cd /root/zt-event-gateway && docker exec zt-vault sh -c 'VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root vault read pki/cert/ca >/dev/null && echo "pki CA OK"' )
+# Pass：印出 pki CA OK（root CA 已生成）
+
+# (b) 每個服務的 vault-agent 真的換到憑證 — /vault/out/ 三個檔都在且非空
+for hp in "zt-order:order-svc" "zt-prod:production-svc" "zt-user:user-svc"; do
+  h=${hp%%:*}; svc=${hp##*:}
+  printf '%-9s ' "$h"
+  ssh "$h" "docker exec ${svc}-vault-agent sh -c 'for f in tls.crt tls.key ca.crt; do [ -s /vault/out/\$f ] || { echo MISSING:\$f; exit 1; }; done; echo certs-OK'"
+done
+# Pass：三台都印 certs-OK
+
+# (c) 憑證的 URI SAN 是對應 SPIFFE id（驗證身份綁定正確，沒有發錯 role）
+ssh zt-order "docker exec order-svc-vault-agent sh -c 'openssl x509 -in /vault/out/tls.crt -noout -text | grep -A1 \"Subject Alternative Name\"'"
+# Pass：看到 URI:spiffe://zt.local/order-service
+
+# (d) mTLS 真的在攔：不帶 client cert 直連下游應被拒（require_and_verify）
+ssh zt-order "curl -sk -o /dev/null -w 'no-cert=%{http_code}\n' --max-time 5 https://127.0.0.1:8443/ || echo 'no-cert=refused/handshake-fail'"
+# Pass：TLS handshake 失敗 / 連線被拒（不是 200）；帶正確 client cert 才該通
+
+# (e) 端到端：smoke 一張單，確認 worker→下游的 VaultMtlsFilter mTLS 成功（Saga Step 4 完成）
+TRACE="vpki-check-$(date +%s)"
+( cd /root/zt-event-gateway && docker exec zt-php-worker true ) # gateway 本機
+ssh zt-gateway "curl -sS -o /dev/null -w 'gw=%{http_code}\n' -X POST http://127.0.0.1:8080/api/orders \
+  -H 'Content-Type: application/json' -H 'X-Correlation-Id: $TRACE' \
+  -d '{\"userKey\":\"1\",\"productList\":[{\"p_key\":1,\"amount\":1}],\"total\":100}'"
+sleep 6
+ssh zt-gateway "docker logs --tail 300 zt-php-worker 2>&1 | grep -E 'Saga Step 4: 訂單完成|mTLS|VaultMtls|RollbackSaga' | tail -10"
+# Pass：gw=202 + Saga Step 4 完成 + 無 RollbackSaga（mTLS 握手有成功）
+```
+
+**Pass 條件**：(a)–(e) 全綠。任一缺失就停下排查，**不要進 §4 §5**。常見 fail：creds 沒分發到該 host（agent 卡在 approle auth）、`VAULT_ADDR` 還指向 `vault:8200`（跨主機連不到 CA）、憑證過期未輪換（等一輪 renew）。
+
 > §3 安全性實驗的 probe driver（`scripts/security/probe-<stack>.sh`）會把 1.4 的核心驗證也包進 attack matrix（見 `scripts/security/README.md`）。但 1.4 是「實驗開跑前」的快速 sanity，probe 是「實驗本身」，不要相互取代。
 
 ---
@@ -220,14 +279,13 @@ ssh zt-gateway "docker logs --tail 300 zt-php-worker 2>&1 | grep '$TRACE' -A2 | 
 把 `anser-gateway/env` 中 `gateway.workerCount` 解註成你要的值之後，4 host 全部 sync + rebuild + restart：
 
 ```bash
-# 改完 env 後
+# 改完 env 後（`anser-gateway/env` 只存在於 gateway repo，故只需同步 gateway 本機）
+cd /root/zt-event-gateway
+BR=$(git rev-parse --abbrev-ref HEAD)
 git add anser-gateway/env && git commit -m "experiment: bump gateway.workerCount to 10"
 git push origin "$BR"
-
-for h in zt-gateway zt-prod zt-order zt-user; do
-  ssh "$h" "cd ~/zt-event-gateway && git pull --ff-only origin $BR"
-done
-ssh zt-gateway 'cd ~/zt-event-gateway && docker compose up -d --force-recreate gateway'
+git pull --ff-only origin "$BR"
+docker compose up -d --force-recreate gateway
 ```
 
 跑 20k 時，臨時把 `workerCount` 改 100、跑完改回 10，不要常駐 100（會搶其他實驗的 baseline）。
@@ -287,6 +345,7 @@ case "$BR" in
   main)                  PROBE=probe-baseline.sh ;;
   feat/Linkerd1)         PROBE=probe-linkerd.sh ;;
   feat/spiffe-keycloak)  PROBE=probe-keycloak-spiffe.sh ;;  # §6.1 cherry-pick 後才有
+  feat/vault-pki)        PROBE=probe-vault-pki.sh ;;        # Vault PKI mTLS 攻擊面（憑證偽造 / 無 cert 直連 / role 越權簽發）
   *)                     echo "no probe for $BR"; exit 1 ;;
 esac
 
@@ -310,16 +369,27 @@ python3 scripts/security/aggregate-security.py \
 
 ---
 
-## 4. 無 LSVID vs 有 LSVID 容量比較
+## 4. 無憑證鏈 vs 有憑證鏈 容量比較
 
-> **僅 `feat/spiffe-keycloak`**。其他 branch 沒有 LSVID 編解碼路徑，量到的數值不具意義。
+> **適用 `feat/spiffe-keycloak` 與 `feat/vault-pki`**；`main` / `feat/Linkerd1` 沒有憑證鏈路徑，量到的數值不具意義。
+>
+> 兩個 branch 量的「憑證鏈」不同，但實驗方法一致（OFF vs ON 容量上限比較）：
+> - **`feat/spiffe-keycloak`**：OFF/ON = `LSVID_ENABLED=0/1`，量 LSVID nested token 的容量代價。
+> - **`feat/vault-pki`**：OFF/ON = mTLS 關/開（`SPIFFE_MTLS_ENABLED=0/1`，憑證仍由 Vault 簽發），量 Vault X.509 mTLS 握手 + 驗章的容量代價。下面 §4.3 的 `LSVID_ENABLED` 在 vault-pki 上改用 `SPIFFE_MTLS_ENABLED`。
 
 ### 4.1 必要前置
 
+共通：`anser-gateway/env` 的 `gateway.workerCount = 10`（同 §2.1）。
+
+**`feat/spiffe-keycloak`：**
 1. 把 SPIFFE/SPIRE 與 LSVID 編解碼層復活（§6.1）
-2. `anser-gateway/env` 的 `gateway.workerCount = 10`（同 §2.1）
-3. 確認 SPIRE agent socket（在 gateway / order / prod / user 容器內）正常 issue SVID
-4. Smoke 測一張帶 LSVID 的訂單，確認 `spiffe_path` 在 RabbitMQ envelope 上有完整鏈
+2. 確認 SPIRE agent socket（在 gateway / order / prod / user 容器內）正常 issue SVID
+3. §1.4.3 全綠；Smoke 測一張帶 LSVID 的訂單，確認 `spiffe_path` 在 RabbitMQ envelope 上有完整鏈
+
+**`feat/vault-pki`：**
+1. §1.4.4 全綠（Vault PKI CA、三台 vault-agent 都換到憑證、creds 已分發、`VAULT_ADDR` 指向 gateway）
+2. 確認三台 `/vault/out/tls.crt|key|ca.crt` 都在且未過期（憑證輪換正常）
+3. Smoke 一張單，確認 worker→下游的 VaultMtls mTLS 成功（Saga Step 4 完成）
 
 ### 4.2 量什麼
 
@@ -335,15 +405,20 @@ python3 scripts/security/aggregate-security.py \
 ### 4.3 跑法
 
 ```bash
-# 4.3.1 OFF 路徑
-ssh zt-gateway 'cd ~/zt-event-gateway && LSVID_ENABLED=0 docker compose up -d --force-recreate'
+# OFF/ON 切換的 env 變數依 branch 不同：
+#   feat/spiffe-keycloak → OFF=LSVID_ENABLED=0 / ON=LSVID_ENABLED=1
+#   feat/vault-pki       → OFF=SPIFFE_MTLS_ENABLED=0 / ON=SPIFFE_MTLS_ENABLED=1（憑證仍由 Vault 簽發）
+TOGGLE=LSVID_ENABLED          # vault-pki 時改成 SPIFFE_MTLS_ENABLED
+
+# 4.3.1 OFF 路徑（gateway = 本機）
+( cd /root/zt-event-gateway && env "$TOGGLE=0" docker compose up -d --force-recreate )
 # 走 §1 通用 preflight + smoke
 OUT=artifacts/lsvid-off-$(date +%Y%m%d-%H%M%S)
 SCALES="5000 10000 20000 30000 50000" ROUNDS="warm" \
   bash scripts/experiments/run-dualmode-distributed.sh "$OUT"
 
-# 4.3.2 ON 路徑
-ssh zt-gateway 'cd ~/zt-event-gateway && LSVID_ENABLED=1 docker compose up -d --force-recreate'
+# 4.3.2 ON 路徑（gateway = 本機）
+( cd /root/zt-event-gateway && env "$TOGGLE=1" docker compose up -d --force-recreate )
 # 重新 §1 preflight
 OUT=artifacts/lsvid-on-$(date +%Y%m%d-%H%M%S)
 SCALES="5000 10000 20000 30000 50000" ROUNDS="warm" \
@@ -377,9 +452,11 @@ python3 scripts/experiments/compare-linkerd-vs-dualmode.py \
 
 ---
 
-## 5. 巢狀 Token 成長大小與成長比
+## 5. 巢狀憑證成長大小與成長比
 
-> **僅 `feat/spiffe-keycloak`**。
+> **適用 `feat/spiffe-keycloak` 與 `feat/vault-pki`**。
+> - **`feat/spiffe-keycloak`**：量 Saga 每跳追加 LSVID nested token 後的 `spiffe_path` / envelope 大小成長。
+> - **`feat/vault-pki`**：LSVID 不適用；改量每跳 mTLS 攜帶的 Vault 憑證鏈大小（leaf + issuing CA chain，從 `/vault/out/tls.crt` 與 handshake 量）與 envelope 中 `spiffe_path` 的身份標記成長。量法（§5.2）的 hook 點相同，只是量的欄位換成憑證鏈位元組數。
 
 ### 5.1 量什麼
 
@@ -484,3 +561,37 @@ f22f7a3 feat(experiments): Keycloak token minting + drain 180s + bash 3.2 compat
 - **同一份手冊跨所有 branch 通用**。本檔在 `main` 與所有 feature branch 上應該維持同步（必要時 cherry-pick）；不要在某個 branch 上分岔。
 - **每次跑實驗 §0 都要重走**。即使 5 分鐘前才剛跑過另一輪，也要重看 branch / commit / 配置是否還對。
 - **每次切換 branch 都要 §1 重 smoke**。compose 重起後 Saga 第一張單常常會慢；smoke 不過絕對不要進 §2 §3 §4 §5。
+
+### 6.4 拆分 repo 後的部署模型（所有 branch 共用）
+
+三個服務已從 `zt-event-gateway/Services/*_service` 拆成獨立 GitHub repo，部署在各服務 host 的獨立路徑（見 §0.0）。部署只做 `git clone/checkout`，啟動由各 repo 自己的 `docker compose up -d`。
+
+```
+zt-gateway (10.1.1.209，本機)  /root/zt-event-gateway        ← gateway repo（仍含 Services/，但服務 host 不再用它）
+zt-order   (10.1.1.210)        /root/Order-Service
+zt-prod    (10.1.1.207)        /root/Production-Service
+zt-user    (10.1.1.214)        /root/User-Service
+```
+
+**vault-pki 專屬：`docker/vault-pki/` 已 vendor 進各服務 repo**（`agent/<svc>.hcl` + `init-pki.sh`），compose 改用本地相對路徑、不再依賴上層 `../../docker/vault-pki`。creds 仍是執行期產物，分發流程：
+
+```bash
+# 1) 在 gateway 產生所有服務的 AppRole creds（Vault 必須先 up）
+( cd /root/zt-event-gateway && docker exec zt-vault sh -c \
+   'VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root sh /vault/init-pki.sh' )
+# init-pki.sh 寫出 creds/<svc>/{role_id,secret_id}
+
+# 2) 把每個服務那份 creds 送到對應 host（只送自己那份，不要整包散出去）
+GW_CREDS=/root/zt-event-gateway/docker/vault-pki/creds
+scp -r "$GW_CREDS/order-svc"      zt-order:/root/Order-Service/docker/vault-pki/creds/
+scp -r "$GW_CREDS/production-svc" zt-prod:/root/Production-Service/docker/vault-pki/creds/
+scp -r "$GW_CREDS/user-svc"       zt-user:/root/User-Service/docker/vault-pki/creds/
+
+# 3) 各服務 host 設定跨主機 VAULT_ADDR 後起 compose
+for hp in "zt-order:/root/Order-Service" "zt-prod:/root/Production-Service" "zt-user:/root/User-Service"; do
+  h=${hp%%:*}; d=${hp##*:}
+  ssh "$h" "cd $d && VAULT_ADDR=http://10.1.1.209:8200 docker compose up -d"
+done
+```
+
+> creds（role_id/secret_id）是機密：只送對應 host、`chmod 600`，**不要 commit 進任何 repo**（各服務 repo 的 `docker/vault-pki/creds/` 應在 `.gitignore`）。AppRole `secret_id_ttl=0`（不過期），如需輪替重跑 init-pki 再重新分發。
