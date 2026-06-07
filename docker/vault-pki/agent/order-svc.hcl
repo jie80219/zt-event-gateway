@@ -16,14 +16,20 @@ auto_auth {
   }
 }
 
-# Issue this service's X.509 identity (SPIFFE-style URI SAN) and renew before
-# expiry. cert+CA → tls.crt, private key → tls.key (kept in sync per issuance).
+# Issue X.509 identity. Render cert+CA+key into ONE template (bundle.pem) and
+# split into tls.crt/tls.key in the command hook. The split is guarded on the
+# bundle containing a PRIVATE KEY block — consul-template's view cache drops
+# .Key on token-renewal re-renders, so cache-hit renders write a bundle with
+# no key block; we skip the split then, preserving the last fresh issue.
 template {
-  destination = "/vault/out/tls.crt"
+  destination = "/vault/out/bundle.pem"
+  perms       = "0600"
+  command     = "sh -c \"grep -q 'PRIVATE KEY' /vault/out/bundle.pem && awk -v c=/vault/out/tls.crt -v k=/vault/out/tls.key 'BEGIN{m=c} /PRIVATE KEY/{m=k} {print > m}' /vault/out/bundle.pem && chmod 0644 /vault/out/tls.crt && chmod 0600 /vault/out/tls.key || true\""
   contents    = <<-EOT
   {{- with pkiCert "pki/issue/order-svc" "common_name=order-service.zt.local" "uri_sans=spiffe://zt.local/order-service" "ttl=24h" -}}
-  {{ .Cert }}{{ .CA }}
-  {{ .Key | writeToFile "/vault/out/tls.key" "" "" "0600" }}
+  {{ .Cert }}
+  {{ .CA }}
+  {{ .Key }}
   {{- end -}}
   EOT
 }
