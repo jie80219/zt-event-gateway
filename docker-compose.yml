@@ -92,6 +92,37 @@ services:
     networks:
       - anser_project_network
 
+  keycloak-watcher:
+    build:
+      context: .
+      dockerfile: docker/php-openswoole/Dockerfile
+    container_name: zt-keycloak-watcher
+    profiles: ["keycloak", "all"]
+    command: ["php", "bin/keycloak-watcher.php"]
+    environment:
+      KEYCLOAK_ENABLED: "1"
+      KEYCLOAK_ISSUER: "http://keycloak:8080/realms/zt"
+      KEYCLOAK_CLIENT_ID: "gateway"
+      KEYCLOAK_CLIENT_SECRET: "gateway-dev-secret"
+      KEYCLOAK_SHM_DIR: "/tmp/keycloak-shared"
+      KEYCLOAK_TOKEN_REFRESH_SKEW: "30"
+      KEYCLOAK_JWKS_REFRESH_INTERVAL: "300"
+      KEYCLOAK_WATCHER_HEALTH_ADDR: "0.0.0.0:9901"
+    volumes:
+      - keycloak-shared:/tmp/keycloak-shared
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "meta=/tmp/keycloak-shared/meta.json; [ -f $$meta ] && grep -q '\"token_state\":\"ready\"' $$meta && grep -q '\"jwks_state\":\"ready\"' $$meta && now=$$(date +%s) && upd=$$(grep -oE '\"updated_at\":[[:space:]]*[0-9]+' $$meta | grep -oE '[0-9]+') && [ -n \"$$upd\" ] && [ $$((now - upd)) -lt 900 ]"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    networks:
+      - anser_project_network
+
   # ── SPIFFE / SPIRE ──────────────────────────────────────────────
 
   spire-server:
@@ -182,6 +213,63 @@ services:
 
   # ── Application (OpenSwoole) ────────────────────────────────────
 
+  spiffe-watcher:
+    pid: "service:spire-agent"
+    build:
+      context: .
+      dockerfile: docker/php-openswoole/Dockerfile
+    container_name: zt-spiffe-watcher
+    command: ["php", "bin/spiffe-watcher.php"]
+    # ── Hardening (Paper-5 L1 + L2 findings) ──────────────────────────
+    # no-new-privileges: blocks setuid → root escalation in LD_PRELOAD
+    #                    attacks against suid binaries.
+    # cap_drop ALL:      watcher only needs to read SPIRE socket + write
+    #                    to the shared volume; no Linux caps required.
+    # read_only + tmpfs: /tmp is a noexec tmpfs so dropped-in shared
+    #                    libraries (e.g. via `docker cp evil.so`) cannot
+    #                    be dlopen'd via LD_PRELOAD. The /tmp/spiffe-*
+    #                    volume mounts below shadow this tmpfs at their
+    #                    specific paths and remain fully read-write.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+      - /run:size=8m
+    environment:
+      SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
+      SPIFFE_PEM_DIR: "/tmp/spiffe-certs"
+      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
+      SPIFFE_WATCHER_HEALTH_ADDR: "0.0.0.0:9901"
+      # Expose the same staleness threshold as gateway/worker so in-process
+      # logs and the healthcheck below share one tunable.
+      SPIFFE_STALE_THRESHOLD_SECS: "700"
+    volumes:
+      - spire-agent-sockets:/run/spire/sockets:ro
+      - spiffe-certs:/tmp/spiffe-certs
+      - spiffe-shared:/tmp/spiffe-shared
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+      workload-registrar:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      # Staleness-based liveness: meta.json must exist, x509_state must be
+      # "ready", AND updated_at must be within 700s of now. If the watcher's
+      # gRPC stream wedges silently, updated_at stops advancing and Docker
+      # restarts the container (matched to SVID TTL=600s — agent renews at
+      # ~300s, so >700s without an update means something is wrong).
+      test: ["CMD-SHELL", "meta=/tmp/spiffe-shared/meta.json; [ -f $$meta ] && grep -q '\"x509_state\":\"ready\"' $$meta && now=$$(date +%s) && upd=$$(grep -oE '\"updated_at\":[[:space:]]*[0-9]+' $$meta | grep -oE '[0-9]+') && [ -n \"$$upd\" ] && [ $$((now - upd)) -lt 700 ]"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    networks:
+      - anser_project_network
+
   gateway:
     pid: "service:spire-agent"
     build:
@@ -202,8 +290,13 @@ services:
       SPIFFE_ID: "spiffe://zt.local/php-gateway"
       SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
       SPIFFE_PEM_DIR: "/tmp/spiffe-certs"
+      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
       WORKER_SPIFFE_ID: "spiffe://zt.local/php-worker"
       SPIFFE_TRUST_DOMAIN: "zt.local"
+      # Tightened from default 7200s — must stay > SVID renewal interval
+      # (~300s at TTL=600) + slack, but low enough to surface wedged
+      # watcher quickly in logs.
+      SPIFFE_STALE_THRESHOLD_SECS: "700"
       PERF_METRIC_ENABLED: "${PERF_METRIC_ENABLED:-0}"
       # AMQP message persistence — default 0 (transient, latency-optimised).
       # Set AMQP_PERSISTENT=1 to write every message to disk; queues remain
@@ -219,6 +312,8 @@ services:
       KEYCLOAK_ISSUER: "${KEYCLOAK_ISSUER:-http://keycloak:8080/realms/zt}"
       KEYCLOAK_CLIENT_ID: "${KEYCLOAK_CLIENT_ID:-gateway}"
       KEYCLOAK_CLIENT_SECRET: "${KEYCLOAK_CLIENT_SECRET:-gateway-dev-secret}"
+      KEYCLOAK_SHM_DIR: "${KEYCLOAK_SHM_DIR:-/tmp/keycloak-shared}"
+      KEYCLOAK_STALE_THRESHOLD_SECS: "${KEYCLOAK_STALE_THRESHOLD_SECS:-900}"
       # ── Keycloak ingress JWT (north-south validation) ──
       KEYCLOAK_INGRESS_ENABLED: "${KEYCLOAK_INGRESS_ENABLED:-1}"
       KEYCLOAK_INGRESS_AUDIENCE: "${KEYCLOAK_INGRESS_AUDIENCE:-gateway}"
@@ -234,6 +329,11 @@ services:
     volumes:
       - spire-agent-sockets:/run/spire/sockets:ro
       - spiffe-certs:/tmp/spiffe-certs:ro
+      - spiffe-shared:/tmp/spiffe-shared:ro
+      # Read-only access to the keycloak-watcher SHM. Volume is shared
+      # (created at compose level); when the keycloak profile is not active,
+      # the directory is empty and KeycloakBootstrap falls back gracefully.
+      - keycloak-shared:/tmp/keycloak-shared:ro
     ports:
       - "8080:8080"
     extra_hosts:
@@ -244,6 +344,8 @@ services:
       spire-agent:
         condition: service_healthy
       eventstoredb:
+        condition: service_healthy
+      spiffe-watcher:
         condition: service_healthy
     networks:
       - anser_project_network
@@ -269,8 +371,10 @@ services:
       SPIFFE_ID: "spiffe://zt.local/php-worker"
       SPIFFE_ENDPOINT_SOCKET: "unix:/run/spire/sockets/agent.sock"
       SPIFFE_PEM_DIR: "/tmp/spiffe-certs"
+      SPIFFE_SHM_DIR: "/tmp/spiffe-shared"
       DOWNSTREAM_SPIFFE_ID: "spiffe://zt.local/php-worker"
       SPIFFE_TRUST_DOMAIN: "zt.local"
+      SPIFFE_STALE_THRESHOLD_SECS: "700"
       PERF_METRIC_ENABLED: "${PERF_METRIC_ENABLED:-0}"
       # AMQP message persistence — see comment under `gateway` service.
       AMQP_PERSISTENT: "${AMQP_PERSISTENT:-0}"
@@ -295,6 +399,8 @@ services:
       KEYCLOAK_ISSUER: "${KEYCLOAK_ISSUER:-http://keycloak:8080/realms/zt}"
       KEYCLOAK_CLIENT_ID: "${KEYCLOAK_WORKER_CLIENT_ID:-worker}"
       KEYCLOAK_CLIENT_SECRET: "${KEYCLOAK_WORKER_CLIENT_SECRET:-worker-dev-secret}"
+      KEYCLOAK_SHM_DIR: "${KEYCLOAK_SHM_DIR:-/tmp/keycloak-shared}"
+      KEYCLOAK_STALE_THRESHOLD_SECS: "${KEYCLOAK_STALE_THRESHOLD_SECS:-900}"
       KEYCLOAK_AUDIENCE_ORDER: "${KEYCLOAK_AUDIENCE_ORDER:-order-service}"
       KEYCLOAK_AUDIENCE_PRODUCTION: "${KEYCLOAK_AUDIENCE_PRODUCTION:-production-service}"
       KEYCLOAK_AUDIENCE_USER: "${KEYCLOAK_AUDIENCE_USER:-user-service}"
@@ -310,6 +416,8 @@ services:
     volumes:
       - spire-agent-sockets:/run/spire/sockets:ro
       - spiffe-certs:/tmp/spiffe-certs:ro
+      - spiffe-shared:/tmp/spiffe-shared:ro
+      - keycloak-shared:/tmp/keycloak-shared:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -318,6 +426,8 @@ services:
       spire-agent:
         condition: service_healthy
       eventstoredb:
+        condition: service_healthy
+      spiffe-watcher:
         condition: service_healthy
     networks:
       - anser_project_network
@@ -330,7 +440,9 @@ volumes:
   spire-server-data:
   spire-agent-data:
   spiffe-certs:
+  spiffe-shared:
   keycloak_db_data:
+  keycloak-shared:
 
 networks:
   anser_project_network:

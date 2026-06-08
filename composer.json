@@ -65,6 +65,8 @@
     "test:unit": "vendor/bin/phpunit -c phpunit.xml",
     "test:failure-modes": "bash scripts/e2e-failure-modes.sh",
     "spiffe:e2e": "bash spiffe/e2e/run-e2e.sh",
+    "spiffe:watch": "php bin/spiffe-watcher.php",
+    "keycloak:watch": "php bin/keycloak-watcher.php",
     "gateway:e2e": "bash scripts/e2e-gateway.sh",
     "arch:e2e": "bash scripts/e2e-full-architecture.sh",
     "experiment": "bash scripts/collect-experiment-data.sh",

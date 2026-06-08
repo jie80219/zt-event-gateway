@@ -100,10 +100,10 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
         fwrite(STDERR, sprintf("[gateway] service registration failed: %s\n", $e->getMessage()));
     }
 
-    // ── 2. SPIFFE bootstrap (direct Workload API) ────────────────
-    //   Opens an X509Source against the SPIRE Agent's UDS endpoint.
-    //   The source keeps the SVID fresh via the FetchX509SVID server
-    //   stream — no SHM, no LSVID, no nested signature chain.
+    // ── 2. SPIFFE bootstrap (SHM via spiffe-watcher daemon) ──────
+    //   Reads SVID material from /tmp/spiffe-shared populated by
+    //   bin/spiffe-watcher.php. One gRPC stream per host instead of
+    //   one per PHP process — amortises FetchX509SVID cost.
     $spiffeEnabled = $env('SPIFFE_ENABLED', '1') !== '0';
     $downstreamSpiffeId = $env('WORKER_SPIFFE_ID', 'spiffe://zt.local/php-worker');
     GatewaySpiffeState::setSpiffeId($spiffeEnabled ? $env('SPIFFE_ID', '') : '');
@@ -112,10 +112,10 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
     if (!$spiffeEnabled) {
         fwrite(STDOUT, "[gateway] SPIFFE disabled via SPIFFE_ENABLED=0 — skipping bootstrap\n");
     } else {
-        $socket = $env('SPIFFE_ENDPOINT_SOCKET', 'unix:/tmp/spire-agent/public/api.sock');
+        $shmDir = $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared');
         $awaitTimeout = (float) $env('SPIFFE_AWAIT_TIMEOUT', '30');
         try {
-            $boot = SpiffeBootstrap::fromUds($socket, [
+            $boot = SpiffeBootstrap::fromShm($shmDir, [
                 'trust_domain'  => $env('SPIFFE_TRUST_DOMAIN', 'zt.local'),
                 'await_timeout' => $awaitTimeout,
                 'spiffe_id'     => $env('SPIFFE_ID', ''),
@@ -124,43 +124,31 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
             $workerState->spiffe = $boot;
             $primary = $boot->primary();
             if ($primary === null) {
-                throw new \RuntimeException('X509Source ready but primary SVID unavailable');
+                throw new \RuntimeException('SHM ready but primary SVID unavailable');
             }
 
-            GatewaySpiffeState::setX509Source($boot->source());
             GatewaySpiffeState::setSpiffeId((string) $primary['spiffe_id']);
 
             fwrite(STDOUT, sprintf(
-                "[gateway] SPIFFE bootstrap OK (iss=%s, aud=%s, socket=%s)\n",
+                "[gateway] SPIFFE bootstrap OK via SHM (iss=%s, aud=%s, shm=%s, version=%d)\n",
                 $primary['spiffe_id'],
                 $downstreamSpiffeId,
-                $socket,
+                $shmDir,
+                $boot->version(),
             ));
-
-            $boot->source()->onRotated(static function () use ($boot, $workerId) {
-                $primary = $boot->primary();
-                if ($primary === null) {
-                    return;
-                }
-                GatewaySpiffeState::setSpiffeId((string) $primary['spiffe_id']);
-                fwrite(STDOUT, sprintf(
-                    "[gateway] Worker #%d SVID rotated (iss=%s)\n",
-                    $workerId,
-                    $primary['spiffe_id'],
-                ));
-            });
         } catch (\Throwable $e) {
             fwrite(STDERR, sprintf(
-                "[gateway] SPIFFE bootstrap FAILED (socket=%s): %s\n",
-                $env('SPIFFE_ENDPOINT_SOCKET', 'unix:/tmp/spire-agent/public/api.sock'),
+                "[gateway] SPIFFE bootstrap FAILED (shm=%s): %s\n",
+                $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared'),
                 $e->getMessage(),
             ));
         }
     }
 
-    // ── 3. Keycloak bootstrap (direct OIDC token + JWKS fetch) ────
-    //   No SHM cache — each refresh hits Keycloak directly. This is
-    //   the naïve baseline for the SPIFFE+KC stack used in thesis.
+    // ── 3. Keycloak bootstrap (SHM-backed read-only) ──────────────
+    //   Reads token + JWKS material from /tmp/keycloak-shared written
+    //   by bin/keycloak-watcher.php. Eliminates per-process HTTPS
+    //   handshake + JWKS fetch under cold-start load.
     $keycloakEnabled = $env('KEYCLOAK_ENABLED', '0') !== '0';
     GatewayKeycloakState::setEnabled($keycloakEnabled);
 
@@ -175,10 +163,11 @@ $server->on('workerStart', function (Server $server, int $workerId) use ($env, $
             'KEYCLOAK_CLIENT_ID'          => $env('KEYCLOAK_CLIENT_ID', ''),
             'KEYCLOAK_CLIENT_SECRET'      => $env('KEYCLOAK_CLIENT_SECRET', ''),
             'KEYCLOAK_TOKEN_REFRESH_SKEW' => $env('KEYCLOAK_TOKEN_REFRESH_SKEW', '30'),
+            'KEYCLOAK_SHM_DIR'            => $env('KEYCLOAK_SHM_DIR', '/tmp/keycloak-shared'),
         ];
 
         try {
-            $kcState = KeycloakBootstrap::fromEnv($kcEnvBag);
+            $kcState = KeycloakBootstrap::fromEnv($kcEnvBag, writable: false);
 
             GatewayKeycloakState::setTokenProvider($kcState->tokenProvider);
             GatewayKeycloakState::setClientId($kcState->clientId);

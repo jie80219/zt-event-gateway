@@ -4,21 +4,25 @@ declare(strict_types=1);
 
 namespace Keycloak;
 
+use Keycloak\SharedMemory\KeycloakTableReader;
+use Keycloak\SharedMemory\KeycloakTableStore;
+
 /**
- * In-process cache for this service's current Client Credentials token.
- * Each worker process owns its own cache — no cross-process sharing.
+ * Cross-process cache for this service's current Client Credentials token.
  */
 final class TokenCache
 {
-    /** @var array{access_token:string, token_type:string, expires_at:int, client_id:string, issuer:string, updated_at:int}|null */
-    private ?array $token = null;
+    public function __construct(
+        private readonly KeycloakTableReader $reader,
+        private readonly ?KeycloakTableStore $store = null,
+    ) {}
 
     /**
      * @return array{access_token:string, token_type:string, expires_at:int, client_id:string, issuer:string, updated_at:int}|null
      */
     public function read(): ?array
     {
-        return $this->token;
+        return $this->reader->readTokenPrimary();
     }
 
     /**
@@ -26,14 +30,19 @@ final class TokenCache
      */
     public function write(array $token): void
     {
-        $this->token = $token + ['updated_at' => time()];
+        if ($this->store === null) {
+            throw new \RuntimeException('TokenCache is read-only (no store configured)');
+        }
+        $this->store->publishToken($token);
+        $this->store->updateTokenState('ready');
     }
 
     public function needsRefresh(int $skewSeconds): bool
     {
-        if ($this->token === null) {
+        $token = $this->read();
+        if ($token === null) {
             return true;
         }
-        return ($this->token['expires_at'] - $skewSeconds) <= time();
+        return ($token['expires_at'] - $skewSeconds) <= time();
     }
 }

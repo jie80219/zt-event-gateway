@@ -64,7 +64,7 @@ services:
             - PHP_MAX_EXECUTION_TIME=300
             - PHP_POST_MAX_SIZE=2048M
             - PHP_UPLOAD_MAX_FILESIZE=2048M
-            # ── SPIFFE (no SHM / no LSVID on this branch) ──
+            # ── SPIFFE + SHM (host-side watcher; no LSVID) ──
             - SPIFFE_ID=spiffe://zt.local/user-service
         volumes:
             - './app:/app'

@@ -4,28 +4,76 @@ declare(strict_types=1);
 
 namespace Spiffe\TLS;
 
+use Spiffe\SharedMemory\SpiffeTableReader;
 use Spiffe\Source\X509Source;
+use Spiffe\SpiffeId;
+use Spiffe\X509Svid;
 
 /**
- * Central TLS context adapter — bridges SPIFFE credentials from the in-process
- * X509Source into the configuration formats required by each PHP network layer
- * (stream context, Guzzle, Workerman, cURL).
+ * Central TLS context adapter — bridges SPIFFE credentials from shared memory
+ * (or in-process Source) into the configuration formats required by each
+ * PHP network layer.
+ *
+ * ┌──────────────────────────────────────────────────────────────────────┐
+ * │                         SpiffeTlsContext                              │
+ * │                                                                      │
+ * │    Credential Source                 Output Adapters                  │
+ * │   ┌─────────────────┐                                               │
+ * │   │ SpiffeTableReader│──┐   ┌─▶ forStreamContext()  → PHP streams   │
+ * │   │ (shared files)   │  │   │                                        │
+ * │   └─────────────────┘  ├───┼─▶ forGuzzle()         → Guzzle opts   │
+ * │           OR           │   │                                        │
+ * │   ┌─────────────────┐  │   ├─▶ forWorkerman()      → Workerman ctx │
+ * │   │ X509Source       │──┘   │                                        │
+ * │   │ (coroutine)      │      └─▶ applyCurl()         → cURL handle  │
+ * │   └─────────────────┘                                               │
+ * │   ┌─────────────────┐                                               │
+ * │   │ TlsCredential   │  (current cached snapshot)                    │
+ * │   │ (PEM + files)    │                                               │
+ * │   └─────────────────┘                                               │
+ * └──────────────────────────────────────────────────────────────────────┘
  *
  * Auto-refresh: call refresh() to re-read from the source and swap temp
  * files atomically. The previous TlsCredential's temp files are cleaned up.
+ *
+ * Two construction modes:
+ *
+ *   // Worker process — reads from shared filesystem store
+ *   $ctx = SpiffeTlsContext::fromReader($reader);
+ *
+ *   // Coroutine context — reads directly from X509Source
+ *   $ctx = SpiffeTlsContext::fromSource($x509Source);
  */
 final class SpiffeTlsContext
 {
-    private X509Source $source;
+    private ?SpiffeTableReader $reader;
+    private ?X509Source $source;
     private ?TlsCredential $credential = null;
 
-    /** @var string|null If set, selects SVID by hint */
+    /** @var int Slot index for multi-SVID sources */
+    private int $slot;
+
+    /** @var string|null If set, selects SVID by hint instead of slot */
     private ?string $hint;
 
-    private function __construct(X509Source $source, ?string $hint = null)
-    {
+    private function __construct(
+        ?SpiffeTableReader $reader,
+        ?X509Source $source,
+        int $slot = 0,
+        ?string $hint = null,
+    ) {
+        $this->reader = $reader;
         $this->source = $source;
+        $this->slot = $slot;
         $this->hint = $hint;
+    }
+
+    /**
+     * Create from SpiffeTableReader (worker process, cross-process shared memory).
+     */
+    public static function fromReader(SpiffeTableReader $reader, int $slot = 0): self
+    {
+        return new self($reader, null, $slot);
     }
 
     /**
@@ -33,7 +81,7 @@ final class SpiffeTlsContext
      */
     public static function fromSource(X509Source $source): self
     {
-        return new self($source);
+        return new self(null, $source);
     }
 
     /**
@@ -81,6 +129,7 @@ final class SpiffeTlsContext
 
         $this->credential = $new;
 
+        // Clean up old credential's temp files
         if ($old !== null && $changed) {
             $old->cleanup();
         }
@@ -89,12 +138,20 @@ final class SpiffeTlsContext
     }
 
     /**
-     * Source-based contexts let X509Source manage its own cache, so we never
-     * appear stale from here — refresh() is driven by rotation callbacks.
+     * Check if the source has newer credentials than our cached snapshot.
      */
     public function isStale(): bool
     {
-        return $this->credential === null;
+        if ($this->credential === null) {
+            return true;
+        }
+
+        if ($this->reader !== null) {
+            return $this->reader->version() !== $this->credential->version();
+        }
+
+        // Source-based: always considered fresh (Source handles its own cache)
+        return false;
     }
 
     /**
@@ -115,11 +172,17 @@ final class SpiffeTlsContext
 
     // ══════════════════════════════════════════════════════════════════
     //  PHP stream_context — for fopen(), file_get_contents(), etc.
+    //  (Swow hooks PHP streams, so this is the primary SSL API)
     // ══════════════════════════════════════════════════════════════════
 
     /**
      * Options array for stream_context_create().
      *
+     * Usage:
+     *   $ctx = stream_context_create($spiffeTls->forStreamContext());
+     *   $data = file_get_contents('https://peer:8443/path', false, $ctx);
+     *
+     * @param bool $verifyPeer  Whether to verify the remote certificate
      * @return array{ssl: array<string, mixed>}
      */
     public function forStreamContext(bool $verifyPeer = true): array
@@ -133,9 +196,9 @@ final class SpiffeTlsContext
                 'local_pk'          => $files['key'],
                 'cafile'            => $files['ca'],
                 'verify_peer'       => $verifyPeer,
-                'verify_peer_name'  => false,
+                'verify_peer_name'  => false,  // SPIFFE uses URI SAN, not CN
                 'allow_self_signed' => false,
-                'capture_peer_cert' => true,
+                'capture_peer_cert' => true,    // for post-handshake SPIFFE ID extraction
             ],
         ];
     }
@@ -157,6 +220,12 @@ final class SpiffeTlsContext
     /**
      * Options array for GuzzleHttp\Client constructor or per-request options.
      *
+     * Usage:
+     *   $client = new \GuzzleHttp\Client($ctx->forGuzzle());
+     *   // or per-request:
+     *   $response = $client->get('/path', $ctx->forGuzzle());
+     *
+     * @param bool $verifyPeer  Whether to verify the remote certificate
      * @return array<string, mixed>
      */
     public function forGuzzle(bool $verifyPeer = true): array
@@ -203,6 +272,10 @@ final class SpiffeTlsContext
     /**
      * SSL context array for the Workerman\Worker constructor's second argument.
      *
+     * Usage:
+     *   $worker = new Worker('https://0.0.0.0:8443', $ctx->forWorkerman());
+     *
+     * @param bool $verifyPeer  Whether to verify client certs (mTLS)
      * @return array{ssl: array<string, mixed>}
      */
     public function forWorkerman(bool $verifyPeer = false): array
@@ -230,6 +303,8 @@ final class SpiffeTlsContext
 
     /**
      * Apply SPIFFE mTLS settings to a cURL handle.
+     *
+     * @param \CurlHandle $ch
      */
     public function applyCurl(\CurlHandle $ch, bool $verifyPeer = true): void
     {
@@ -254,16 +329,25 @@ final class SpiffeTlsContext
     //  Raw accessors
     // ══════════════════════════════════════════════════════════════════
 
+    /**
+     * Get the underlying TlsCredential snapshot (may be null before first refresh).
+     */
     public function credential(): ?TlsCredential
     {
         return $this->credential;
     }
 
+    /**
+     * The SPIFFE ID of the current credential.
+     */
     public function spiffeId(): string
     {
         return $this->current()->spiffeId();
     }
 
+    /**
+     * The trust domain of the current credential.
+     */
     public function trustDomain(): string
     {
         return $this->current()->trustDomain();
@@ -274,6 +358,41 @@ final class SpiffeTlsContext
     // ══════════════════════════════════════════════════════════════════
 
     private function readFromSource(): ?TlsCredential
+    {
+        // Mode 1: SpiffeTableReader (shared memory, cross-process)
+        if ($this->reader !== null) {
+            return $this->readFromReader();
+        }
+
+        // Mode 2: X509Source (in-process coroutine)
+        if ($this->source !== null) {
+            return $this->readFromX509Source();
+        }
+
+        return null;
+    }
+
+    private function readFromReader(): ?TlsCredential
+    {
+        $row = $this->hint !== null
+            ? $this->reader->readX509ByHint($this->hint)
+            : $this->reader->readX509Slot($this->slot);
+
+        if ($row === null) {
+            return null;
+        }
+
+        return new TlsCredential(
+            spiffeId:    $row['spiffe_id'],
+            trustDomain: $row['trust_domain'],
+            certPem:     $row['cert_pem'],
+            keyPem:      $row['key_pem'],
+            bundlePem:   $row['bundle_pem'],
+            version:     $this->reader->version(),
+        );
+    }
+
+    private function readFromX509Source(): ?TlsCredential
     {
         $svid = $this->hint !== null
             ? $this->source->svidByHint($this->hint)
@@ -289,7 +408,7 @@ final class SpiffeTlsContext
             certPem:     $svid->certChainPem(),
             keyPem:      $svid->privateKeyPem(),
             bundlePem:   $svid->bundlePem(),
-            version:     0,
+            version:     0, // Source-based has no seqlock version
         );
     }
 }

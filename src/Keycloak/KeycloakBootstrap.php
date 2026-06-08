@@ -4,20 +4,26 @@ declare(strict_types=1);
 
 namespace Keycloak;
 
+use Keycloak\SharedMemory\KeycloakTableReader;
+use Keycloak\SharedMemory\KeycloakTableSchema;
+use Keycloak\SharedMemory\KeycloakTableStore;
+
 /**
  * Bootstraps the Keycloak identity plane for a process (Gateway or Worker).
  *
- * Reads env, constructs KeycloakClient + TokenProvider + JwtValidator
- * + in-process JwksCache + TokenCache, wires them into their process-wide
- * registries, and returns the assembled state bag. No SHM watcher — each
- * worker fetches tokens and JWKS directly from Keycloak.
+ * Reads env, constructs KeycloakClient + TokenProvider + JwtValidator +
+ * JwksCache + TokenCache, wires them into their process-wide registries,
+ * and returns the assembled state bag.
+ *
+ * The watcher daemon (bin/keycloak-watcher.php) uses fromEnvForWatcher() to
+ * build the writer-capable caches.
  */
 final class KeycloakBootstrap
 {
     /**
      * @param array<string, string> $env  key → value (getenv-style bag)
      */
-    public static function fromEnv(array $env): KeycloakState
+    public static function fromEnv(array $env, bool $writable = false): KeycloakState
     {
         $enabled = ($env['KEYCLOAK_ENABLED'] ?? '1') !== '0';
         if (!$enabled) {
@@ -25,15 +31,26 @@ final class KeycloakBootstrap
         }
 
         $issuer       = self::requireEnv($env, 'KEYCLOAK_ISSUER');
+        // Optional overrides — treat empty string the same as unset so the
+        // watcher / gateway can pass `KEYCLOAK_TOKEN_URI=''` without breaking
+        // discovery from the issuer URL.
         $tokenUri     = self::optionalEnv($env, 'KEYCLOAK_TOKEN_URI', rtrim($issuer, '/') . '/protocol/openid-connect/token');
         $jwksUri      = self::optionalEnv($env, 'KEYCLOAK_JWKS_URI',  rtrim($issuer, '/') . '/protocol/openid-connect/certs');
         $clientId     = self::requireEnv($env, 'KEYCLOAK_CLIENT_ID');
         $clientSecret = self::requireEnv($env, 'KEYCLOAK_CLIENT_SECRET');
+        $shmDir       = self::optionalEnv($env, 'KEYCLOAK_SHM_DIR', KeycloakTableSchema::DEFAULT_BASE_DIR);
         $refreshSkew  = (int) ($env['KEYCLOAK_TOKEN_REFRESH_SKEW'] ?? '30');
         $realm        = self::realmFromIssuer($issuer);
 
-        $tokenCache = new TokenCache();
-        $jwksCache  = new JwksCache($realm, $jwksUri);
+        if ($writable) {
+            KeycloakTableSchema::createAll($shmDir);
+        }
+
+        $reader = new KeycloakTableReader($shmDir);
+        $store  = $writable ? new KeycloakTableStore($shmDir) : null;
+
+        $tokenCache = new TokenCache($reader, $store);
+        $jwksCache  = new JwksCache($realm, $reader, $store);
         $client     = new KeycloakClient($tokenUri, $jwksUri, $clientId, $clientSecret);
         $provider   = new TokenProvider($client, $tokenCache, $issuer, $refreshSkew);
         $validator  = new JwtValidator($jwksCache, $issuer);
@@ -46,11 +63,14 @@ final class KeycloakBootstrap
             issuer: $issuer,
             realm: $realm,
             clientId: $clientId,
+            shmDir: $shmDir,
             client: $client,
             tokenProvider: $provider,
             jwtValidator: $validator,
             tokenCache: $tokenCache,
             jwksCache: $jwksCache,
+            reader: $reader,
+            store: $store,
         );
     }
 

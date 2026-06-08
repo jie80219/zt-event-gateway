@@ -11,6 +11,7 @@ use SDPMlab\ZtEventGateway\QueueTopology;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeAudienceRegistry;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeBootstrap;
 use SDPMlab\ZtEventGateway\Spiffe\SpiffeMtlsRegistry;
+use Spiffe\TLS\SpiffeTlsContext;
 use Keycloak\AudienceRegistry as KeycloakAudienceRegistry;
 use Keycloak\KeycloakBootstrap;
 use SDPMlab\Anser\Service\ActionFilter;
@@ -43,11 +44,10 @@ try {
     $connection = new AMQPSocketConnection($host, $port, $user, $password);
     $channel = $connection->channel();
 
-    // ── SPIFFE bootstrap (direct Workload API) ─────────────────
-    //   This is the SPIFFE+KC naïve baseline — no LSVID, no SHM.
-    //   The X509Source opens a FetchX509SVID stream against the
-    //   SPIRE Agent's UDS endpoint and keeps the SVID always-fresh
-    //   in-process.
+    // ── SPIFFE bootstrap (SHM via spiffe-watcher daemon) ───────
+    //   Reads SVID material from /tmp/spiffe-shared populated by
+    //   bin/spiffe-watcher.php. Eliminates per-worker FetchX509SVID
+    //   gRPC stream — every PHP process just memcpys from SHM.
     $spiffeEnabled      = $env('SPIFFE_ENABLED', '1') !== '0';
     $spiffeBoot         = null;
     $downstreamAudience = $env('DOWNSTREAM_SPIFFE_ID', '');
@@ -55,8 +55,9 @@ try {
 
     if ($spiffeEnabled) {
         try {
-            $spiffeBoot = SpiffeBootstrap::fromUds(
-                $env('SPIFFE_ENDPOINT_SOCKET', 'unix:/tmp/spire-agent/public/api.sock'),
+            $shmDir = $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared');
+            $spiffeBoot = SpiffeBootstrap::fromShm(
+                $shmDir,
                 [
                     'trust_domain'  => $trustDomain,
                     'await_timeout' => (float) $env('SPIFFE_AWAIT_TIMEOUT', '30'),
@@ -66,24 +67,25 @@ try {
 
             $primary = $spiffeBoot->primary();
             if ($primary === null || empty($primary['key_pem']) || empty($primary['bundle_pem'])) {
-                throw new \RuntimeException('X509Source ready but primary SVID is empty or malformed');
+                throw new \RuntimeException('SHM ready but primary SVID is empty or malformed');
             }
 
             fwrite(STDOUT, sprintf(
-                "[worker] SPIFFE bootstrap OK (spiffe_id=%s, bundle_certs=%d, downstream=%s)\n",
+                "[worker] SPIFFE bootstrap OK via SHM (spiffe_id=%s, bundle_certs=%d, downstream=%s, version=%d)\n",
                 (string) $primary['spiffe_id'],
                 substr_count((string) $primary['bundle_pem'], 'BEGIN CERTIFICATE'),
                 $downstreamAudience !== '' ? $downstreamAudience : '(fallback to SPIFFE_ID)',
+                $spiffeBoot->version(),
             ));
 
             if ($env('SPIFFE_MTLS_ENABLED', '0') === '1') {
-                SpiffeMtlsRegistry::setSource($spiffeBoot->source());
-                fwrite(STDOUT, "[worker] SpiffeMtlsRegistry initialized with X509Source\n");
+                SpiffeMtlsRegistry::set(SpiffeTlsContext::fromReader($spiffeBoot->shmReader()));
+                fwrite(STDOUT, "[worker] SpiffeMtlsRegistry initialized from SHM reader\n");
             }
         } catch (\Throwable $e) {
             fwrite(STDERR, sprintf(
-                "[worker] SPIFFE bootstrap FAILED (socket=%s): %s\n",
-                $env('SPIFFE_ENDPOINT_SOCKET', 'unix:/tmp/spire-agent/public/api.sock'),
+                "[worker] SPIFFE bootstrap FAILED (shm=%s): %s\n",
+                $env('SPIFFE_SHM_DIR', '/tmp/spiffe-shared'),
                 $e->getMessage(),
             ));
             exit(1);
@@ -131,11 +133,10 @@ try {
         fwrite(STDOUT, "[worker] SpiffeAudienceRegistry skipped (SPIFFE_ENABLED=0)\n");
     }
 
-    // ── Keycloak wiring (direct OIDC, no SHM) ──────────────────
-    //   TokenProvider hits the Keycloak token endpoint and JwksCache
-    //   fetches the JWKS over HTTPS — no shared-memory caching layer
-    //   between processes. Each worker maintains its own in-process
-    //   token cache via TokenProvider's internal expiry tracking.
+    // ── Keycloak wiring (SHM-backed read-only) ─────────────────
+    //   TokenCache and JwksCache read from /tmp/keycloak-shared
+    //   written by bin/keycloak-watcher.php. Token + JWKS refresh
+    //   happens once per host (in the watcher), not per worker.
     $keycloakEnabled    = $env('KEYCLOAK_ENABLED', '0') !== '0';
     $tokenProvider      = null;
     $jwtValidator       = null;
@@ -151,8 +152,9 @@ try {
                 'KEYCLOAK_CLIENT_ID'          => $env('KEYCLOAK_CLIENT_ID', ''),
                 'KEYCLOAK_CLIENT_SECRET'      => $env('KEYCLOAK_CLIENT_SECRET', ''),
                 'KEYCLOAK_TOKEN_REFRESH_SKEW' => $env('KEYCLOAK_TOKEN_REFRESH_SKEW', '30'),
+                'KEYCLOAK_SHM_DIR'            => $env('KEYCLOAK_SHM_DIR', '/tmp/keycloak-shared'),
             ];
-            $kcState = KeycloakBootstrap::fromEnv($kcEnvBag);
+            $kcState = KeycloakBootstrap::fromEnv($kcEnvBag, writable: false);
             $tokenProvider = $kcState->tokenProvider;
             $jwtValidator  = $kcState->jwtValidator;
 
