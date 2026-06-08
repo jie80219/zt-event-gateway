@@ -429,7 +429,14 @@ final class SpiffeWorkloadWatcher
         });
 
         $this->x509Source->onError(function (\Throwable $e) {
-            $this->log("X509Source error: {$e->getMessage()}");
+            $this->log(sprintf(
+                "X509Source error: %s (%s @ %s:%d)\n  trace: %s",
+                $e->getMessage(),
+                $e::class,
+                $e->getFile(),
+                $e->getLine(),
+                preg_replace('/\s+/', ' ', $e->getTraceAsString()),
+            ));
             foreach ($this->onError as $cb) {
                 try {
                     $cb('x509', $e);
