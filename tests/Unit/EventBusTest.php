@@ -189,7 +189,6 @@ class EventBusTest extends TestCase
                 eventData: ['key' => 'value'],
                 exchange: null,
                 spiffePath: [],
-                priorLsvid: null,
             );
 
         $this->eventBus->publish('App\\Events\\TestEvent', ['key' => 'value']);

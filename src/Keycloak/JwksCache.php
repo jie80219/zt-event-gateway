@@ -4,54 +4,76 @@ declare(strict_types=1);
 
 namespace Keycloak;
 
-use Keycloak\SharedMemory\KeycloakTableReader;
-use Keycloak\SharedMemory\KeycloakTableStore;
-
 /**
- * Cross-process JWKS cache — readers decode public keys for JWT signature verification.
+ * In-process JWKS cache — fetches the JWKS document over HTTPS on first use
+ * and refreshes it on `kid` lookup misses. No cross-process sharing.
  */
 final class JwksCache
 {
+    /** Soft TTL before a forced refresh, in seconds. */
+    private const SOFT_TTL = 300;
+
+    private ?string $issuer = null;
+    /** @var list<array<string, mixed>>|null */
+    private ?array $keys = null;
+    private int $fetchedAt = 0;
+
     public function __construct(
         private readonly string $realm,
-        private readonly KeycloakTableReader $reader,
-        private readonly ?KeycloakTableStore $store = null,
+        private readonly string $jwksUri,
     ) {}
 
     /**
-     * Returns the parsed JWKS `keys` array, or null if the cache is empty.
-     *
      * @return list<array<string, mixed>>|null
      */
-    public function readKeys(): ?array
+    public function readKeys(bool $force = false): ?array
     {
-        $row = $this->reader->readJwks($this->realm);
-        if ($row === null) {
-            return null;
+        if ($force || $this->keys === null || (time() - $this->fetchedAt) > self::SOFT_TTL) {
+            $this->fetch();
         }
-        $decoded = json_decode($row['jwks_json'], true, 16);
-        if (!is_array($decoded) || !isset($decoded['keys']) || !is_array($decoded['keys'])) {
-            return null;
-        }
-        return $decoded['keys'];
+        return $this->keys;
     }
 
     public function readIssuer(): ?string
     {
-        return $this->reader->readJwks($this->realm)['issuer'] ?? null;
+        if ($this->issuer === null) {
+            $this->fetch();
+        }
+        return $this->issuer;
     }
 
-    public function write(string $issuer, string $jwksJson): void
+    public function realm(): string
     {
-        if ($this->store === null) {
-            throw new \RuntimeException('JwksCache is read-only (no store configured)');
-        }
-        $this->store->publishJwks([
-            $this->realm => [
-                'issuer'    => $issuer,
-                'jwks_json' => $jwksJson,
-            ],
+        return $this->realm;
+    }
+
+    private function fetch(): void
+    {
+        $ch = curl_init($this->jwksUri);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT        => 10,
+            CURLOPT_HTTPHEADER     => ['Accept: application/json'],
         ]);
-        $this->store->updateJwksState('ready');
+        $body = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err  = curl_error($ch);
+        curl_close($ch);
+
+        if (!is_string($body) || $code !== 200) {
+            throw new \RuntimeException(sprintf(
+                'JWKS fetch failed (uri=%s, http=%d, err=%s)',
+                $this->jwksUri,
+                (int) $code,
+                $err,
+            ));
+        }
+        $decoded = json_decode($body, true, 16);
+        if (!is_array($decoded) || !isset($decoded['keys']) || !is_array($decoded['keys'])) {
+            throw new \RuntimeException('JWKS document is missing the "keys" array');
+        }
+        $this->keys      = $decoded['keys'];
+        $this->fetchedAt = time();
     }
 }

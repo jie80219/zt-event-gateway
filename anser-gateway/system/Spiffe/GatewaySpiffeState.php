@@ -2,19 +2,19 @@
 
 namespace AnserGateway\Spiffe;
 
-use SDPMlab\LSVID\LSVIDSigner;
+use Spiffe\Source\X509Source;
 
 /**
  * Static registry holding per-worker SPIFFE state for the Gateway.
  *
- * Set once during OpenSwoole onWorkerStart (after SVID is fetched from
- * SHM / X509Source), read by Order Controller to mint LSVID L0 tokens
- * and populate the event envelope.
+ * Set once during OpenSwoole onWorkerStart (after X509Source is ready),
+ * read by controllers + the AMQP publisher to populate event envelopes
+ * with the gateway's SPIFFE identity.
  */
 final class GatewaySpiffeState
 {
     private static string $spiffeId = '';
-    private static ?LSVIDSigner $lsvidSigner = null;
+    private static ?X509Source $x509Source = null;
     private static string $downstreamSpiffeId = '';
 
     public static function setSpiffeId(string $id): void
@@ -27,14 +27,14 @@ final class GatewaySpiffeState
         return self::$spiffeId;
     }
 
-    public static function setLsvidSigner(?LSVIDSigner $signer): void
+    public static function setX509Source(?X509Source $source): void
     {
-        self::$lsvidSigner = $signer;
+        self::$x509Source = $source;
     }
 
-    public static function getLsvidSigner(): ?LSVIDSigner
+    public static function getX509Source(): ?X509Source
     {
-        return self::$lsvidSigner;
+        return self::$x509Source;
     }
 
     public static function setDownstreamSpiffeId(string $id): void

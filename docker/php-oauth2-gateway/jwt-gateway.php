@@ -100,7 +100,7 @@ function validate_jwt(string $token, string $key, string $iss, string $aud, ?str
         return null;
     }
     $now = time();
-    // 10s clock skew, same as the main LSVIDValidator.
+    // 10s clock skew tolerance.
     if (isset($payload['exp']) && $payload['exp'] < $now - 10) {
         $err = 'expired';
         return null;

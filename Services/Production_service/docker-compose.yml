@@ -64,10 +64,8 @@ services:
             - PHP_MAX_EXECUTION_TIME=300
             - PHP_POST_MAX_SIZE=2048M
             - PHP_UPLOAD_MAX_FILESIZE=2048M
-            # ── SPIFFE / LSVID ──
+            # ── SPIFFE (no SHM / no LSVID on this branch) ──
             - SPIFFE_ID=spiffe://zt.local/production-service
-            - SPIFFE_SHM_DIR=/certs
-            - LSVID_REQUIRED=0
         volumes:
             - './app:/app'
             # Bind the host's packages/ tree so vendor/jie80219/php-lsvid

@@ -97,9 +97,9 @@ final class RequestConsumerTest extends TestCase
     public function testProcessAcceptsEnvelopeWithoutSpiffeIdentityWhenMasterToggleOff(): void
     {
         // When SPIFFE_ENABLED=0 the worker constructs RequestConsumer with
-        // requireSpiffeIdentity=false. Envelopes lacking spiffe_id/path and
-        // carrying no LSVID should still publish successfully; the trust
-        // domain prefix check is intentionally bypassed.
+        // requireSpiffeIdentity=false. Envelopes lacking spiffe_id/path
+        // should still publish successfully; the trust domain prefix check
+        // is intentionally bypassed.
         $messageBus = $this->createMock(MessageBus::class);
         $messageBus->expects($this->once())
             ->method('publishEvent')
@@ -111,10 +111,8 @@ final class RequestConsumerTest extends TestCase
             );
 
         $consumer = new RequestConsumer(
-            $messageBus,
-            null,
-            false,
-            false,
+            messageBus: $messageBus,
+            requireSpiffeIdentity: false,
         );
 
         $consumer->process(new AMQPMessage(json_encode([

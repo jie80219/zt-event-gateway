@@ -3,7 +3,6 @@ namespace SDPMlab\ZtEventGateway;
 
 use SDPMlab\ZtEventGateway\MessageQueue\MessageBus;
 use SDPMlab\ZtEventGateway\EventStore\EventStoreDB;
-use SDPMlab\LSVID\LSVIDContext;
 use Keycloak\KeycloakTokenContext;
 
 class EventBus
@@ -138,12 +137,7 @@ class EventBus
     }
 
     /**
-     * Publish an event to the message bus with both SPIFFE/LSVID identity
-     * propagation and Keycloak service-account token propagation.
-     *
-     * Both identity layers travel together when their respective stacks
-     * are active; consumers downstream pick whichever they're configured
-     * to validate.
+     * Publish an event to the message bus with Keycloak token propagation.
      *
      * @param string $eventType  Fully-qualified event class name
      * @param array  $eventData  Event payload
@@ -160,13 +154,6 @@ class EventBus
     ): void {
         $routingKey = substr(strrchr($eventType, '\\'), 1);
 
-        // Pull the currently-handled inbound LSVID (if any). MessageBus will
-        // wrap it as the `nested` claim of the new level it signs, producing
-        // the L0 → L1 → L2 … nested chain.
-        $priorLsvid = LSVIDContext::current();
-
-        // Pull the currently-handled Keycloak token context (if any) so we
-        // can record the upstream caller in EventStore metadata.
         $kcCtx = KeycloakTokenContext::get();
 
         if ($this->eventStoreDB !== null) {
@@ -177,7 +164,6 @@ class EventBus
                 'metadata' => [
                     'spiffe_id'   => $this->messageBus->getSpiffeId(),
                     'spiffe_path' => $spiffePath,
-                    'lsvid_prior' => $priorLsvid,
                     'client_id'   => $this->messageBus->getClientId(),
                     'token_path'  => $tokenPath,
                     'caller'      => $kcCtx['client_id'] ?? null,
@@ -190,7 +176,6 @@ class EventBus
             eventData: $eventData,
             exchange: null,
             spiffePath: $spiffePath,
-            priorLsvid: $priorLsvid,
             tokenPath: $tokenPath,
         );
     }
