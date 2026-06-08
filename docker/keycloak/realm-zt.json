@@ -132,7 +132,7 @@
     {
       "clientId": "client-app",
       "name": "User-facing client (north-south caller)",
-      "description": "Used by load driver / external user agents. directAccessGrants enables ROPC so a user can exchange username+password for a JWT whose aud=gateway, accepted by the gateway ingress JwtValidator. serviceAccounts kept on for backwards compat with earlier ingress smoke tests.",
+      "description": "Load driver / external user-agent client. directAccessGrants enables ROPC for username+password->JWT (aud=gateway).",
       "enabled": true,
       "clientAuthenticatorType": "client-secret",
       "secret": "client-app-dev-secret",
