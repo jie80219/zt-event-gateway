@@ -91,6 +91,14 @@ final class OpenSwooleHttp2Transport implements Http2TransportInterface
         $this->write(Http2Frame::grpcHeaders($method, $streamId));
         $this->write(Http2Frame::grpcData($grpcPayload, $streamId, endStream: true));
 
+        // gRPC-over-HTTP/2 reassembly buffer. A single gRPC message
+        // ([1 flag][4 BE length][payload]) may span multiple DATA frames,
+        // and a single DATA frame may pack multiple gRPC messages. We
+        // accumulate raw DATA payloads here and emit complete messages
+        // (including the 5-byte gRPC header — the client layer strips it).
+        $buffer = '';
+        $stop = false;
+
         while (true) {
             $frame = $this->readFrame();
             if ($frame === null) {
@@ -137,18 +145,33 @@ final class OpenSwooleHttp2Transport implements Http2TransportInterface
                 continue;
             }
 
-            // DATA frame → deliver to callback
+            // DATA frame → buffer and emit complete gRPC messages
             if ($frame['type'] === Http2Frame::DATA && $frame['stream_id'] === $streamId) {
                 if (strlen($frame['payload']) > 0) {
                     $this->write(Http2Frame::windowUpdate(0, strlen($frame['payload'])));
                     $this->write(Http2Frame::windowUpdate($streamId, strlen($frame['payload'])));
+                    $buffer .= $frame['payload'];
                 }
 
-                $continue = $onFrame([
-                    'headers' => [],
-                    'data'    => $frame['payload'],
-                ]);
-                if ($continue === false) {
+                while (strlen($buffer) >= 5) {
+                    $msgLen = unpack('N', substr($buffer, 1, 4))[1];
+                    $frameLen = 5 + $msgLen;
+                    if (strlen($buffer) < $frameLen) {
+                        break; // wait for more frames
+                    }
+                    $message = substr($buffer, 0, $frameLen);
+                    $buffer = substr($buffer, $frameLen);
+
+                    $continue = $onFrame([
+                        'headers' => [],
+                        'data'    => $message,
+                    ]);
+                    if ($continue === false) {
+                        $stop = true;
+                        break;
+                    }
+                }
+                if ($stop) {
                     break;
                 }
             }

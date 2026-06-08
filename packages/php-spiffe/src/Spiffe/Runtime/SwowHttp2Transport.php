@@ -106,6 +106,12 @@ final class SwowHttp2Transport implements Http2TransportInterface
         $this->write(Http2Frame::grpcHeaders($method, $streamId));
         $this->write(Http2Frame::grpcData($grpcPayload, $streamId, endStream: true));
 
+        // gRPC-over-HTTP/2 reassembly buffer (see OpenSwooleHttp2Transport for
+        // the same rationale): a single gRPC message [1 flag][4 BE length][N]
+        // can span multiple HTTP/2 DATA frames; one frame can pack several.
+        $buffer = '';
+        $stop = false;
+
         // Read frames until end-of-stream
         while (true) {
             $frame = $this->readFrame();
@@ -144,19 +150,33 @@ final class SwowHttp2Transport implements Http2TransportInterface
                 continue;
             }
 
-            // DATA frame → deliver to callback
+            // DATA frame → buffer and emit complete gRPC messages
             if ($frame['type'] === Http2Frame::DATA && $frame['stream_id'] === $streamId) {
-                // Send WINDOW_UPDATE to prevent flow control stall
                 if (strlen($frame['payload']) > 0) {
                     $this->write(Http2Frame::windowUpdate(0, strlen($frame['payload'])));
                     $this->write(Http2Frame::windowUpdate($streamId, strlen($frame['payload'])));
+                    $buffer .= $frame['payload'];
                 }
 
-                $continue = $onFrame([
-                    'headers' => [],
-                    'data'    => $frame['payload'],
-                ]);
-                if ($continue === false) {
+                while (strlen($buffer) >= 5) {
+                    $msgLen = unpack('N', substr($buffer, 1, 4))[1];
+                    $frameLen = 5 + $msgLen;
+                    if (strlen($buffer) < $frameLen) {
+                        break;
+                    }
+                    $message = substr($buffer, 0, $frameLen);
+                    $buffer = substr($buffer, $frameLen);
+
+                    $continue = $onFrame([
+                        'headers' => [],
+                        'data'    => $message,
+                    ]);
+                    if ($continue === false) {
+                        $stop = true;
+                        break;
+                    }
+                }
+                if ($stop) {
                     break;
                 }
             }
