@@ -49,6 +49,17 @@ for dur in $FAULT_DURATIONS; do
     measure_recovery "kill-restart"        kill  "$PRODUCTION_SVC_CONTAINER" "$dur" pre ""           0
 done
 
+# F9/F10 — SPIRE identity-layer scenarios (thesis ch4 §身份層容錯).
+#   F9  identity-agent-pause   : pause SPIRE Agent → cached SVID must keep saga
+#                                 running (NIST SP 800-207 §7.3 continuous
+#                                 verification under disruption)
+#   F10 identity-server-restart: kill+start SPIRE Server → agent-side SVID cache
+#                                 must survive upstream outage (degraded mode)
+SPIRE_AGENT_CONTAINER="${SPIRE_AGENT_CONTAINER:-zt-spire-agent}"
+SPIRE_SERVER_CONTAINER="${SPIRE_SERVER_CONTAINER:-zt-spire-server}"
+measure_recovery "identity-agent-pause"    pause "$SPIRE_AGENT_CONTAINER"  30 pre "" 0
+measure_recovery "identity-server-restart" kill  "$SPIRE_SERVER_CONTAINER" 30 pre "" 0
+
 # Business-completeness gate: prove a clean order still completes at the end.
 log "final completeness check: one clean order must reach ✅ Saga Step 4"
 since_final="$(date -u +%Y-%m-%dT%H:%M:%S)"

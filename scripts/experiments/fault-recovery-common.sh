@@ -49,7 +49,11 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/api/health}"
 FAULT_DURATIONS="${FAULT_DURATIONS:-5 30}"
 PROBE_TIMEOUT="${PROBE_TIMEOUT:-120}"
 MID_MARKER_TIMEOUT="${MID_MARKER_TIMEOUT:-90}"
-ORDER_BODY="${ORDER_BODY:-{\"userKey\":\"1\",\"productList\":[{\"p_key\":1,\"amount\":1}],\"total\":100}}"
+# Default JSON body — set via if/then because `${VAR:-default-with-braces}`
+# breaks bash brace counting (the inner `}` closes the param expansion early).
+if [[ -z "${ORDER_BODY:-}" ]]; then
+    ORDER_BODY='{"userKey":"1","productList":[{"p_key":1,"amount":1}],"total":100}'
+fi
 
 CSV_PATH=""             # set by record_csv_init
 declare -a _PAUSED=()   # for cleanup
@@ -173,17 +177,19 @@ count_rollbacks_since() {                 # count_rollbacks_since <since>
 
 # Resolve a probe trace's [perf-saga-complete] worker ts= (epoch), or "" if none.
 # step1 carries traceId+orderId; complete carries only orderId — so we map
-# trace → orderId → completion ts.
+# trace → orderId → completion ts. `|| true` on every pipeline because grep
+# returns 1 when no match (saga still in flight) and `set -e + pipefail`
+# would otherwise kill the caller's `var=$(...)` assignment.
 saga_complete_ts_for_trace() {            # saga_complete_ts_for_trace <since> <trace>
     local since="$1" trace="$2" logs oid
     logs="$(worker_logs_since "$since")"
-    oid="$(grep -F "traceId=${trace}" <<<"$logs" \
+    oid="$({ grep -F "traceId=${trace}" <<<"$logs" \
             | grep -F '[perf-saga-step1]' \
-            | sed -n 's/.*orderId=\([^ ]*\).*/\1/p' | head -1)"
+            | sed -n 's/.*orderId=\([^ ]*\).*/\1/p' | head -1; } || true)"
     [[ -z "$oid" ]] && return 0
-    grep -F '[perf-saga-complete]' <<<"$logs" \
+    { grep -F '[perf-saga-complete]' <<<"$logs" \
         | grep -F "orderId=${oid}" \
-        | sed -n 's/.*ts=\([0-9.]*\).*/\1/p' | head -1
+        | sed -n 's/.*ts=\([0-9.]*\).*/\1/p' | head -1; } || true
 }
 
 # ── CSV ─────────────────────────────────────────────────────────────────────

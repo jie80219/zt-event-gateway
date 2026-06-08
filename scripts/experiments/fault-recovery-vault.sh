@@ -60,6 +60,16 @@ for dur in $FAULT_DURATIONS; do
     measure_recovery "kill-restart"        kill  "$PRODUCTION_SVC_CONTAINER" "$dur" pre ""           0
 done
 
+# F9/F10 — Vault identity-layer scenarios (thesis ch4 §身份層容錯).
+#   F9  identity-agent-pause   : pause worker-side vault-agent → cached secrets
+#                                 must keep saga running (NIST SP 800-207 §7.3)
+#   F10 identity-server-restart: kill+start Vault server → agent-side cache must
+#                                 survive upstream outage (degraded mode)
+VAULT_AGENT_WORKER_CONTAINER="${VAULT_AGENT_WORKER_CONTAINER:-zt-vault-agent-worker}"
+VAULT_SERVER_CONTAINER="${VAULT_SERVER_CONTAINER:-zt-vault}"
+measure_recovery "identity-agent-pause"    pause "$VAULT_AGENT_WORKER_CONTAINER" 30 pre "" 0
+measure_recovery "identity-server-restart" kill  "$VAULT_SERVER_CONTAINER"       30 pre "" 0
+
 # Business-completeness gate: prove a clean order still completes at the end.
 log "final completeness check: one clean order must reach ✅ Saga Step 4"
 since_final="$(date -u +%Y-%m-%dT%H:%M:%S)"
