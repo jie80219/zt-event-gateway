@@ -1,0 +1,728 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>論文審查意見 × 實驗數據比對報告</title>
+<style>
+  :root{
+    --bg:#fbfbfa; --fg:#1a1a18; --muted:#6b6b66; --line:#e3e3df; --card:#fff;
+    --ok:#1b7f4b; --ok-bg:#e8f5ee; --warn:#8a5a00; --warn-bg:#fdf3e0;
+    --bad:#a32b1c; --bad-bg:#fbeae7; --info:#1f5c9e; --info-bg:#e9f1fa;
+    --code:#f2f2ef;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#141414; --fg:#e8e8e4; --muted:#9a9a93; --line:#2e2e2c; --card:#1c1c1b;
+      --ok:#5cc98d; --ok-bg:#12301f; --warn:#e0a94a; --warn-bg:#302512;
+      --bad:#f08b7c; --bad-bg:#331a16; --info:#7cb3ea; --info-bg:#13253a;
+      --code:#232322;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#141414; --fg:#e8e8e4; --muted:#9a9a93; --line:#2e2e2c; --card:#1c1c1b;
+    --ok:#5cc98d; --ok-bg:#12301f; --warn:#e0a94a; --warn-bg:#302512;
+    --bad:#f08b7c; --bad-bg:#331a16; --info:#7cb3ea; --info-bg:#13253a;
+    --code:#232322;
+  }
+  :root[data-theme="light"]{
+    --bg:#fbfbfa; --fg:#1a1a18; --muted:#6b6b66; --line:#e3e3df; --card:#fff;
+    --ok:#1b7f4b; --ok-bg:#e8f5ee; --warn:#8a5a00; --warn-bg:#fdf3e0;
+    --bad:#a32b1c; --bad-bg:#fbeae7; --info:#1f5c9e; --info-bg:#e9f1fa;
+    --code:#f2f2ef;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,-apple-system,"Segoe UI",sans-serif;
+    line-height:1.75; font-size:16px;
+  }
+  .wrap{max-width:1080px; margin:0 auto; padding:48px 24px 96px}
+  h1{font-size:1.9rem; line-height:1.35; margin:0 0 8px; letter-spacing:-.01em}
+  h2{font-size:1.35rem; margin:56px 0 16px; padding-bottom:8px; border-bottom:2px solid var(--line)}
+  h3{font-size:1.08rem; margin:0 0 10px}
+  p{margin:0 0 14px}
+  .sub{color:var(--muted); margin:0 0 32px; font-size:.95rem}
+  code{background:var(--code); padding:1px 6px; border-radius:4px; font-size:.87em;
+       font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; word-break:break-all}
+  .banner{background:var(--warn-bg); border:1px solid var(--warn); border-left:4px solid var(--warn);
+          border-radius:8px; padding:16px 18px; margin:0 0 32px}
+  .banner strong{color:var(--warn)}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:10px;
+        padding:20px 22px; margin:0 0 18px}
+  .tag{display:inline-block; font-size:.72rem; font-weight:700; letter-spacing:.04em;
+       padding:3px 9px; border-radius:99px; vertical-align:middle; margin-left:8px; white-space:nowrap}
+  .t-ok{background:var(--ok-bg); color:var(--ok); border:1px solid var(--ok)}
+  .t-bad{background:var(--bad-bg); color:var(--bad); border:1px solid var(--bad)}
+  .t-warn{background:var(--warn-bg); color:var(--warn); border:1px solid var(--warn)}
+  .t-info{background:var(--info-bg); color:var(--info); border:1px solid var(--info)}
+  .lab{font-size:.75rem; font-weight:700; color:var(--muted); letter-spacing:.06em;
+       text-transform:uppercase; margin:16px 0 6px}
+  .tw{overflow-x:auto; margin:14px 0}
+  table{border-collapse:collapse; width:100%; font-size:.9rem; min-width:460px}
+  th,td{border:1px solid var(--line); padding:8px 11px; text-align:left; vertical-align:top}
+  th{background:var(--code); font-weight:700}
+  td.num{text-align:right; font-variant-numeric:tabular-nums;
+         font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .hl{background:var(--bad-bg); font-weight:700}
+  .hl-ok{background:var(--ok-bg)}
+  ul,ol{margin:0 0 14px; padding-left:22px}
+  li{margin-bottom:6px}
+  .src{font-size:.82rem; color:var(--muted); border-left:3px solid var(--line);
+       padding:2px 0 2px 12px; margin:10px 0}
+  .big{font-size:1.05rem; font-weight:700}
+  .toc{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 22px; margin:0 0 40px}
+  .toc ol{margin:0; padding-left:20px}
+  .toc a{color:var(--info); text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0; border-top:1px solid var(--line); margin:32px 0}
+  .foot{color:var(--muted); font-size:.85rem; margin-top:64px; padding-top:20px; border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>論文審查意見 × 實驗數據比對報告</h1>
+<p class="sub">
+  zt-event-gateway — 指導教授審查意見逐項查證<br>
+  分支 <code>feat/SPIFFE+KC+LS</code> ・ 產出日期 2026-07-17
+</p>
+
+<div class="banner">
+  <p style="margin:0 0 8px"><strong>⚠ 本報告的適用範圍，請先讀這段</strong></p>
+  <p style="margin:0 0 8px">
+    產出本報告時 Google Drive 連結器的授權已過期，<strong>論文全文無法讀取</strong>。
+    因此下列比對的基準是「<strong>教授審查意見中所引用的數字與敘述</strong>」，而非逐句核對整份論文。
+  </p>
+  <p style="margin:0">
+    這代表：<strong>凡「repo 原始數據是多少」的結論，證據力完整</strong>（可直接採用）；
+    <strong>凡「論文第 N 頁實際怎麼寫」的結論，屬於轉述</strong>，需在重新授權後複查。
+    需要複查的項目已於文中標記 <span class="tag t-info">待核對全文</span>。
+  </p>
+</div>
+
+<div class="toc">
+  <p class="lab" style="margin-top:0">重點結論（依重要性排序）</p>
+  <ol>
+    <li><a href="#p7">恢復時間爭議 — <strong>教授的方向判斷有誤</strong>，正文是對的、表 13 是錯的</a></li>
+    <li><a href="#p1">L 層編號混亂 — 根因是<strong>量測腳本的 off-by-one</strong> ＋ 兩套不同 harness</a></li>
+    <li><a href="#p5">拒絕率分母 — aggregator 有<strong>真實程式缺陷</strong>（skipped 被算進分母）</a></li>
+    <li><a href="#p6">對照組公平性 — <strong>有程式碼證據</strong>：容器設定與身份層拒絕被計為同一件事</a></li>
+    <li><a href="#e1">壓測設定不一致 — <strong>表 7–9 正確</strong>，正文把負載產生器誤植為 Gateway worker</a></li>
+    <li><a href="#p4">+34.9% 歸因 — 中介組（無 LSVID）<strong>數據已存在</strong>，可立即拆解</a></li>
+    <li><a href="#p2">CVE 數量／<a href="#p3">資料來源</a>／<a href="#p8">RQ 改寫 — 屬文字工程，照辦即可</a></a></li>
+  </ol>
+</div>
+
+<!-- ═══════════════════════ P7 ═══════════════════════ -->
+<h2 id="p7">1. 恢復時間三版本不一致<span class="tag t-bad">教授方向判斷有誤</span></h2>
+
+<div class="card">
+<h3>教授的意見</h3>
+<p>
+  正文／摘要寫 SPIFFE+KC+LSVID 中位數 0.137 秒、Vault PKI 0.123 秒、兩者相當；但表 13 的十筆數據算出來中位數是 0.669 秒。
+  教授據此推論：<em>「若表 13 才是正確資料，則 SPIFFE 架構的中位恢復時間約為 Vault 的 5.4 倍，必須重新分析成因。」</em>
+</p>
+
+<p class="lab">查證結果</p>
+<p class="big" style="color:var(--ok)">
+  ✓ 原始 log 證實：<strong>正文的 0.137／0.123 完全正確，圖 26 也正確。錯的是表 13。</strong>
+</p>
+<p>
+  我直接讀了兩個 stack 的原始 CSV 並重算統計量。SPIRE 十筆的中位數是 <strong>0.1365 → 0.137</strong>，
+  Vault 十筆的中位數是 <strong>0.123</strong>，與正文一字不差。圖 26 的 0.10–0.39 區間也正好是原始數據的全距。
+  <strong>「5.4 倍」的推論不成立 —— 不需要重新分析成因，只需要修正表 13。</strong>
+</p>
+
+<div class="src">
+  資料來源：<br>
+  <code>artifacts/fault-recovery-spire-20260609-223550/recovery_spire.csv</code><br>
+  <code>artifacts/fault-recovery-vault-20260609-231957/recovery_vault.csv</code>
+</div>
+
+<p class="lab">原始十筆 recovery_sec（依 CSV 順序）</p>
+<div class="tw">
+<table>
+  <thead><tr>
+    <th>場景</th><th>故障秒數</th>
+    <th style="text-align:right">SPIFFE+KC+LSVID</th>
+    <th style="text-align:right">Vault PKI</th>
+  </tr></thead>
+  <tbody>
+    <tr><td>step1-transient</td><td>5</td><td class="num">0.111</td><td class="num">0.106</td></tr>
+    <tr><td>comp-after-recovery</td><td>5</td><td class="num">0.138</td><td class="num">0.127</td></tr>
+    <tr><td>full-rollback</td><td>5</td><td class="num">0.127</td><td class="num">0.107</td></tr>
+    <tr><td>kill-restart</td><td>5</td><td class="num">0.371</td><td class="num">0.356</td></tr>
+    <tr><td>step1-transient</td><td>30</td><td class="num">0.103</td><td class="num">0.142</td></tr>
+    <tr><td>comp-after-recovery</td><td>30</td><td class="num">0.167</td><td class="num">0.119</td></tr>
+    <tr><td>full-rollback</td><td>30</td><td class="num">0.138</td><td class="num">0.139</td></tr>
+    <tr><td>kill-restart</td><td>30</td><td class="num">0.354</td><td class="num">0.385</td></tr>
+    <tr><td>identity-agent-pause</td><td>30</td><td class="num">0.131</td><td class="num">0.105</td></tr>
+    <tr><td>identity-server-restart</td><td>30</td><td class="num">0.135</td><td class="num">0.115</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p class="lab">重算統計量 vs 各版本說法</p>
+<div class="tw">
+<table>
+  <thead><tr>
+    <th>指標</th>
+    <th style="text-align:right">原始 log<br>SPIFFE+KC+LSVID</th>
+    <th style="text-align:right">原始 log<br>Vault PKI</th>
+    <th style="text-align:right">論文正文</th>
+    <th style="text-align:right">表 13<br>（教授重算）</th>
+  </tr></thead>
+  <tbody>
+    <tr><td>中位數</td><td class="num hl-ok">0.137</td><td class="num hl-ok">0.123</td>
+        <td class="num hl-ok">0.137 / 0.123 ✓</td><td class="num hl">0.669 ✗</td></tr>
+    <tr><td>平均數</td><td class="num">0.178</td><td class="num">0.170</td>
+        <td class="num">—</td><td class="num">0.729 / 0.170</td></tr>
+    <tr><td>P95</td><td class="num">0.363</td><td class="num">0.372</td>
+        <td class="num">—</td><td class="num">1.111 / 0.372</td></tr>
+    <tr><td>最大值</td><td class="num">0.371</td><td class="num">0.385</td>
+        <td class="num">—</td><td class="num">1.218 / 0.385</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p class="lab">錯誤已精確定位</p>
+<p>
+  請注意上表最右欄：教授重算的<strong>「Vault PKI」欄位（0.123 / 0.170 / 0.372 / 0.385）與原始 log 四項全中</strong>。
+  也就是說 —— <strong>表 13 的 Vault 欄是對的，只有 SPIFFE+KC+LSVID 那一欄被填錯</strong>。
+  這是單一欄位的貼錯，不是整張表的問題。
+</p>
+<p>
+  表 13 那組數字（0.714、0.981、0.681、0.638、0.640、0.707、0.537、0.520、1.218、0.657）
+  <strong>在整個 repo 中完全找不到</strong>：我搜遍所有 artifacts 與 git 歷史，包含三個較早的 exp4 批次
+  （<code>20260608-*-vault-pki-exp4*</code>，其值為 0.085／0.052／0.296… 也對不上）。
+  這組數字的數量級（~0.7s）較接近「一筆完整 saga 的端到端完成時間」而非「故障排除後的恢復時間」，
+  推測是從別的指標或某次未留存的執行貼過來的。
+</p>
+
+<p class="lab">建議動作</p>
+<ol>
+  <li><strong>只修表 13 的 SPIFFE 欄位</strong>，改用上方原始十筆。摘要、圖 26、4.3.4、4.4、第五章<strong>全部不動</strong> —— 它們本來就對。</li>
+  <li>「兩架構恢復時間相當」的結論<strong>成立且可保留</strong>（0.137 vs 0.123，差 0.014 秒）。</li>
+  <li>回覆教授時要明確指出方向判斷有誤，並附原始 CSV 佐證，否則會被要求做一次不必要的重新分析。</li>
+</ol>
+
+<p class="lab">但有一個定義問題教授沒提到，建議主動補</p>
+<p>
+  依 <code>scripts/experiments/fault-recovery-common.sh</code>（第 12–13 行、240–270 行），
+  <code>recovery_sec = t_recovered − t_fault_clear</code>，其中 <code>t_recovered</code> 是
+  <strong>故障排除後「新送出的一筆探測訂單」走完 saga 的時間點</strong>。
+</p>
+<p>
+  所以這個指標其實是「故障排除後，一筆新訂單的端到端 saga 延遲」，<strong>並不是「系統回到健康狀態所需的時間」</strong>。
+  它的下限被單筆 saga 本身的延遲綁住（也因此十筆全落在 0.1–0.4 秒）。論文應明確定義，否則口試時容易被問倒。
+  附帶一提，這個指標<strong>不受跨主機時鐘偏移影響</strong>（兩個時間戳都取自 gateway host），
+  正好可以回應教授在「實驗設計第 4 點」對 NTP 同步的疑慮 —— 至少實驗三／四是乾淨的。
+</p>
+</div>
+
+<!-- ═══════════════════════ P1 ═══════════════════════ -->
+<h2 id="p1">2. LSVID 層數 L0–L2 vs L1–L4 雙重編號<span class="tag t-bad">成立・已定位根因</span></h2>
+
+<div class="card">
+<h3>教授的意見</h3>
+<p>
+  正文用 L0–L2 且數值較大（L0 鑄造 143.72 μs、驗證 915.35 μs）；表 10 用 L1–L4 且數值小得多（L1 擴展 24.94 μs、L2 驗證 118.23 μs）。
+  教授猜測差異可能來自：增量 vs 累計、函式內部 vs 完整成本、平均 vs 中位、或不同批次／硬體。
+</p>
+
+<p class="lab">查證結果</p>
+<p class="big" style="color:var(--bad)">
+  ✓ 意見成立。根因有兩個，而且都不是教授猜的「增量 vs 累計」。
+</p>
+
+<p class="lab">根因 A：repo 裡有<strong>兩套獨立的量測工具</strong>，論文各取一套</p>
+<div class="tw">
+<table>
+  <thead><tr><th></th><th>Harness A（正文數字來源）</th><th>Harness B（表 10 來源）</th></tr></thead>
+  <tbody>
+    <tr><th>檔案</th><td><code>tests/benchmark-lsvid.php</code></td><td><code>scripts/experiments/measure-nesting.php</code><br>+ <code>aggregate-nesting.py</code></td></tr>
+    <tr><th>層級命名</th><td>語意式：<code>L0 mint</code>、<code>L0→L1</code>、<code>L1→L2</code>、<code>validate L0+L1+L2</code></td><td>1-based 數字：<code>level=1,2,3,4</code></td></tr>
+    <tr><th>掃描深度</th><td>到 <strong>L0..L5（6 層）</strong></td><td><code>--levels=N</code>（論文用 4）</td></tr>
+    <tr><th>擴展計時</th><td>增量</td><td>增量</td></tr>
+    <tr><th>驗證計時</th><td><strong>累計</strong></td><td><strong>累計</strong>（程式註解明載「verifies full chain up to this level」）</td></tr>
+    <tr><th>統計量</th><td>平均（N 次 warm 後計時取平均）</td><td>mean / p50 / p95 皆有輸出</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  重點：<strong>兩套工具都是「增量擴展 + 累計驗證」，也都有 warmup 並重用 validator</strong>。
+  所以教授列的四個候選解釋中，「增量 vs 累計」與「函式內部 vs 完整成本」<strong>都不是</strong>真正原因。
+  正確答案是<strong>兩套不同工具、跑在不同硬體上</strong>。
+</p>
+
+<p class="lab">根因 B：Harness B 有 off-by-one — 表 10 的層級標籤<strong>整體偏移了一格</strong></p>
+<div class="src">
+  <code>scripts/experiments/measure-nesting.php</code> 第 15–17 行註解與第 150–180 行實作：<br>
+  <code>level=1 → createBase()</code>（其實是 <strong>L0 鑄造</strong>）<br>
+  <code>level=2 → extend(prior)</code>（其實是 <strong>L0→L1</strong>）<br>
+  迴圈 <code>for ($lvl=1; $lvl&lt;=$maxLevel; $lvl++)</code> 直接把 1-based 的 <code>$lvl</code> 當標籤 emit
+</div>
+<p>表 10 的每一列實際上代表：</p>
+<div class="tw">
+<table>
+  <thead><tr><th>表 10 寫的</th><th>實際量到的</th><th>表 10 數值</th></tr></thead>
+  <tbody>
+    <tr><td>L1 擴展 24.94 μs</td><td class="hl"><strong>L0 鑄造</strong>（根本不是擴展）</td><td class="num">24.94</td></tr>
+    <tr><td>L2 擴展 29.26 μs</td><td class="hl"><strong>L0→L1 擴展</strong></td><td class="num">29.26</td></tr>
+    <tr><td>L1 驗證 59.02 μs</td><td class="hl"><strong>validate(L0)</strong></td><td class="num">59.02</td></tr>
+    <tr><td>L2 驗證 118.23 μs</td><td class="hl"><strong>validate(L0+L1)</strong> 累計</td><td class="num">118.23</td></tr>
+    <tr><td>L4（表 10／圖 20 最深層）</td><td class="hl"><strong>語意上的 L3</strong> —— 生產鏈根本沒有這一層</td><td class="num">—</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  這正好解釋了教授指出的「第五章稱實作支援 L0–L2，實驗卻呈現到 L4」：
+  生產鏈 L0→L1→L2 是 <strong>3 個 token</strong>，對應 Harness B 的 <code>level=1,2,3</code>；
+  論文跑了 <code>--levels=4</code>，於是多出一個<strong>生產環境不存在的第 4 層</strong>。
+  （Harness A 更誇張，最深掃到 L0..L5。）
+</p>
+
+<p class="lab">數量級差異的驗證</p>
+<p>
+  我拿 repo 內留存的 Harness A 執行結果 <code>docs/data/lsvid-bench-latest.json</code> 對照 ——
+  其 <code>env</code> 欄位寫著 <strong><code>"os": "Darwin arm64"</code>，也就是這份基準是在 Mac 上跑的</strong>，
+  不是四台 Linux 受測主機：
+</p>
+<div class="tw">
+<table>
+  <thead><tr><th>項目</th><th style="text-align:right">Mac 執行（repo 留存）</th><th style="text-align:right">論文正文</th><th style="text-align:right">比值</th></tr></thead>
+  <tbody>
+    <tr><td>L0 鑄造</td><td class="num">281.38</td><td class="num">143.72</td><td class="num">0.51</td></tr>
+    <tr><td>L0→L1 擴展</td><td class="num">275.60</td><td class="num">153.79</td><td class="num">0.56</td></tr>
+    <tr><td>L1→L2 擴展</td><td class="num">394.73</td><td class="num">170.18</td><td class="num">0.43</td></tr>
+    <tr><td>validate L0+L1+L2</td><td class="num">1983.60</td><td class="num">915.35</td><td class="num">0.46</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  四個比值集中在 0.43–0.56，<strong>形狀一致、整體約快一倍</strong> —— 強烈支持：正文數字＝同一支 Harness A
+  跑在比這台 Mac 快約一倍的機器上。<strong>正文與表 10 的數量級差距，主因是「兩套工具 + 不同硬體」。</strong>
+</p>
+
+<p class="lab">建議動作</p>
+<ol>
+  <li><strong>統一採用語意式命名 L0／L1／L2</strong>（Gateway 鑄造的 base ＝ L0，第一次擴展 ＝ L1，第二次 ＝ L2），
+      全文、摘要、表 10、表 11、圖 20 一致。</li>
+  <li><strong>表 10 每一列的標籤往下修一格</strong>（見上表對照），並<strong>刪除 L4 那一列</strong> —— 生產鏈沒有第 4 層，留著只會招來「為何實作與實驗不一致」的質疑。</li>
+  <li><strong>二選一，不要混用</strong>：建議全面改採 Harness B（<code>measure-nesting.php</code>，有 p50/p95，且跑在受測主機上），
+      把正文的 Harness A 數字換掉；或反之。混用兩套是目前所有矛盾的來源。</li>
+  <li>教授要求的四格拆分表，<strong>現有工具只能填其中兩格</strong>，需誠實說明：
+    <div class="tw">
+    <table>
+      <thead><tr><th>教授要求的指標</th><th>現有工具</th></tr></thead>
+      <tbody>
+        <tr><td>Incremental extend</td><td class="hl-ok">✓ 兩套皆有（<code>extend_us</code>）</td></tr>
+        <tr><td>Cumulative verify</td><td class="hl-ok">✓ 兩套皆有（<code>validate_us</code>）</td></tr>
+        <tr><td>End-to-end extend（含解析＋序列化）</td><td class="hl">✗ 未量測，需新增</td></tr>
+        <tr><td>Incremental verify（單層）</td><td class="hl">✗ 未量測，需新增</td></tr>
+      </tbody>
+    </table>
+    </div>
+    Harness A 另有 <code>LSVID::parse()</code> 分項（L0 6.69 / L1 19.75 / L2 44.56 μs），可作為 end-to-end 拆解的一部分。
+  </li>
+  <li><strong>在同一台受測主機上把兩套 harness 各跑一次</strong>，即可徹底釘死「工具差異」與「硬體差異」各佔多少：
+    <div class="src">
+      <code>composer install</code>（本機無 vendor，我無法代跑）<br>
+      <code>php tests/benchmark-lsvid.php --iterations=200</code><br>
+      <code>php scripts/experiments/measure-nesting.php --levels=3 --samples=200 | python3 scripts/experiments/aggregate-nesting.py</code>
+    </div>
+  </li>
+</ol>
+</div>
+
+<!-- ═══════════════════════ P5 ═══════════════════════ -->
+<h2 id="p5">3. CVE 拒絕率的小樣本與分母問題<span class="tag t-bad">成立・且發現真實程式缺陷</span></h2>
+
+<div class="card">
+<h3>教授的意見</h3>
+<p>
+  75.0%／33.3%／25.0% 的分母很小（3/4、1/3、1/4）；要求在表 12 附近標出各類別的
+  <code>(rejected / total)</code> 原始計數；並質疑「分母排除 n/a」的規則是否系統性偏袒所提架構。
+</p>
+
+<p class="lab">查證結果</p>
+<p class="big" style="color:var(--bad)">
+  ✓ 意見成立。而且 aggregator 有一個教授沒看到的<strong>真實缺陷</strong> —— 但偏袒方向與他擔心的相反。
+</p>
+
+<p class="lab">好消息：原始計數<strong>本來就已經算出來了</strong>，論文只是沒印</p>
+<div class="src">
+  <code>scripts/security/aggregate-security.py</code> 第 10 行：<br>
+  <em>sheet "by_category" — category × stack, cell = "rejected/total"</em>
+</div>
+<p>
+  aggregator 產出的 xlsx 內，<code>by_category</code> 分頁已經是 <code>rejected/total</code> 格式，
+  且 <code>REJECT</code>／<code>ACCEPT</code>／<code>total</code>／<code>reject_rate</code> 四個欄位全都有輸出（第 89–92 行）。
+  <strong>教授要的東西不用重跑實驗，把既有 xlsx 的欄位補進表 12 即可。</strong>
+</p>
+
+<p class="lab">壞消息：<code>skipped</code> 被算進分母 —— 這是 bug</p>
+<div class="src">
+  <code>aggregate-security.py</code> 第 57–63 行 <code>normalise_verdict()</code>：
+  不在 ACCEPTED／REJECTED 集合內的 verdict 一律 <code>return v.upper()</code><br>
+  第 89–90 行：<code>g["total"] = g.sum(axis=1)</code> → <strong>把 SKIPPED 欄一起加進 total</strong><br>
+  <code>reject_rate = REJECT / (REJECT + ACCEPT + SKIPPED)</code>
+</div>
+<p>
+  依 <code>probe-paper5-attacks.sh</code> 第 14–19 行的定義，<code>skipped</code> 意思是
+  <strong>「preflight 工具缺失，不構成對防禦的判定」</strong>（例如該 host 沒裝 tcpreplay／gcc）。
+  但它現在被當成「沒擋下」灌進分母，<strong>系統性地壓低拒絕率</strong>。
+</p>
+<p>
+  方向值得注意：這個缺陷<strong>對所提架構不利，而非偏袒</strong>。但它同時讓兩個 stack 的百分比失去可比性 ——
+  如果 A stack 的 host 裝了 tcpreplay 而 B stack 的沒裝，兩者的分母根本不是同一回事。
+  <strong>這一點必須修，且修完數字會變動，要重新產表。</strong>
+</p>
+
+<p class="lab">另一個既有的良好設計（可主動寫進論文，展現嚴謹）</p>
+<p>
+  <code>is_attack=0</code> 的控制案（happy path、health 端點、replay 首發）
+  <strong>已被 aggregator 自動排除在 reject_rate 之外</strong>（第 80–82 行 <code>_attacks_only()</code>），
+  且 <code>scripts/security/README.md</code> 明載其用途是驗證環境健康（A9 必須 accept，否則整個 stack 不健康、結果不可採信）。
+  這是紮實的實驗衛生，論文<strong>應該寫出來</strong>。
+</p>
+
+<p class="lab">建議動作</p>
+<ol>
+  <li>修 <code>normalise_verdict</code>／<code>category_summary</code>，把 <code>SKIPPED</code> 排除在 <code>total</code> 之外，並在表中<strong>另立一欄標示 skipped 數</strong>。</li>
+  <li>修完後重跑 aggregator、重產表 12。<strong>數字會變 —— 相關結論須同步更新。</strong></li>
+  <li>表 12 每格改印 <code>rejected/total (rate%)</code>，資料直接取自既有 <code>by_category</code> 分頁。</li>
+  <li>接受教授的用語修正：<strong>「測試案例拒絕比例」，不要叫「攻擊覆蓋率」</strong>。n=3、n=4 撐不起統計語言。</li>
+  <li>明確寫出控制案排除規則與 skipped 處理規則，堵住「分母如何決定」的質疑。</li>
+</ol>
+</div>
+
+<!-- ═══════════════════════ P6 ═══════════════════════ -->
+<h2 id="p6">4. 對照組公平性 / 容器設定混淆<span class="tag t-bad">成立・有程式碼證據</span></h2>
+
+<div class="card">
+<h3>教授的意見</h3>
+<p>
+  SPIFFE Watcher 用了 <code>read_only</code>、tmpfs <code>noexec</code>、<code>cap_drop ALL</code>，
+  Vault Server／Agent 保留預設 —— 差異可能來自容器硬化，而非架構能力。
+  且 Vault PKI 是傳輸層 PKI，本架構是傳輸＋應用＋業務三層，防禦面本就不同層級。
+</p>
+
+<p class="lab">查證結果</p>
+<p class="big" style="color:var(--bad)">
+  ✓ 意見成立，而且我在程式碼裡找到了讓這個混淆<strong>直接量化成分數</strong>的機制。
+</p>
+
+<p class="lab">證據一：容器／網路設定被計為與身份層拒絕同分</p>
+<div class="src">
+  <code>aggregate-security.py</code> 第 36–38 行：<br>
+  <code>REJECTED = {"rejected", "broker-rejected", <strong>"not-reachable"</strong>, <strong>"blocked"</strong>}</code>
+</div>
+<p>
+  <code>not-reachable</code>（port 根本沒開）與 <code>blocked</code>（網路擋掉）
+  <strong>和 <code>rejected</code>（身份層主動拒絕）被歸為同一類 REJECT</strong>。
+  這代表：<strong>一個 stack 只因為 compose 沒暴露某個 port，就能在拒絕率上得分</strong>，
+  分數與「LSVID 驗章擋下偽造身份」完全等價。這正是教授擔心的混淆，而且它是被寫死在計分邏輯裡的。
+</p>
+
+<p class="lab">證據二：D 類（Port 暴露）<strong>每個 stack 的案例集根本不同</strong></p>
+<div class="src">
+  <code>scripts/security/README.md</code> §3.D：「每個 driver 自帶不同的 D 子集」<br>
+  <code>probe-linkerd.sh</code>：D1 admin :9990、D2 :4140、D3 :4141、D4/D5 跨 host<br>
+  <code>probe-baseline.sh</code>：D1–D4 服務裸 port、D5–D7 確認無 Linkerd 殘留、D8/D9 跨 host 直連
+</div>
+<p>
+  <strong>D 類在不同 stack 上跑的是不同的案例、不同的數量。</strong>
+  把各 stack 的 D 類拒絕率並排比較，等於在比較兩組不同的題目 —— 這個比較在方法學上無效，
+  也直接解釋了教授看到的「通訊埠暴露 50%」為何難以詮釋。
+</p>
+
+<p class="lab">證據三：A 類與 E 類的結果與身份層無關（可用來自我辯護）</p>
+<p>
+  README 明載 A 類（HTTP ingress，12 案）是 <strong>stack-agnostic</strong> —— 所有 stack 打同一組案例，
+  所以教授看到的「HTTP ingress 0%」<strong>本來就不該有差異</strong>，這不是缺陷。
+</p>
+<p>
+  E 類（Replay，3 案）README 更是直接預告：
+  <em>「沒有 idempotency key 機制下，E2/E3 都會 202 accepted。<strong>任何 stack 都擋不住</strong>是預期結果 ——
+  這是給 Saga 應用層該補的洞，不是身份／網路層的責任。」</em>
+  <strong>這是設計時就明知並記錄的已知限制，不是實驗失誤。</strong>論文若照這個口徑寫，反而是加分項。
+</p>
+
+<p class="lab">建議動作</p>
+<ol>
+  <li><strong>照教授說的，在實驗三開頭明說這是刻意的非對稱對照</strong>，先把公平性質疑堵住。這句話成本最低、效果最好。</li>
+  <li>把三種能力<strong>分開列表</strong>：LSVID 特有（C4–C6 偽造 envelope）／SPIFFE 特有／<strong>容器與網路設定</strong>（D 類、not-reachable）。
+      這是回應教授的核心動作。</li>
+  <li><strong>D 類不要跨 stack 比較</strong>，或改成兩個 stack 都跑的同一組案例。維持現況等於留一個明顯破口給口試委員。</li>
+  <li>兩個 stack 套用<strong>相同容器硬化設定</strong>後重測 —— 這是最徹底的解法，但成本最高。若時間不允許，至少要在「實驗限制」誠實揭露。</li>
+  <li>正面討論共同擋不住的類別（HTTP ingress、觀測落差、replay），並引用 README 已記錄的理由。<strong>誠實揭露比粉飾更有說服力。</strong></li>
+</ol>
+</div>
+
+<!-- ═══════════════════════ E1 ═══════════════════════ -->
+<h2 id="e1">5. 壓力測試設定前後不一致<span class="tag t-warn">部分成立・表 7–9 其實是對的</span></h2>
+
+<div class="card">
+<h3>教授的意見</h3>
+<p>
+  第 65–66 頁說 Gateway worker 為 10、20,000 筆時調整為 100；表 7–9 卻記載 Gateway Worker 32、php-worker 4。
+</p>
+
+<p class="lab">查證結果</p>
+<p class="big" style="color:var(--ok)">
+  ✓ <strong>表 7–9 與程式碼預設值完全一致 —— 錯的是正文第 65–66 頁的欄位命名。</strong>
+</p>
+<div class="tw">
+<table>
+  <thead><tr><th>旋鈕</th><th>程式碼位置</th><th>預設值</th><th>對應論文</th></tr></thead>
+  <tbody>
+    <tr><td>OpenSwoole HTTP Worker</td><td><code>bin/gateway.php:57</code><br><code>GATEWAY_WORKERS</code></td>
+        <td class="num"><strong>32</strong></td><td class="hl-ok">表 7–9「Gateway Worker 32」✓</td></tr>
+    <tr><td>RabbitMQ Consumer 程序</td><td><code>docker-compose.yml:366</code><br><code>WORKER_PROCESSES</code></td>
+        <td class="num"><strong>4</strong></td><td class="hl-ok">表 7–9「php-worker 4」✓</td></tr>
+    <tr><td>負載產生器並發數</td><td><code>load-driver.py:191</code><br><code>--concurrency</code></td>
+        <td class="num">50</td><td class="hl">正文「worker 10 → 100」<br>＝<strong>這個</strong>，被誤稱為 Gateway worker</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  <code>GATEWAY_WORKERS</code> 預設 32、<code>WORKER_PROCESSES</code> 預設 4，兩者都與表 7–9 吻合；
+  <code>artifacts/measure/RESULTS.md</code> 也記載實際跑的是 <code>WORKER_PROCESSES=4, prefetch=1</code>。
+  正文那個「10 → 100」<strong>不可能是 Gateway worker</strong>（Gateway worker 沒有隨規模調整的邏輯），
+  合理判斷是負載產生器的並發數。<strong>需回頭核對執行紀錄確認。</strong> <span class="tag t-info">待核對全文</span>
+</p>
+<p class="lab">建議動作</p>
+<p>照教授說的建立完整配置表，把五個旋鈕分清楚：<strong>負載產生器並發數 / OpenSwoole HTTP Worker / RabbitMQ Consumer 程序 / RoadRunner Worker / supervisord 動態程序</strong>，每個實驗 × 每個 stack × 每個規模各一列。表 7–9 的數值可直接沿用。</p>
+</div>
+
+<!-- ═══════════════════════ P4 ═══════════════════════ -->
+<h2 id="p4">6. +34.9% 延遲歸因混淆<span class="tag t-bad">成立・且中介組數據已存在</span></h2>
+
+<div class="card">
+<h3>教授的意見</h3>
+<p>
+  20,000 筆下 SPIFFE+Keycloak+LSVID（713.15s）vs Vault PKI（528.70s）的差距，被歸因於「使用者身份驗證＋授權檢查＋LSVID 鏈驗證」，
+  但這兩個 stack 同時差在使用者層（Keycloak）與 LSVID 兩個維度。教授指出實驗一其實有第三組「SPIFFE+Keycloak（無 LSVID）」，
+  應在 4.4 用它做中介比較。且同段又說主瓶頸是佇列等待、密碼學僅 3.1ms，兩個說法需調和。
+</p>
+
+<p class="lab">查證結果</p>
+<p class="big" style="color:var(--ok)">
+  ✓ 意見成立，<strong>而且好消息是：中介組的數據與分析工具都已經在 repo 裡，可以立刻做拆解。</strong>
+</p>
+<div class="src">
+  <code>artifacts/measure/RESULTS.md</code> 標題：<em>「Group B: SPIFFE+Keycloak, <strong>no LSVID</strong>」</em>
+  （count=2000, concurrency=100, warm；4 次執行，completion 100.0%，saga p50 533.4→602.67 ms）<br>
+  <code>scripts/experiments/compare-three-stacks.py</code> 已內建三方比較：<br>
+  <code>A = SPIFFE+Keycloak+LSVID（LSVID-on）</code>／<code>B = SPIFFE+Keycloak（LSVID-off）</code>／<code>LK = Linkerd 1.x</code>
+</div>
+<p>
+  有了 B 組就能把差距拆成兩段：<strong>(Vault → B) ＝ Keycloak 使用者層的增量</strong>、
+  <strong>(B → A) ＝ LSVID 鏈的增量</strong>。這正是教授要的，且不需要新實驗。
+</p>
+<p>
+  另外，教授指出的內部矛盾是<strong>對的</strong>：若密碼學成本僅 3.1 ms、主瓶頸是佇列等待，
+  那麼 +34.9%（約 184 秒）<strong>在數量級上就不可能主要來自 LSVID 鏈驗證</strong>。
+  20,000 筆 × 3.1 ms ≈ 62 秒，且那還是可被平行消化的 CPU 時間。
+  <strong>「+34.9% 主要來自身份鏈驗證」這個宣稱撐不住，必須改寫。</strong>
+</p>
+
+<p class="lab">⚠ 一個需要你自己判斷的疑慮（教授沒提，但口試可能被問）</p>
+<p>
+  <code>compare-three-stacks.py</code> 的 docstring 寫著：
+  <em>「Target narrative (goal2.md §1): for 訂單完成時間, <strong>A &lt; LK &lt; B at every scale — the full-LSVID mode is the fastest</strong>」</em>，
+  並產出一個 <code>ordering_ok</code> 欄位與 <code>ordering_verdict</code> 分頁「feeds the goal2.md §5 fine-tuning decision」。
+</p>
+<p>
+  這支分析腳本是<strong>朝著一個預設結論寫的</strong>，還帶有「排序是否符合預期」的驗證欄位與後續調參迴路。
+  這在方法學上是確認偏誤（confirmation bias）的典型形狀，若被口試委員讀到 repo 會很難解釋。
+  此外它預期 <strong>A（有 LSVID）比 B（無 LSVID）快</strong>，這與論文正文「LSVID 造成 +34.9% 延遲」<strong>方向相反</strong> ——
+  這兩個說法不可能同時成立，建議你優先釐清。（<code>goal2.md</code> 已不在 repo 中，我無法讀取其內容。）
+</p>
+
+<p class="lab">建議動作</p>
+<ol>
+  <li>用 <code>compare-three-stacks.py</code> 跑 A / B 兩組，在 4.4 明確拆出 Keycloak 增量與 LSVID 增量。</li>
+  <li><strong>改寫 +34.9% 的歸因</strong>：依現有證據，主因應為佇列等待／系統飽和，而非密碼學成本。</li>
+  <li>釐清「A 比 B 快」與「LSVID 造成 +34.9%」的方向矛盾，確定論文要主張哪一個。</li>
+  <li>把 <code>ordering_ok</code>／<code>Target narrative</code> 這類措辭從分析腳本移除，改為中性描述。</li>
+</ol>
+</div>
+
+<!-- ═══════════════════════ P2 P3 P8 ═══════════════════════ -->
+<h2 id="p2">7. 文字工程類意見<span class="tag t-ok">照辦即可</span></h2>
+
+<div class="card">
+<h3 id="p2h">7.1 CVE「13 類」與「15-CVE」交替使用<span class="tag t-ok">成立</span></h3>
+<p>
+  教授已自行釐清：4.2.3 交代的是 <strong>15 個 CVE → 對應 13 個攻擊類別</strong>，其餘章節用語不一致。
+  建議採用他的定案寫法：<strong>「由 15 個代表性 CVE 對應出的 13 類攻擊矩陣」</strong>，首次出現時定義，之後一致沿用。
+</p>
+<p>
+  ⚠ <strong>但 repo 內找不到 CVE 對照表</strong>：我 grep 全 repo 沒有任何 <code>CVE-20xx</code> 字串，
+  且 <code>scripts/security/README.md</code> 的攻擊矩陣是用 A–E／K／L 分類，<strong>不是用 CVE 編號組織的</strong>。
+</p>
+<p>
+  目前分支的攻擊套件只有 <code>scripts/security/capture-svid-serial.sh</code>；
+  完整套件（<code>probe-paper5-attacks.sh</code>、<code>aggregate-security.py</code>、<code>probe-baseline.sh</code>、
+  <code>probe-linkerd.sh</code>、<code>lib/fakelib.sh</code>）<strong>存在於 git 歷史的 commit <code>081c3b8</code></strong>，
+  但<strong>未被合併進 <code>feat/SPIFFE+KC+LS</code></strong>。本報告的安全類分析全部取自該 commit。
+</p>
+<p>
+  <strong>CVE ↔ 攻擊類別的對應關係，其唯一來源目前只在論文 4.2.3。</strong>
+  教授要求附錄完整列出 15 個 CVE、13 個類別、44 個變體、攻擊輸入、預期／實際結果、判定依據與 log ——
+  <strong>這份對照表需要你手動建立，repo 無法自動產出</strong>，這會是工作量最大的一項。
+</p>
+<p>
+  案例數量核對：A(12) + B(6) + C(6) + E(3) = 27，加上 D（各 stack 5–9 案）、K(K0–K5 + K4health = 7)、L(L0–L3 = 4)
+  ≈ <strong>43–47 案，與教授說的「44 個變體」量級吻合</strong>，可交叉驗證。
+</p>
+<p>
+  另建議照辦：<strong>「2025 年具代表性的 15 個 CVE」改為「2024–2025 年」</strong>（研究含多個 CVE-2024 編號）。
+</p>
+
+<hr>
+
+<h3 id="p3">7.2 W3School ≠ W3Techs<span class="tag t-ok">成立・務必修正</span></h3>
+<p>
+  教授完全正確，這是<strong>硬錯誤</strong>：W3Schools 是教學網站，<strong>W3Techs 才是技術市占統計的來源</strong>，兩者是不同機構。
+  參考文獻 [11] 既然實際是 W3Techs，內文就必須改為 <strong>W3Techs</strong>。
+</p>
+<p>另外照辦：</p>
+<ul>
+  <li>內文 71.2% 與表 1 的 71.1% 須統一（回查 W3Techs 原始數據確認何者為真）。</li>
+  <li>表 1 改名為<strong>「網站採用之伺服器端程式語言比例」</strong> —— 教授這個修正很精準，
+      W3Techs 統計的是<strong>網站數</strong>，不是開發者偏好，也不是市場占有率。原標題確實會誤導。</li>
+</ul>
+
+<hr>
+
+<h3 id="p8">7.3 五項實驗假設 → 改寫為 RQ1–RQ5<span class="tag t-ok">成立</span></h3>
+<p>
+  教授指出第一章所稱的「五項實驗假設」實際上是評估面向，沒有正式 H1–H5，也沒有逐項接受／拒絕。
+  他提供的 RQ1–RQ5 <strong>與 repo 的實驗資產對應良好</strong>：
+</p>
+<div class="tw">
+<table>
+  <thead><tr><th>RQ</th><th>對應的 repo 證據</th><th>可答性</th></tr></thead>
+  <tbody>
+    <tr><td><strong>RQ1</strong> LSVID 能否在 broker 與補償事件間保留可驗證身份鏈</td>
+        <td>C4–C6（偽造 envelope）＋ Saga 補償路徑</td><td class="hl-ok">✓ 可答</td></tr>
+    <tr><td><strong>RQ2</strong> LSVID 相較相同 SPIFFE stack 的增量延遲與體積</td>
+        <td>Group B（無 LSVID）＋ <code>compare-three-stacks.py</code> ＋ <code>aggregate-nesting.py</code> 體積表</td>
+        <td class="hl-ok">✓ 可答（正是第 6 節要做的拆解）</td></tr>
+    <tr><td><strong>RQ3</strong> SHM seqlock 是否降低 Agent 負載與輪換不一致</td>
+        <td><code>docs/thesis/ch2.5-shm-svid-delivery.md</code></td>
+        <td class="hl">⚠ 未見對應量測數據，需確認</td></tr>
+    <tr><td><strong>RQ4</strong> 相同硬化條件下 LSVID 可額外阻擋哪些案例</td>
+        <td>安全套件（commit <code>081c3b8</code>）</td>
+        <td class="hl">⚠ 「相同硬化條件」目前<strong>不成立</strong>（見第 4 節），需重測</td></tr>
+    <tr><td><strong>RQ5</strong> 故障後 Saga 是否同時滿足流程完成與資料一致性</td>
+        <td>recovery CSV 的 <code>saga_completed</code> 與 <code>rollback_count</code> 欄位</td>
+        <td class="hl-ok">✓ 可答，數據完整（20/20 筆 <code>saga_completed=1</code>）</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  附帶一個對 RQ5 有利的觀察：<strong>兩個 stack 全部 20 次故障注入，<code>saga_completed</code> 皆為 1，無一失敗</strong>，
+  且 <code>rollback_count</code> 隨故障時長（5s → 30s）由 0 增為 2，補償行為符合預期。這是乾淨且可直接引用的結果。
+</p>
+
+<hr>
+
+<h3>7.4 其餘文字與格式意見<span class="tag t-info">待核對全文</span></h3>
+<p>以下各點<strong>需要論文全文才能核對</strong>，Drive 授權恢復後我可以接續處理。教授的意見本身看來都合理，建議照辦：</p>
+<ul>
+  <li>第一章、第五章的「章」與「節」之間需有銜接文字。</li>
+  <li>漏字與語句不順通讀（教授已抓到 1.4 的「使…具備…能力」缺主要動詞）。</li>
+  <li>參考文獻存取日期統一（[5][11][22][23] 有 2025／2026 混用）；[12] 的 accessed 括號未閉合。</li>
+  <li>中英文摘要逐句對齊統一後的數字（特別是 L 層與 CVE 數）。</li>
+  <li>第 63 頁提到「4.5 實驗限制」但目錄無 4.5 → 改為 5.3.2 或新增 4.5。
+      <strong>建議新增 4.5</strong> —— 本報告第 3、4 節揭露的限制正好需要一個安放的位置。</li>
+  <li>用語統一：Product service／Production service（<strong>依 repo 程式碼，正確名稱為 Production Service</strong>，
+      見 <code>Services/Production_service/</code> 與 <code>PRODUCTION_SERVICE_HOST</code>）、
+      身份／身分、程序／進程、發布／發佈、stack／堆疊。</li>
+  <li>圖表英文標籤與正文一致（圖 26 用 <code>spiffe-keycloak</code>，正文是 SPIFFE+Keycloak+LSVID
+      —— <strong>這個特別危險</strong>：<code>spiffe-keycloak</code> 恰好是「無 LSVID 的 B 組」名稱，
+      會讓讀者以為圖 26 畫的是 B 組。修圖 26 標籤時請一併確認繪圖時餵入的是哪一組資料）。</li>
+  <li>英文摘要的斷字與特殊連字元（service-to-service、SHM-shared）檢查原始 Word 是否有異常字元。</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════ 待辦 ═══════════════════════ -->
+<h2 id="todo">8. 建議處理順序</h2>
+
+<div class="card">
+<p class="lab">第一優先 — 影響結論正確性</p>
+<ol>
+  <li><strong>修表 13 的 SPIFFE 欄位</strong>（第 1 節）。正文／摘要／圖 26 不動。這是最快也最重要的一項。</li>
+  <li><strong>改寫 +34.9% 的歸因</strong>（第 6 節），並釐清與「A 比 B 快」的方向矛盾。</li>
+  <li><strong>修 aggregator 的 skipped 分母缺陷後重產表 12</strong>（第 3 節）。<strong>數字會變。</strong></li>
+</ol>
+
+<p class="lab">第二優先 — 影響審查通過</p>
+<ol start="4">
+  <li><strong>統一 L 層命名並修正表 10 的偏移、刪除 L4 列</strong>（第 2 節）。</li>
+  <li><strong>在實驗三開頭加入非對稱對照的說明</strong>（第 4 節）—— 一句話，成本最低、效益最高。</li>
+  <li><strong>D 類停止跨 stack 比較</strong>，並把容器設定能力與身份層能力分開列表（第 4 節）。</li>
+  <li><strong>新增 4.5 實驗限制</strong>，誠實揭露容器設定不對等、小樣本、D 類不可比。</li>
+</ol>
+
+<p class="lab">第三優先 — 文字工程</p>
+<ol start="8">
+  <li>W3Techs 修正、71.1/71.2 統一、表 1 改名（第 7.2 節）。</li>
+  <li>CVE 用語統一 + 建立附錄對照表（第 7.1 節 —— <strong>工作量最大，需手動建立</strong>）。</li>
+  <li>H1–H5 改寫為 RQ1–RQ5（第 7.3 節）。</li>
+  <li>其餘通讀、格式、用語統一（第 7.4 節）。</li>
+</ol>
+
+<p class="lab">建議補跑的實驗</p>
+<ul>
+  <li><strong>同機並跑兩套 LSVID harness</strong> —— 釘死工具差異 vs 硬體差異（第 2 節附指令）。</li>
+  <li><strong>A/B 兩組三方比較</strong> —— 拆解 Keycloak 增量與 LSVID 增量（第 6 節）。</li>
+  <li><strong>相同容器硬化設定下重測安全實驗</strong> —— 成本最高，若不做則必須在 4.5 揭露（第 4 節）。</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════ 附註 ═══════════════════════ -->
+<h2>9. 查證方法與限制</h2>
+
+<div class="card">
+<p class="lab">本報告查證過的 repo 位置</p>
+<ul>
+  <li><code>artifacts/fault-recovery-spire-20260609-223550/recovery_spire.csv</code>（10 筆）</li>
+  <li><code>artifacts/fault-recovery-vault-20260609-231957/recovery_vault.csv</code>（10 筆）</li>
+  <li><code>artifacts/20260608-*-vault-pki-exp4*/</code>（3 個較早批次，用於排除表 13 數字來源）</li>
+  <li><code>artifacts/measure/RESULTS.md</code>（Group B：SPIFFE+Keycloak 無 LSVID）</li>
+  <li><code>docs/data/lsvid-bench-latest.json</code>（Harness A 執行結果，Darwin arm64）</li>
+  <li><code>tests/benchmark-lsvid.php</code>、<code>scripts/experiments/measure-nesting.php</code>、<code>aggregate-nesting.py</code></li>
+  <li><code>scripts/experiments/fault-recovery-common.sh</code>、<code>compare-three-stacks.py</code>、<code>load-driver.py</code></li>
+  <li><code>bin/gateway.php:57</code>、<code>docker-compose.yml:283,366</code></li>
+  <li>git commit <code>081c3b8</code> 之 <code>scripts/security/</code>（README、aggregate-security.py、probe-paper5-attacks.sh）</li>
+</ul>
+
+<p class="lab">限制（重要）</p>
+<ol>
+  <li><strong>論文全文未讀取</strong> —— Google Drive 連結器授權過期。所有「論文寫了什麼」均轉述自教授的審查意見。
+      標記 <span class="tag t-info">待核對全文</span> 的項目須在重新授權後複查。</li>
+  <li><strong>表 13 那組數字（0.714…）在 repo 中不存在</strong> —— 已搜遍 artifacts 與 git 歷史。
+      其真實來源無法從 repo 判定，需你回頭查執行紀錄。</li>
+  <li><strong>CVE ↔ 攻擊類別對照表不在 repo</strong> —— 唯一來源是論文 4.2.3，本報告無法驗證「15 → 13」的對應是否正確。</li>
+  <li><strong>兩套 LSVID harness 未實際重跑</strong> —— 本機無 <code>vendor/</code>，<code>composer install</code> 未執行。
+      「不同硬體」的結論是依據 0.43–0.56 的比值一致性推論，非直接量測。</li>
+  <li><strong>安全實驗的實際 <code>results.jsonl</code> 未留存於 repo</strong> ——
+      第 3、4 節的分析基於<strong>計分程式的邏輯</strong>，而非實際跑出來的 verdict 分布。
+      skipped 究竟影響多少格，需重跑或找出原始 jsonl 才能確定。</li>
+</ol>
+</div>
+
+<p class="foot">
+  由 Claude Code 產出 ・ 分支 <code>feat/SPIFFE+KC+LS</code> ・ 2026-07-17<br>
+  本報告的每一項數據結論均可依「查證方法」一節的路徑自行複驗。
+</p>
+
+</div>
+</body>
+</html>
