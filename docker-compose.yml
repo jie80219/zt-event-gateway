@@ -137,9 +137,13 @@ services:
     entrypoint:
       - "/bin/sh"
       - "-c"
-      - "until [ -s /vault/creds/worker/secret_id ]; do sleep 0.3; done; chown -R vault:vault /vault/out; exec docker-entrypoint.sh agent -config=/vault/config.hcl"
+      - "until [ -s /vault/creds/worker/secret_id ]; do sleep 0.3; done; chown -R vault:vault /vault/out; chown vault:vault /vault; exec docker-entrypoint.sh agent -config=/vault/config.hcl"
     environment:
       VAULT_ADDR: "http://vault:8200"
+      # hashicorp/vault entrypoint runs setcap on the vault binary, which
+      # needs CAP_SETFCAP; cap_drop:[ALL] removes it. vault agent does not
+      # need ipc_lock, so skip the setcap instead of re-adding the cap.
+      SKIP_SETCAP: "true"
     # ── Hardening (parity with SPIFFE stack's spiffe-watcher) ─────────────
     # This is the identity/secret-management sidecar — the Vault-PKI analogue
     # of spiffe-watcher — so it carries the IDENTICAL hardening profile. This
@@ -167,6 +171,7 @@ services:
     tmpfs:
       - /tmp:noexec,nosuid,size=32m
       - /home/vault:size=8m
+      - /vault:nosuid,size=8m,mode=1777
     volumes:
       - ./docker/vault-pki/agent/worker.hcl:/vault/config.hcl:ro
       - ./docker/vault-pki/creds:/vault/creds:ro
