@@ -140,6 +140,33 @@ services:
       - "until [ -s /vault/creds/worker/secret_id ]; do sleep 0.3; done; chown -R vault:vault /vault/out; exec docker-entrypoint.sh agent -config=/vault/config.hcl"
     environment:
       VAULT_ADDR: "http://vault:8200"
+    # ── Hardening (parity with SPIFFE stack's spiffe-watcher) ─────────────
+    # This is the identity/secret-management sidecar — the Vault-PKI analogue
+    # of spiffe-watcher — so it carries the IDENTICAL hardening profile. This
+    # makes container-config a CONTROLLED variable in the security comparison
+    # (see scripts/security/compare-stacks.py capability-class notes): any
+    # residual config-audit divergence is now a deployment choice, not an
+    # architecture difference. cap_drop:[ALL] is dropped and only the caps the
+    # hashicorp/vault image genuinely needs are re-added — CHOWN for the
+    # `chown -R vault:vault /vault/out` in the entrypoint above, and
+    # SETUID/SETGID/DAC_OVERRIDE for docker-entrypoint.sh's root→vault step-down.
+    # /vault/out stays a named volume (shared read-only with php-worker); the
+    # tmpfs entries cover the only other writable paths under a read_only rootfs.
+    # NOTE: validate live once (cluster was down at authoring time) — if the
+    # agent fails to render certs, the cap_add set is the first thing to widen.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=32m
+      - /home/vault:size=8m
     volumes:
       - ./docker/vault-pki/agent/worker.hcl:/vault/config.hcl:ro
       - ./docker/vault-pki/creds:/vault/creds:ro
