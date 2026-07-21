@@ -22,6 +22,7 @@ artifacts/sec-*/**/*.pcap
 !/docs/thesis/ch2.5-shm-svid-delivery.md
 !/docs/thesis/4.md
 !/docs/thesis/review-report.html
+!/docs/thesis/lsvid-layer-reconciliation.md
 # Experiment goal/plan specs are tracked (goal.md, goal2*.md, …).
 !/docs/goal/
 /.lsvid-experiment.override.yml
