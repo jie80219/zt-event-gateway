@@ -106,3 +106,32 @@ incremental），且量測批次偏 cold / 不同硬體，所以數字系統性�
 3. **表 10、表 11**：以第 3 節主表取代；欄位改為四個指標，列改為 L0/L1/L2；統計量統一用中位數。
 4. **圖 20**：以 `lsvid-layers.png` 取代，座標軸標 L0/L1/L2，圖例即四指標名稱。
 5. 全文統計量統一為**中位數**（平均數僅附列），不再混用。
+
+---
+
+## 7. 附加圖表（token 體積 / paper 對照 / Keycloak overhead）— 統一 L0–L2 重製
+
+舊的 L1–L4 對照圖（`chart1..4`）以同一份 warm 資料在統一慣例下重製，產圖器
+`scripts/experiments/chart-lsvid-vs-paper.py`，資料同 `warm.ndjson`（已加 envelope 欄位）。
+
+**層級深度對齊**：我方 base token **L0 ＝ paper L1**（皆為 1 個簽章的最淺 token），
+故我方 L0/L1/L2 對齊 paper 的 L1/L2/L3（沿用舊圖既有對齊，只修正我方標籤）。
+
+| 圖檔 | 內容 |
+|---|---|
+| `chart_token_size.png` | LSVID token 體積：this work vs paper（每層我方均顯著小於 paper） |
+| `chart_latency_vs_paper.png` | Incremental extend + Cumulative verify：this work（warm median）vs paper |
+| `chart_keycloak_overhead.png` | LSVID token／envelope 無KC／envelope 有KC，Keycloak overhead 固定 ≈1.52 kB |
+
+對照數值（warm 中位數）：
+
+| Layer (paper) | Token 我方(kB) | Token paper(kB) | Extend 我方(μs) | Extend paper(μs) | Verify 我方(μs) | Verify paper(μs) | KC overhead(kB) |
+|---|---|---|---|---|---|---|---|
+| L0 (L1) | 1.14 | 3.10 | 23.68 | 76.96 | 58.65 | 108.07 | 1.52 |
+| L1 (L2) | 2.63 | 5.70 | 28.15 | 114.14 | 117.93 | 289.13 | 1.52 |
+| L2 (L3) | 4.62 | 8.80 | 34.70 | 266.95 | 181.36 | 464.72 | 1.52 |
+
+重點：**Keycloak overhead 是與層數無關的固定加法常數（≈1.52 kB）**，因為 Keycloak
+access_token 放在 envelope 的 `authorization.jwt` 平行欄位，不在 LSVID 簽章鏈內
+（見 `src/MessageQueue/MessageBus.php`）。要壓縮體積該對焦 LSVID 本身（每層線性 +≈2 kB），
+而非 Keycloak。

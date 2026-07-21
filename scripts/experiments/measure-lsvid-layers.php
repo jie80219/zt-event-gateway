@@ -90,13 +90,48 @@ use SDPMlab\LSVID\Tests\TestSvidReader;
 const GW_SPIFFE = 'spiffe://zt.local/php-gateway';
 const WK_SPIFFE = 'spiffe://zt.local/php-worker';
 
-$opts = getopt('', ['samples::', 'warmup::', 'cold']);
-$samples = max(1, (int) ($opts['samples'] ?? 2000));
-$warmup  = max(0, (int) ($opts['warmup'] ?? 200));
-$cold    = isset($opts['cold']);
+$opts = getopt('', ['samples::', 'warmup::', 'cold', 'keycloak-bytes::']);
+$samples       = max(1, (int) ($opts['samples'] ?? 2000));
+$warmup        = max(0, (int) ($opts['warmup'] ?? 200));
+$cold          = isset($opts['cold']);
+// Synthetic Keycloak access_token length (default 1500 — a real Keycloak
+// JWT with two realm roles + a client mapper). Placed in the envelope's
+// authorization.jwt field, PARALLEL to (not nested inside) the LSVID.
+$keycloakBytes = max(0, (int) ($opts['keycloak-bytes'] ?? 1500));
 
 // Layers benchmarked, in canonical order. Implementation supports L0–L2.
 const LAYERS = ['L0', 'L1', 'L2'];
+
+/**
+ * Build a production-shape gateway envelope carrying the outermost LSVID
+ * token. When $withKeycloak is true, a synthetic Keycloak access_token is
+ * injected at authorization.jwt — PARALLEL to the LSVID, not nested in it —
+ * so the marginal Keycloak envelope cost can be measured against the LSVID.
+ */
+function buildEnvelope(string $rawToken, bool $withKeycloak, int $kBytes): string
+{
+    $envelope = [
+        'schema_version' => 1,
+        'type'           => 'gateway.request',
+        'route'          => 'OrderCreateRequestedEvent',
+        'id'             => 'txn_' . bin2hex(random_bytes(8)),
+        'spiffe_id'      => GW_SPIFFE,
+        'spiffe_path'    => [GW_SPIFFE, WK_SPIFFE],
+        'lsvid'          => $rawToken,
+        'data'           => [
+            'userKey'     => '1',
+            'productList' => [['p_key' => 1, 'amount' => 1]],
+            'total'       => 100,
+        ],
+    ];
+    if ($withKeycloak) {
+        $envelope['authorization'] = [
+            'jwt'       => substr(str_repeat(bin2hex(random_bytes(32)) . '.', 64), 0, $kBytes),
+            'client_id' => 'zt-event-gateway',
+        ];
+    }
+    return json_encode($envelope, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+}
 
 /**
  * Build the PKI + signer/validator triple. In warm mode this is called
@@ -125,7 +160,7 @@ function makeStack(): array
  * measurement re-does validate(prior)+extend on a throwaway token so it
  * does not perturb the canonical chain.
  */
-function runSample(int $idx, LSVIDSigner $gw, LSVIDSigner $wk, LSVIDValidator $val, bool $warm, bool $emit): void
+function runSample(int $idx, LSVIDSigner $gw, LSVIDSigner $wk, LSVIDValidator $val, bool $warm, bool $emit, int $kBytes): void
 {
     $prior = null; // raw token of the previous (enclosing-nested) layer
     foreach (LAYERS as $li => $layer) {
@@ -168,6 +203,8 @@ function runSample(int $idx, LSVIDSigner $gw, LSVIDSigner $wk, LSVIDValidator $v
                 'e2e_extend_us'         => round($e2eExtendUs, 4),
                 'cumulative_verify_us'  => round($cumVerifyUs, 4),
                 'bytes'                 => strlen($raw),
+                'envelope_bytes_nokc'   => strlen(buildEnvelope($raw, false, $kBytes)),
+                'envelope_bytes_kc'     => strlen(buildEnvelope($raw, true, $kBytes)),
                 'warm'                  => $warm,
             ], JSON_UNESCAPED_SLASHES), "\n";
         }
@@ -183,12 +220,12 @@ for ($w = 0; $w < $warmup; $w++) {
     if ($cold) {
         [$gw, $wk, $val] = makeStack();
     }
-    runSample($w, $gw, $wk, $val, !$cold, false);
+    runSample($w, $gw, $wk, $val, !$cold, false, $keycloakBytes);
 }
 
 for ($s = 0; $s < $samples; $s++) {
     if ($cold) {
         [$gw, $wk, $val] = makeStack();
     }
-    runSample($s, $gw, $wk, $val, !$cold, true);
+    runSample($s, $gw, $wk, $val, !$cold, true, $keycloakBytes);
 }
