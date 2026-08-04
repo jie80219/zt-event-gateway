@@ -2,7 +2,7 @@
   "name": "zt/event-gateway",
   "description": "PHP event-driven gateway with SPIFFE/SPIRE + optional Keycloak (OAuth2) layer",
   "type": "project",
-  "license": "proprietary",
+  "license": "MIT",
   "require": {
     "php": "^8.3",
     "php-amqplib/php-amqplib": "^3.7.4",
