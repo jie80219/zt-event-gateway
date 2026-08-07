@@ -208,6 +208,10 @@ services:
       PERF_METRIC_ENABLED: "${PERF_METRIC_ENABLED:-0}"
       # AMQP message persistence — see comment under `gateway` service.
       AMQP_PERSISTENT: "${AMQP_PERSISTENT:-0}"
+      # basic_qos prefetch per consumer. Default 1 (see bin/worker.php comment
+      # — p99 tail latency claim). Only the bottleneck sensitivity experiment
+      # (scripts/experiments/run-sensitivity.sh) sweeps this to 5/10.
+      AMQP_PREFETCH: "${AMQP_PREFETCH:-1}"
       # ── Vault PKI mTLS to downstream services (transport-only identity) ──
       VAULT_MTLS_ENABLED: "${VAULT_MTLS_ENABLED:-0}"
       VAULT_TLS_CERT: "${VAULT_TLS_CERT:-/vault/out/tls.crt}"
