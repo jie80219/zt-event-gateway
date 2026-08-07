@@ -386,6 +386,10 @@ services:
       PERF_METRIC_ENABLED: "${PERF_METRIC_ENABLED:-0}"
       # AMQP message persistence — see comment under `gateway` service.
       AMQP_PERSISTENT: "${AMQP_PERSISTENT:-0}"
+      # basic_qos prefetch per consumer. Default 1 (see bin/worker.php comment
+      # — p99 tail latency claim). Only the bottleneck sensitivity experiment
+      # (scripts/experiments/run-sensitivity.sh) sweeps this to 5/10.
+      AMQP_PREFETCH: "${AMQP_PREFETCH:-1}"
       # ── mTLS to downstream services ──
       SPIFFE_MTLS_ENABLED: "${SPIFFE_MTLS_ENABLED:-0}"
       MTLS_PORT: "${MTLS_PORT:-8443}"
